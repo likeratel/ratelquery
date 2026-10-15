@@ -1,0 +1,33 @@
+.run-confirm__list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.run-confirm__item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.run-confirm__sql {
+  display: block;
+  max-height: 96px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.run-confirm__reason {
+  color: var(--danger);
+  font-size: var(--text-xs);
+}

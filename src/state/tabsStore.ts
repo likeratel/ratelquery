@@ -14,6 +14,7 @@ import {
   INITIAL_TABS,
   openDynamoTab,
   openTab,
+  openTableTab,
   replaceResult,
   requestCloseTab,
   setTabEdits,
@@ -21,14 +22,17 @@ import {
   tabPendingCount,
   updateDynamoTab,
   updateTab,
+  updateTableTab,
   type QueryTab,
+  type TableTab,
   type TabsState,
   type WorkspaceTab,
 } from "../lib/queryTabs"
 import { useSessionsStore } from "./sessionsStore"
+import { currentSettings } from "./settingsStore"
 
-/** Default row cap per statement; matches the backend default. */
-export const MAX_ROWS = 1000
+/** Row cap per statement, from Settings › Queries › Max rows (backend default 1000). */
+export const maxRows = (): number => currentSettings().query.maxRows
 
 export type RunOutcome = "ran" | "failed" | "empty" | "busy" | "pending-edits"
 
@@ -37,6 +41,12 @@ interface TabsStore extends TabsState {
   /** Opens a DynamoDB tab; its requests run from the dynamo feature through `updateDynamo`. */
   openDynamo: (connectionId: ConnectionId) => string
   updateDynamo: (id: string, update: (tab: DynamoTab) => DynamoTab) => void
+  /**
+   * Opens (or activates, when already open) the structure tab of a MySQL table. Returns its id.
+   * Details are fetched by the schema feature through `updateTable`.
+   */
+  openTable: (connectionId: ConnectionId, database: string, table: string) => string
+  updateTable: (id: string, update: (tab: TableTab) => TableTab) => void
   /** Closes the tab at once, even with unsaved work. */
   close: (id: string) => void
   /** Closes the tab, or asks first (`closing`) when it holds unsaved work. */
@@ -92,7 +102,7 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       target.table,
       changes,
     )
-    const options = { maxRows: MAX_ROWS, database: target.database }
+    const options = { maxRows: maxRows(), database: target.database }
     try {
       const [rerun] = await mysqlApi.query(connectionId, statement, options)
       if (rerun) {
@@ -122,6 +132,14 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     },
 
     updateDynamo: (id, update) => set((state) => updateDynamoTab(state, id, update)),
+
+    openTable: (connectionId, database, table) => {
+      const id = newId()
+      set((state) => openTableTab(state, { id, connectionId, database, table }))
+      return get().activeId ?? id
+    },
+
+    updateTable: (id, update) => set((state) => updateTableTab(state, id, update)),
 
     close: (id) => set((state) => closeTab(state, id)),
 
@@ -161,7 +179,7 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       const session = useSessionsStore.getState().sessions[tab.connectionId]
       const ranDatabase = tab.database ?? session?.currentDatabase ?? null
       try {
-        const options = { maxRows: MAX_ROWS, ...(tab.database ? { database: tab.database } : {}) }
+        const options = { maxRows: maxRows(), ...(tab.database ? { database: tab.database } : {}) }
         const results = await mysqlApi.query(tab.connectionId, text, options)
         patchTab(id, (t) => (isCurrent(t) ? finishRun(t, text, results, ranDatabase) : t))
         noteReconnects(tab.connectionId, results)
@@ -207,4 +225,9 @@ export function selectActiveQueryTab(state: TabsState): QueryTab | null {
 export function selectActiveDynamoTab(state: TabsState): DynamoTab | null {
   const tab = selectActiveTab(state)
   return tab?.kind === "dynamo" ? tab : null
+}
+
+export function selectActiveTableTab(state: TabsState): TableTab | null {
+  const tab = selectActiveTab(state)
+  return tab?.kind === "table" ? tab : null
 }

@@ -1,25 +1,34 @@
 import { describe, expect, it } from "vitest"
 import { createDynamoTab, openEditor, updateEditor } from "./dynamoTabs"
 import { EMPTY_EDITS, toggleRowDelete } from "./gridEdits"
-import type { QueryResult } from "./mysql"
+import type { QueryResult, TableDetails } from "./mysql"
 import {
   activateTab,
   cancelCloseTab,
   closeTab,
   confirmCloseTab,
   failRun,
+  failTableLoad,
+  findTableTab,
   finishRun,
+  finishTableLoad,
+  hasUnsavedWork,
   INITIAL_TABS,
   isTabDirty,
+  isWorkspaceTabDirty,
   openTab,
+  openTableTab,
   preferredResultIndex,
   replaceResult,
   requestCloseTab,
   setTabEdits,
   startRun,
+  startTableLoad,
   tabPendingCount,
   updateTab,
+  updateTableTab,
   type QueryTab,
+  type TableTab,
 } from "./queryTabs"
 
 const exec = (statement: string): QueryResult => ({
@@ -166,5 +175,81 @@ describe("closing tabs with unsaved work", () => {
     expect(requestCloseTab(state, "zz")).toBe(state)
     expect(confirmCloseTab(state)).toBe(state)
     expect(cancelCloseTab(state)).toBe(state)
+  })
+})
+
+describe("table tabs", () => {
+  const users = { id: "t1", connectionId: "conn", database: "app", table: "users" }
+  const details: TableDetails = {
+    database: "app",
+    table: "users",
+    kind: "table",
+    engine: "InnoDB",
+    rowEstimate: 3,
+    dataLength: 16384,
+    collation: null,
+    comment: "",
+    columns: [],
+    indexes: [],
+    foreignKeys: [],
+    ddl: "CREATE TABLE `users` ()",
+  }
+  const tableTab = (state: ReturnType<typeof three>) => state.tabs.at(-1) as TableTab
+
+  it("opens a tab titled with the table and activates it", () => {
+    const state = openTableTab(three(), users)
+    expect(tableTab(state)).toMatchObject({
+      kind: "table",
+      title: "users",
+      database: "app",
+      details: null,
+      loading: false,
+    })
+    expect(state.activeId).toBe("t1")
+    // Query numbering is untouched.
+    expect(state.seq).toBe(three().seq)
+  })
+
+  it("activates the open tab instead of opening the same table twice", () => {
+    const opened = activateTab(openTableTab(three(), users), "a")
+    const again = openTableTab(opened, { ...users, id: "t2" })
+    expect(again.tabs).toHaveLength(4)
+    expect(again.activeId).toBe("t1")
+    const otherDb = openTableTab(opened, { ...users, id: "t3", database: "shop" })
+    expect(otherDb.tabs).toHaveLength(5)
+    expect(findTableTab(otherDb, { ...users, database: "shop" })?.id).toBe("t3")
+    expect(findTableTab(otherDb, { ...users, table: "nope" })).toBeNull()
+  })
+
+  it("closes at once; it never holds unsaved work", () => {
+    const state = openTableTab(three(), users)
+    expect(hasUnsavedWork(tableTab(state))).toBe(false)
+    expect(isWorkspaceTabDirty(tableTab(state))).toBe(false)
+    const closed = requestCloseTab(state, "t1")
+    expect(closed.tabs.map((t) => t.id)).toEqual(["a", "b", "c"])
+    expect(closed.activeId).toBe("c")
+    expect(closed.closing).toBeNull()
+  })
+
+  it("caches details and drops responses from older requests", () => {
+    const loading = startTableLoad(tableTab(openTableTab(three(), users)))
+    expect(loading).toMatchObject({ loading: true, requestId: 1 })
+    const done = finishTableLoad(loading, 1, details)
+    expect(done).toMatchObject({ loading: false, details, error: null })
+    const refreshing = startTableLoad(done)
+    expect(refreshing.details).toBe(details)
+    expect(finishTableLoad(refreshing, 1, { ...details, rowEstimate: 9 })).toBe(refreshing)
+    const failed = failTableLoad(refreshing, 2, { kind: "not_found", message: "gone" })
+    expect(failed).toMatchObject({ loading: false, error: { kind: "not_found" }, details })
+    expect(failTableLoad(refreshing, 1, { kind: "query", message: "x" })).toBe(refreshing)
+  })
+
+  it("updates only table tabs", () => {
+    const state = openTableTab(three(), users)
+    const next = updateTableTab(state, "a", (t) => ({ ...t, loading: true }))
+    expect(next.tabs).toEqual(state.tabs)
+    const updated = updateTableTab(state, "t1", (t) => ({ ...t, loading: true }))
+    expect(tableTab(updated).loading).toBe(true)
+    expect(updateTab(state, "t1", (t) => ({ ...t, sql: "x" })).tabs).toEqual(state.tabs)
   })
 })

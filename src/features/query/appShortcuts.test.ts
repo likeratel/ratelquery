@@ -3,6 +3,7 @@ import { useToastStore } from "../../components/ui/toastStore"
 import { INITIAL_TABS } from "../../lib/queryTabs"
 import { isMac, type KeyLike } from "../../lib/shortcuts"
 import { useTabsStore } from "../../state/tabsStore"
+import { useUiStore } from "../../state/uiStore"
 import { handleAppShortcut, matchAppShortcut } from "./appShortcuts"
 
 function modKey(code: string, extra: Partial<KeyLike> = {}): KeyLike {
@@ -20,6 +21,13 @@ describe("handleAppShortcut", () => {
     expect(matchAppShortcut(modKey("Enter", { shiftKey: true }))).toBe("runStatement")
     expect(matchAppShortcut(modKey("NumpadEnter"))).toBe("run")
     expect(matchAppShortcut(modKey("KeyX"))).toBeNull()
+  })
+
+  it("opens settings on Mod+, by physical key", () => {
+    useUiStore.setState({ settingsOpen: false })
+    expect(matchAppShortcut(modKey("Comma"))).toBe("settings")
+    expect(handleAppShortcut(modKey("Comma"))).toBe(true)
+    expect(useUiStore.getState().settingsOpen).toBe(true)
   })
 
   it("claims a held shortcut without running it again", () => {

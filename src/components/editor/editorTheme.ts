@@ -35,7 +35,8 @@ export const tokenTheme = EditorView.theme({
     height: "100%",
     color: "var(--text)",
     backgroundColor: "var(--bg)",
-    fontSize: "var(--text-md)",
+    // Set from Settings › Appearance; falls back to the UI size before settings load.
+    fontSize: "var(--editor-font-size, var(--text-md))",
   },
   "&.cm-focused": { outline: "none" },
   ".cm-scroller": {

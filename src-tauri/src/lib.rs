@@ -6,6 +6,7 @@ pub mod export;
 mod fsutil;
 mod menu;
 pub mod mysql;
+pub mod settings;
 mod state;
 
 use std::sync::Arc;
@@ -60,6 +61,7 @@ pub fn run() {
             commands::mysql::mysql_query,
             commands::mysql::mysql_databases,
             commands::mysql::mysql_schema,
+            commands::mysql::mysql_table_details,
             commands::mysql::mysql_apply_changes,
             commands::mysql::mysql_export,
             commands::export::export_rows,
@@ -71,6 +73,8 @@ pub fn run() {
             commands::dynamo::dynamo_put_item,
             commands::dynamo::dynamo_delete_item,
             commands::dynamo::dynamo_export,
+            commands::settings::settings_get,
+            commands::settings::settings_set,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

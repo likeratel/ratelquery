@@ -3,7 +3,7 @@ import { createDynamoTab, isDynamoTabDirty, type DynamoTab } from "./dynamoTabs"
 import type { GridEdits } from "./gridEdits"
 import { pendingCount } from "./gridEdits"
 import type { AppError } from "./ipc"
-import type { QueryResult } from "./mysql"
+import type { QueryResult, TableDetails } from "./mysql"
 
 export interface QueryTab {
   kind: "query"
@@ -35,8 +35,25 @@ export interface QueryTab {
   lastElapsedMs: number | null
 }
 
+/** Structure of one MySQL table or view: columns, indexes, foreign keys and DDL. */
+export interface TableTab {
+  kind: "table"
+  id: string
+  connectionId: ConnectionId
+  /** The table name. */
+  title: string
+  database: string
+  table: string
+  /** Last `mysql_table_details` response; kept until the user refreshes. */
+  details: TableDetails | null
+  loading: boolean
+  error: AppError | null
+  /** Increments on every request so a late response can't overwrite a newer one. */
+  requestId: number
+}
+
 /** Every tab in the tab bar; `kind` picks the screen that renders it. */
-export type WorkspaceTab = QueryTab | DynamoTab
+export type WorkspaceTab = QueryTab | DynamoTab | TableTab
 
 export interface TabsState {
   tabs: readonly WorkspaceTab[]
@@ -96,6 +113,52 @@ export function openDynamoTab(
   return { ...state, tabs: [...state.tabs, tab], activeId: tab.id, seq }
 }
 
+export function createTableTab(
+  id: string,
+  connectionId: ConnectionId,
+  database: string,
+  table: string,
+): TableTab {
+  return {
+    kind: "table",
+    id,
+    connectionId,
+    title: table,
+    database,
+    table,
+    details: null,
+    loading: false,
+    error: null,
+    requestId: 0,
+  }
+}
+
+/** The open table tab for `table` in `database` on `connectionId`, if any. */
+export function findTableTab(
+  state: TabsState,
+  params: { connectionId: ConnectionId; database: string; table: string },
+): TableTab | null {
+  const found = state.tabs.find(
+    (t) =>
+      t.kind === "table" &&
+      t.connectionId === params.connectionId &&
+      t.database === params.database &&
+      t.table === params.table,
+  )
+  return found?.kind === "table" ? found : null
+}
+
+/** Activates the table's tab when it is already open, otherwise appends one and activates it. */
+export function openTableTab(
+  state: TabsState,
+  params: { id: string; connectionId: ConnectionId; database: string; table: string },
+): TabsState {
+  const existing = findTableTab(state, params)
+  if (existing) return { ...state, activeId: existing.id }
+  const tab = createTableTab(params.id, params.connectionId, params.database, params.table)
+  return { ...state, tabs: [...state.tabs, tab], activeId: tab.id }
+}
+
 /** Ids of every tab, of any kind, opened on `connectionId`. */
 export function tabsForConnection(state: TabsState, connectionId: ConnectionId): string[] {
   return state.tabs.filter((t) => t.connectionId === connectionId).map((t) => t.id)
@@ -117,6 +180,7 @@ export function closeTab(state: TabsState, id: string): TabsState {
  * applied. Unrun SQL alone doesn't count; it only drives the dirty marker.
  */
 export function hasUnsavedWork(tab: WorkspaceTab): boolean {
+  if (tab.kind === "table") return false
   return tab.kind === "query" ? tabPendingCount(tab) > 0 : isDynamoTabDirty(tab)
 }
 
@@ -163,6 +227,35 @@ export function updateDynamoTab(
     ...state,
     tabs: state.tabs.map((t) => (t.id === id && t.kind === "dynamo" ? update(t) : t)),
   }
+}
+
+/** Updates a table tab; tabs of another kind are left alone. */
+export function updateTableTab(
+  state: TabsState,
+  id: string,
+  update: (tab: TableTab) => TableTab,
+): TabsState {
+  return {
+    ...state,
+    tabs: state.tabs.map((t) => (t.id === id && t.kind === "table" ? update(t) : t)),
+  }
+}
+
+/** Marks a details request as started; the previous details stay visible while it runs. */
+export function startTableLoad(tab: TableTab): TableTab {
+  return { ...tab, loading: true, error: null, requestId: tab.requestId + 1 }
+}
+
+/** Stores the details when `requestId` is still the latest request. */
+export function finishTableLoad(tab: TableTab, requestId: number, details: TableDetails): TableTab {
+  if (tab.requestId !== requestId) return tab
+  return { ...tab, loading: false, error: null, details }
+}
+
+/** Records a failed request when `requestId` is still the latest request. */
+export function failTableLoad(tab: TableTab, requestId: number, error: AppError): TableTab {
+  if (tab.requestId !== requestId) return tab
+  return { ...tab, loading: false, error }
 }
 
 export function startRun(tab: QueryTab): QueryTab {
@@ -230,5 +323,6 @@ export function isTabDirty(tab: QueryTab): boolean {
 
 /** Dirty marker for any tab kind. */
 export function isWorkspaceTabDirty(tab: WorkspaceTab): boolean {
+  if (tab.kind === "table") return false
   return tab.kind === "query" ? isTabDirty(tab) : isDynamoTabDirty(tab)
 }

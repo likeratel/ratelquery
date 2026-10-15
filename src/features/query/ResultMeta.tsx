@@ -1,6 +1,5 @@
 import { formatElapsed } from "../../lib/cellFormat"
 import type { QueryResult } from "../../lib/mysql"
-import { MAX_ROWS } from "../../state/tabsStore"
 import { useCountUp } from "./useCountUp"
 
 interface ResultMetaProps {
@@ -29,9 +28,9 @@ export function ResultMeta({ result, runKey }: ResultMetaProps) {
       {result.kind === "rows" && result.truncated && (
         <span
           className="badge"
-          title={`Only the first ${MAX_ROWS.toLocaleString()} rows were fetched`}
+          title={`Only the first ${result.rows.length.toLocaleString()} rows were kept (Settings › Queries › Max rows)`}
         >
-          Limited to {MAX_ROWS.toLocaleString()}
+          Limited to {result.rows.length.toLocaleString()}
         </span>
       )}
       {result.kind === "exec" && result.lastInsertId && (

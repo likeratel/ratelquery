@@ -6,12 +6,14 @@ use tauri::{AppHandle, Emitter};
 use crate::connections::{ConnectionStore, ConnectionsService, SecretStore};
 use crate::dynamo::DynamoClients;
 use crate::mysql::{MysqlSessions, MysqlStateEvent, STATE_EVENT, StateSink};
+use crate::settings::{SettingsService, SettingsStore};
 
 /// Managed Tauri state shared by all commands.
 pub struct AppState {
     pub connections: ConnectionsService,
     pub mysql: MysqlSessions,
     pub dynamo: DynamoClients,
+    pub settings: SettingsService,
 }
 
 impl AppState {
@@ -20,6 +22,7 @@ impl AppState {
             connections: ConnectionsService::new(ConnectionStore::new(config_dir), secrets),
             mysql: MysqlSessions::new(sink),
             dynamo: DynamoClients::new(),
+            settings: SettingsService::new(SettingsStore::new(config_dir)),
         }
     }
 }

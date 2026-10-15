@@ -6,7 +6,7 @@ use crate::error::{AppError, AppResult};
 use crate::export::{ExportOptions, ExportResult};
 use crate::mysql::{
     self, ApplyChangesResult, MysqlSessionInfo, QueryOptions, QueryResult, RowChange,
-    SchemaSnapshot,
+    SchemaSnapshot, TableDetails,
 };
 use crate::state::AppState;
 
@@ -56,6 +56,17 @@ pub async fn mysql_schema(
 ) -> AppResult<SchemaSnapshot> {
     let session = state.mysql.get(&connection_id).await?;
     mysql::schema(&session, &database).await
+}
+
+#[tauri::command]
+pub async fn mysql_table_details(
+    state: State<'_, AppState>,
+    connection_id: String,
+    database: String,
+    table: String,
+) -> AppResult<TableDetails> {
+    let session = state.mysql.get(&connection_id).await?;
+    mysql::table_details(&session, &database, &table).await
 }
 
 #[tauri::command]

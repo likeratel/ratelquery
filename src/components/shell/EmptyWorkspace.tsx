@@ -6,6 +6,7 @@ const HINTS = [
   { keys: "Mod+T", label: "New tab" },
   { keys: "Mod+Enter", label: "Run query" },
   { keys: "Mod+B", label: "Toggle sidebar" },
+  { keys: "Mod+,", label: "Settings" },
 ]
 
 export function EmptyWorkspace() {

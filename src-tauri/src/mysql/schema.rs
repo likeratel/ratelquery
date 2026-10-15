@@ -18,7 +18,7 @@ const SCHEMA_EXISTS_SQL: &str =
 const TABLES_SQL: &str = "SELECT TABLE_NAME, TABLE_TYPE FROM information_schema.TABLES \
      WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME";
 const COLUMNS_SQL: &str = "SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, EXTRA, \
-     COLUMN_DEFAULT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? \
+     COLUMN_DEFAULT, COLUMN_COMMENT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? \
      ORDER BY TABLE_NAME, ORDINAL_POSITION";
 const PRIMARY_SQL: &str = "SELECT TABLE_NAME, COLUMN_NAME FROM information_schema.STATISTICS \
      WHERE TABLE_SCHEMA = ? AND INDEX_NAME = 'PRIMARY'";
@@ -35,13 +35,14 @@ pub struct ColumnRow {
     pub is_nullable: String,
     pub extra: String,
     pub default_value: Option<String>,
+    pub comment: String,
 }
 
-fn text(row: &MySqlRow, index: usize) -> Result<String, sqlx::Error> {
+pub(super) fn text(row: &MySqlRow, index: usize) -> Result<String, sqlx::Error> {
     Ok(opt_text(row, index)?.unwrap_or_default())
 }
 
-fn opt_text(row: &MySqlRow, index: usize) -> Result<Option<String>, sqlx::Error> {
+pub(super) fn opt_text(row: &MySqlRow, index: usize) -> Result<Option<String>, sqlx::Error> {
     // information_schema mixes VARCHAR, TEXT and binary-collated columns; read raw text.
     row.try_get_unchecked::<Option<String>, _>(index)
 }
@@ -56,11 +57,23 @@ pub async fn list_databases(conn: &mut MySqlConnection) -> Result<Vec<String>, s
     Ok(names?.into_iter().filter(|n| !is_system_database(n)).collect())
 }
 
-fn table_kind(table_type: &str) -> TableKind {
+pub(super) fn table_kind(table_type: &str) -> TableKind {
     if table_type.to_ascii_uppercase().contains("VIEW") {
         TableKind::View
     } else {
         TableKind::Table
+    }
+}
+
+pub(super) fn to_schema_column(c: ColumnRow, is_primary: bool) -> SchemaColumn {
+    SchemaColumn {
+        is_primary,
+        is_auto_increment: c.extra.to_ascii_lowercase().contains("auto_increment"),
+        nullable: c.is_nullable.eq_ignore_ascii_case("YES"),
+        name: c.name,
+        type_name: c.column_type,
+        default_value: c.default_value,
+        comment: c.comment,
     }
 }
 
@@ -74,15 +87,9 @@ pub fn assemble_snapshot(
 ) -> SchemaSnapshot {
     let mut by_table: HashMap<String, Vec<SchemaColumn>> = HashMap::new();
     for c in columns {
-        let column = SchemaColumn {
-            is_primary: primary.contains(&(c.table.clone(), c.name.clone())),
-            is_auto_increment: c.extra.to_ascii_lowercase().contains("auto_increment"),
-            nullable: c.is_nullable.eq_ignore_ascii_case("YES"),
-            name: c.name,
-            type_name: c.column_type,
-            default_value: c.default_value,
-        };
-        by_table.entry(c.table).or_default().push(column);
+        let is_primary = primary.contains(&(c.table.clone(), c.name.clone()));
+        let table = c.table.clone();
+        by_table.entry(table).or_default().push(to_schema_column(c, is_primary));
     }
     let tables = tables
         .into_iter()
@@ -103,7 +110,7 @@ async fn fetch_rows(
     sqlx::query(sql).bind(database).fetch_all(&mut *conn).await
 }
 
-fn parse_columns(rows: &[MySqlRow]) -> Result<Vec<ColumnRow>, sqlx::Error> {
+pub(super) fn parse_columns(rows: &[MySqlRow]) -> Result<Vec<ColumnRow>, sqlx::Error> {
     rows.iter()
         .map(|r| {
             Ok(ColumnRow {
@@ -113,6 +120,7 @@ fn parse_columns(rows: &[MySqlRow]) -> Result<Vec<ColumnRow>, sqlx::Error> {
                 is_nullable: text(r, 3)?,
                 extra: text(r, 4)?,
                 default_value: opt_text(r, 5)?,
+                comment: text(r, 6)?,
             })
         })
         .collect()
@@ -153,6 +161,7 @@ mod tests {
             is_nullable: "NO".into(),
             extra: extra.into(),
             default_value: None,
+            comment: String::new(),
         }
     }
 

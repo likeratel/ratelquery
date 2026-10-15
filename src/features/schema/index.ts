@@ -1,0 +1,9 @@
+// Public surface of the schema browser: the sidebar tree and the table structure tab.
+export { loadTableDetails, openTable, selectRows, subscribeTreeCleanup } from "./actions"
+export { SchemaChildren } from "./SchemaChildren"
+export { TableWorkspace } from "./TableWorkspace"
+export { handleTreeFocus, handleTreeKeyDown, useTreeTabIndex } from "./treeKeyboard"
+export { TreeChevron } from "./TreeNode"
+export { connectionKey, isDescendant } from "./treeState"
+export { useSchemaTree } from "./treeStore"
+import "./schema.css"

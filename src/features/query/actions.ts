@@ -2,10 +2,11 @@ import { forgetEditorState } from "../../components/editor/editorStateCache"
 import type { ConnectionId } from "../../lib/connections"
 import { onAppEvent } from "../../lib/events"
 import { isAppError } from "../../lib/ipc"
-import { tabsForConnection } from "../../lib/queryTabs"
+import { tabPendingCount, tabsForConnection, type QueryTab } from "../../lib/queryTabs"
 import { statementAtCursor } from "../../lib/sqlContext"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useSessionsStore } from "../../state/sessionsStore"
+import { currentSettings } from "../../state/settingsStore"
 import {
   selectActiveQueryTab,
   selectActiveTab,
@@ -16,6 +17,7 @@ import { openDynamoTabFor } from "../dynamo/actions"
 import { useDynamoCatalog } from "../dynamo/catalogStore"
 import { editTargetFor } from "./editing"
 import { editorFor } from "./editorRegistry"
+import { confirmDangerousRun, planRun, useRunGuardStore } from "./runGuard"
 import { toast } from "./toastStore"
 
 /**
@@ -65,6 +67,7 @@ export function newTabFromActive(): void {
 function removeTab(id: string): void {
   useTabsStore.getState().close(id)
   forgetEditorState(id)
+  useRunGuardStore.getState().forgetTab(id)
 }
 
 /**
@@ -74,7 +77,10 @@ function removeTab(id: string): void {
 export function closeQueryTab(id: string): void {
   const store = useTabsStore.getState()
   store.requestClose(id)
-  if (useTabsStore.getState().closing !== id) forgetEditorState(id)
+  if (useTabsStore.getState().closing !== id) {
+    forgetEditorState(id)
+    useRunGuardStore.getState().forgetTab(id)
+  }
 }
 
 /** Confirms the pending close and throws the unsaved work away. */
@@ -120,7 +126,7 @@ export async function runActiveTab(scope: "all" | "statement", cursor?: number):
   const tab = selectActiveQueryTab(useTabsStore.getState())
   if (!tab) return
   if (scope === "all") {
-    reportOutcome(await useTabsStore.getState().run(tab.id))
+    await runGuarded(tab, null)
     return
   }
   const head = cursor ?? editorFor(tab.id)?.state.selection.main.head ?? tab.sql.length
@@ -129,7 +135,35 @@ export async function runActiveTab(scope: "all" | "statement", cursor?: number):
     reportOutcome("empty")
     return
   }
-  reportOutcome(await useTabsStore.getState().run(tab.id, statement.text))
+  await runGuarded(tab, statement.text)
+}
+
+/**
+ * Runs `sql` (the whole editor when null) after the query safety settings: destructive
+ * statements wait for confirmation, and SELECTs without a LIMIT get the default one in the
+ * executed text only. The editor text never changes.
+ */
+async function runGuarded(tab: QueryTab, sql: string | null): Promise<void> {
+  // The store refuses these anyway; checking first avoids asking about a run that can't start.
+  if (tab.running) return
+  if (tabPendingCount(tab) > 0) {
+    reportOutcome("pending-edits")
+    return
+  }
+  const plan = planRun(sql ?? tab.sql, currentSettings().query)
+  if (plan.dangers.length > 0) {
+    const confirmed = await confirmDangerousRun(plan.dangers)
+    // The tab may have closed while the dialog was open.
+    if (!confirmed || !useTabsStore.getState().tabs.some((t) => t.id === tab.id)) return
+  }
+  const guard = useRunGuardStore.getState()
+  const previous = guard.limitedByTab[tab.id] ?? []
+  guard.setLimited(tab.id, plan.limited)
+  const text = plan.changed ? plan.sql : (sql ?? undefined)
+  const outcome = await useTabsStore.getState().run(tab.id, text)
+  // A run that never started leaves the previous results, and their badges, on screen.
+  if (outcome !== "ran" && outcome !== "failed") guard.setLimited(tab.id, previous)
+  reportOutcome(outcome)
 }
 
 /** Mod+S: apply the active result's pending edits. */

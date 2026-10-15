@@ -69,6 +69,8 @@ export interface SchemaColumn {
   isPrimary: boolean
   isAutoIncrement: boolean
   defaultValue: string | null
+  /** COLUMN_COMMENT; only `mysql_table_details` fills it. */
+  comment?: string
 }
 
 export interface SchemaTable {
@@ -81,6 +83,41 @@ export interface SchemaSnapshot {
   database: string
   tables: SchemaTable[]
   fetchedAt: string
+}
+
+export interface IndexInfo {
+  name: string
+  unique: boolean
+  /** In sequence order. */
+  columns: string[]
+  /** "BTREE", "FULLTEXT", ... */
+  type: string
+}
+
+export interface ForeignKeyInfo {
+  name: string
+  columns: string[]
+  referencedTable: string
+  referencedColumns: string[]
+  onUpdate: string
+  onDelete: string
+}
+
+export interface TableDetails {
+  database: string
+  table: string
+  kind: "table" | "view"
+  engine: string | null
+  /** information_schema.TABLES.TABLE_ROWS; an estimate for InnoDB. */
+  rowEstimate: number | null
+  dataLength: number | null
+  collation: string | null
+  comment: string
+  columns: SchemaColumn[]
+  indexes: IndexInfo[]
+  foreignKeys: ForeignKeyInfo[]
+  /** SHOW CREATE TABLE / VIEW. */
+  ddl: string
 }
 
 export type RowChange =
@@ -118,6 +155,9 @@ export const mysqlApi = {
   databases: (connectionId: ConnectionId) => ipc<string[]>("mysql_databases", { connectionId }),
   schema: (connectionId: ConnectionId, database: string) =>
     ipc<SchemaSnapshot>("mysql_schema", { connectionId, database }),
+  /** Rejects with `not_found` for an unknown table. */
+  tableDetails: (connectionId: ConnectionId, database: string, table: string) =>
+    ipc<TableDetails>("mysql_table_details", { connectionId, database, table }),
   applyChanges: (
     connectionId: ConnectionId,
     database: string,

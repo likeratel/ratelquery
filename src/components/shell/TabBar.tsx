@@ -1,4 +1,4 @@
-import { Cloud, Database, PanelLeft, Plus, X } from "lucide-react"
+import { Cloud, Database, PanelLeft, Plus, Table2, X, type LucideIcon } from "lucide-react"
 import type { MouseEvent } from "react"
 import {
   cancelCloseTab,
@@ -14,7 +14,21 @@ import { useUiStore } from "../../state/uiStore"
 
 const MIDDLE_BUTTON = 1
 
-const KIND_LABEL: Record<WorkspaceTab["kind"], string> = { query: "SQL", dynamo: "DynamoDB" }
+const KIND_LABEL: Record<WorkspaceTab["kind"], string> = {
+  query: "SQL",
+  dynamo: "DynamoDB",
+  table: "Table",
+}
+
+const KIND_ICON: Record<WorkspaceTab["kind"], LucideIcon> = {
+  query: Database,
+  dynamo: Cloud,
+  table: Table2,
+}
+
+/** Tooltip name: a table tab shows where its table lives. */
+const tabLongName = (tab: WorkspaceTab) =>
+  tab.kind === "table" ? `${tab.database}.${tab.table}` : tab.title
 
 function TabItem({ tab, active }: { tab: WorkspaceTab; active: boolean }) {
   const activate = useTabsStore((s) => s.activate)
@@ -22,7 +36,7 @@ function TabItem({ tab, active }: { tab: WorkspaceTab; active: boolean }) {
     s.connections.find((c) => c.id === tab.connectionId),
   )
   const dirty = isWorkspaceTabDirty(tab)
-  const KindIcon = tab.kind === "dynamo" ? Cloud : Database
+  const KindIcon = KIND_ICON[tab.kind]
 
   const onAuxClick = (event: MouseEvent) => {
     if (event.button === MIDDLE_BUTTON) {
@@ -37,7 +51,7 @@ function TabItem({ tab, active }: { tab: WorkspaceTab; active: boolean }) {
       role="tab"
       aria-selected={active}
       tabIndex={active ? 0 : -1}
-      title={[tab.title, KIND_LABEL[tab.kind], connection?.name].filter(Boolean).join(" · ")}
+      title={[tabLongName(tab), KIND_LABEL[tab.kind], connection?.name].filter(Boolean).join(" · ")}
       onMouseDown={(event) => {
         if (event.button === MIDDLE_BUTTON) event.preventDefault()
         else if (event.button === 0) activate(tab.id)
@@ -74,6 +88,8 @@ function TabItem({ tab, active }: { tab: WorkspaceTab; active: boolean }) {
 const UNSAVED_DETAIL: Record<WorkspaceTab["kind"], string> = {
   query: "Its pending grid changes haven't been applied and will be lost.",
   dynamo: "Its item editor has unsaved changes that will be lost.",
+  // Table tabs hold no unsaved work, so they never ask.
+  table: "",
 }
 
 /** Confirmation for closing a tab that holds unsaved work. */

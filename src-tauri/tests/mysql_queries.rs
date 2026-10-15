@@ -279,3 +279,79 @@ async fn lists_databases_and_schema() {
     drop_table(&c.session, &with_pk).await;
     drop_table(&c.session, &no_pk).await;
 }
+
+#[tokio::test]
+async fn reads_table_details_with_indexes_foreign_keys_and_ddl() {
+    let Some(db) = test_db() else { return };
+    let c = connect(&db).await;
+    let parent = create_table(
+        &c.session,
+        "it_parent",
+        "id INT PRIMARY KEY, code VARCHAR(10) NOT NULL, UNIQUE KEY uq_code (code)",
+        "(1, 'a')",
+    )
+    .await;
+    let child_columns = format!(
+        "id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, \
+         parent_id INT NOT NULL COMMENT 'owning parent', \
+         email VARCHAR(100) NOT NULL, a INT, b INT, \
+         UNIQUE KEY uq_email (email), KEY ix_ab (a, b), \
+         CONSTRAINT fk_parent FOREIGN KEY (parent_id) REFERENCES `{parent}` (id) \
+           ON DELETE CASCADE ON UPDATE RESTRICT"
+    );
+    let child = create_table(&c.session, "it_child", &child_columns, "").await;
+    query(&c.session, &format!("ALTER TABLE `{child}` COMMENT = 'children'")).await;
+    let view = common::unique("it_view");
+    query(&c.session, &format!("CREATE VIEW `{view}` AS SELECT id, email FROM `{child}`")).await;
+
+    let d = mysql::table_details(&c.session, db.database(), &child).await.unwrap();
+    assert_eq!((d.database.as_str(), d.table.as_str()), (db.database(), child.as_str()));
+    assert_eq!(d.kind, TableKind::Table);
+    assert_eq!(d.engine.as_deref(), Some("InnoDB"));
+    assert!(d.collation.is_some() && d.row_estimate.is_some() && d.data_length.is_some());
+    assert_eq!(d.comment, "children");
+    let names: Vec<_> = d.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["id", "parent_id", "email", "a", "b"]);
+    assert!(d.columns[0].is_primary && d.columns[0].is_auto_increment);
+    assert!(!d.columns[1].is_primary);
+    assert_eq!(d.columns[1].comment, "owning parent");
+    assert_eq!(d.columns[2].comment, "");
+
+    let index = |name: &str| d.indexes.iter().find(|i| i.name == name).unwrap();
+    assert_eq!(d.indexes[0].name, "PRIMARY");
+    assert!(index("PRIMARY").unique && index("PRIMARY").columns == ["id"]);
+    assert!(index("uq_email").unique && index("uq_email").columns == ["email"]);
+    assert!(!index("ix_ab").unique && index("ix_ab").columns == ["a", "b"]);
+    assert_eq!(index("ix_ab").index_type, "BTREE");
+
+    assert_eq!(d.foreign_keys.len(), 1);
+    let fk = &d.foreign_keys[0];
+    assert_eq!(fk.name, "fk_parent");
+    assert_eq!(fk.columns, ["parent_id"]);
+    assert_eq!(fk.referenced_table, parent);
+    assert_eq!(fk.referenced_columns, ["id"]);
+    assert_eq!((fk.on_update.as_str(), fk.on_delete.as_str()), ("RESTRICT", "CASCADE"));
+    assert!(d.ddl.starts_with(&format!("CREATE TABLE `{child}`")), "{}", d.ddl);
+    assert!(d.ddl.contains("CONSTRAINT `fk_parent`"));
+
+    let v = mysql::table_details(&c.session, db.database(), &view).await.unwrap();
+    assert_eq!(v.kind, TableKind::View);
+    assert_eq!(v.engine, None);
+    assert_eq!(v.comment, "");
+    assert_eq!(v.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "email"]);
+    assert!(v.indexes.is_empty() && v.foreign_keys.is_empty());
+    assert!(v.ddl.contains("VIEW") && v.ddl.contains(&format!("`{view}`")), "{}", v.ddl);
+
+    let schema = mysql::schema(&c.session, db.database()).await.unwrap();
+    let in_schema = schema.tables.iter().find(|t| t.name == child).unwrap();
+    assert_eq!(in_schema.columns[1].comment, "owning parent");
+
+    let missing = mysql::table_details(&c.session, db.database(), "no_such_table").await;
+    assert_eq!(missing.unwrap_err().kind(), "not_found");
+    let missing_db = mysql::table_details(&c.session, "no_such_db", &child).await;
+    assert_eq!(missing_db.unwrap_err().kind(), "not_found");
+
+    query(&c.session, &format!("DROP VIEW IF EXISTS `{view}`")).await;
+    drop_table(&c.session, &child).await;
+    drop_table(&c.session, &parent).await;
+}

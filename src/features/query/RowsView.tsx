@@ -20,6 +20,7 @@ import { useTabsStore } from "../../state/tabsStore"
 import { ExportMenu } from "./ExportMenu"
 import { PendingBar } from "./PendingBar"
 import { ResultMeta } from "./ResultMeta"
+import { addedLimitFor, useRunGuardStore } from "./runGuard"
 import { toast } from "./toastStore"
 
 interface RowsViewProps {
@@ -31,6 +32,9 @@ interface RowsViewProps {
 
 export function RowsView({ tab, index, result, edit }: RowsViewProps) {
   const updateEdits = useTabsStore((s) => s.updateEdits)
+  const addedLimit = useRunGuardStore((s) =>
+    addedLimitFor(s.limitedByTab[tab.id], result.statement),
+  )
   const edits = tab.edits[index] ?? EMPTY_EDITS
   const rows = useMemo(
     () => displayRows(result.rows, result.columns.length, edits),
@@ -90,6 +94,14 @@ export function RowsView({ tab, index, result, edit }: RowsViewProps) {
     <div className="rows-view">
       <div className="result-toolbar">
         <ResultMeta result={result} runKey={`${tab.id}:${tab.runId}`} />
+        {addedLimit !== null && (
+          <span
+            className="badge"
+            title="Added to the executed statement by Settings › Queries. The editor text is unchanged."
+          >
+            LIMIT {addedLimit.toLocaleString()} added
+          </span>
+        )}
         <span className="result-toolbar__spacer" />
         {target ? (
           <div className="result-toolbar__group" aria-label="Edit rows">

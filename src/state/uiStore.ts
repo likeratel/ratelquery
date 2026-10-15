@@ -1,18 +1,22 @@
 import { create } from "zustand"
+import type { ThemePreference } from "../lib/settings"
 
-export type ThemePreference = "system" | "dark" | "light"
+// The theme preference is a persisted setting (`settingsStore`); this module only applies it.
+export type { ThemePreference }
 
 interface UiState {
-  theme: ThemePreference
   sidebarCollapsed: boolean
-  setTheme: (theme: ThemePreference) => void
+  settingsOpen: boolean
   toggleSidebar: () => void
+  openSettings: () => void
+  closeSettings: () => void
 }
 
 export const useUiStore = create<UiState>((set) => ({
-  theme: "system",
   sidebarCollapsed: false,
-  setTheme: (theme) => set({ theme }),
+  settingsOpen: false,
+  openSettings: () => set({ settingsOpen: true }),
+  closeSettings: () => set({ settingsOpen: false }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 }))
 

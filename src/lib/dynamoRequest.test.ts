@@ -74,6 +74,8 @@ describe("names and values", () => {
 
   it("bounds the limit", () => {
     expect(parseLimit("")).toEqual({ ok: true, value: 100 })
+    expect(parseLimit("", 250)).toEqual({ ok: true, value: 250 })
+    expect(parseLimit("30", 250)).toEqual({ ok: true, value: 30 })
     expect(parseLimit("1000")).toEqual({ ok: true, value: 1000 })
     expect(parseLimit("1001")).toMatchObject({ ok: false })
     expect(parseLimit("2.5")).toMatchObject({ ok: false })

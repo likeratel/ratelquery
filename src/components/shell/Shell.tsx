@@ -1,9 +1,17 @@
 import { useEffect } from "react"
 import { ConnectionDialog } from "../../features/connections"
 import { DynamoWorkspace } from "../../features/dynamo"
-import { handleAppShortcut, QueryWorkspace, subscribeConnectionCleanup } from "../../features/query"
+import { TableWorkspace } from "../../features/schema"
+import {
+  handleAppShortcut,
+  QueryWorkspace,
+  RunConfirmDialog,
+  subscribeConnectionCleanup,
+} from "../../features/query"
+import { SettingsDialog } from "../../features/settings"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { subscribeSessionEvents } from "../../state/sessionsStore"
+import { applyEditorFontSize, useSettingsStore } from "../../state/settingsStore"
 import { useTabsStore } from "../../state/tabsStore"
 import { applyPlatformAttribute, applyTheme, useUiStore } from "../../state/uiStore"
 import { isModalOpen, Toaster } from "../ui"
@@ -13,12 +21,19 @@ import { TabBar } from "./TabBar"
 import "./shell.css"
 
 export function Shell() {
-  const theme = useUiStore((s) => s.theme)
+  const theme = useSettingsStore((s) => s.settings.theme)
+  const editorFontSize = useSettingsStore((s) => s.settings.editorFontSize)
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
   const activeKind = useTabsStore((s) => s.tabs.find((t) => t.id === s.activeId)?.kind ?? null)
   const openDialog = useConnectionsStore((s) => s.openDialog)
 
+  useEffect(() => {
+    void useSettingsStore.getState().load()
+  }, [])
+
   useEffect(() => applyTheme(theme), [theme])
+
+  useEffect(() => applyEditorFontSize(editorFontSize), [editorFontSize])
 
   useEffect(() => applyPlatformAttribute(), [])
 
@@ -48,6 +63,8 @@ export function Shell() {
         <div className="workspace__main">
           {activeKind === "dynamo" ? (
             <DynamoWorkspace />
+          ) : activeKind === "table" ? (
+            <TableWorkspace />
           ) : activeKind === "query" ? (
             <QueryWorkspace />
           ) : (
@@ -57,6 +74,8 @@ export function Shell() {
       </div>
       {/* Outside the sidebar, which turns inert when collapsed. */}
       <ConnectionDialog />
+      <SettingsDialog />
+      <RunConfirmDialog />
       <Toaster />
     </div>
   )

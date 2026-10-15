@@ -1,7 +1,14 @@
 import { Search } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Button } from "../../components/ui"
 import { useConnectionsStore } from "../../state/connectionsStore"
+import {
+  handleTreeFocus,
+  handleTreeKeyDown,
+  isDescendant,
+  subscribeTreeCleanup,
+  useSchemaTree,
+} from "../schema"
 import { ConnectionRow } from "./ConnectionRow"
 import { filterConnections, SEARCH_THRESHOLD } from "./filter"
 
@@ -10,6 +17,9 @@ export function ConnectionList() {
   const status = useConnectionsStore((s) => s.status)
   const loadError = useConnectionsStore((s) => s.loadError)
   const [query, setQuery] = useState("")
+  const focused = useSchemaTree((s) => s.focused)
+
+  useEffect(() => subscribeTreeCleanup(), [])
 
   if (status === "error" && loadError && connections.length === 0) {
     return (
@@ -35,6 +45,9 @@ export function ConnectionList() {
 
   const searchable = connections.length >= SEARCH_THRESHOLD
   const visible = searchable ? filterConnections(connections, query) : connections
+  // The first row takes the tab stop while the focused node is gone (deleted or filtered out).
+  const stopShown =
+    focused !== null && visible.some((c) => c.id === focused || isDescendant(focused, c.id))
 
   return (
     <>
@@ -55,9 +68,15 @@ export function ConnectionList() {
       {visible.length === 0 ? (
         <p className="conn-list__none">No connections match “{query.trim()}”.</p>
       ) : (
-        <ul className="conn-list">
-          {visible.map((config) => (
-            <ConnectionRow key={config.id} config={config} />
+        <ul
+          className="conn-list"
+          role="tree"
+          aria-label="Connections"
+          onKeyDown={handleTreeKeyDown}
+          onFocus={handleTreeFocus}
+        >
+          {visible.map((config, index) => (
+            <ConnectionRow key={config.id} config={config} tabStop={index === 0 && !stopShown} />
           ))}
         </ul>
       )}

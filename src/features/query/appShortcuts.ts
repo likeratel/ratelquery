@@ -11,6 +11,7 @@ export const APP_SHORTCUTS = {
   runStatement: parseShortcut("Mod+Shift+Enter"),
   apply: parseShortcut("Mod+S"),
   toggleSidebar: parseShortcut("Mod+B"),
+  settings: parseShortcut("Mod+,"),
 } as const
 
 export interface ShortcutContext {
@@ -44,6 +45,7 @@ export function matchAppShortcut(event: KeyLike): AppShortcut | null {
     "closeTab",
     "apply",
     "toggleSidebar",
+    "settings",
   ]
   return order.find((name) => matchesShortcut(event, APP_SHORTCUTS[name])) ?? null
 }
@@ -71,6 +73,9 @@ function runAppShortcut(action: AppShortcut, context: ShortcutContext): void {
       return
     case "toggleSidebar":
       useUiStore.getState().toggleSidebar()
+      return
+    case "settings":
+      useUiStore.getState().openSettings()
       return
   }
 }

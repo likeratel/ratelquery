@@ -33,6 +33,7 @@ import {
   type PageMove,
 } from "../../lib/dynamoTabs"
 import { isAppError, normalizeError } from "../../lib/ipc"
+import { currentSettings } from "../../state/settingsStore"
 import { selectActiveDynamoTab, useTabsStore } from "../../state/tabsStore"
 import { toast } from "../query/toastStore"
 import { descriptionFor, useDynamoCatalog } from "./catalogStore"
@@ -51,6 +52,8 @@ const messageOf = (raw: unknown, fallback: string) => (isAppError(raw) ? raw.mes
 /** Opens a DynamoDB tab for the connection and starts listing its tables. */
 export function openDynamoTabFor(connectionId: ConnectionId): string {
   const id = tabs().openDynamo(connectionId)
+  // New tabs start with the configured page size; switching tables keeps whatever the tab has.
+  patch(id, (t) => setForm(t, { limit: String(currentSettings().dynamo.pageSize) }))
   void useDynamoCatalog.getState().loadTables(connectionId)
   return id
 }
@@ -121,6 +124,7 @@ export async function runDynamo(tabId: string, move: PageMove = "first"): Promis
       mode: tab.mode,
       form: tab.form,
       description: descriptionFor(tab.connectionId, tab.table),
+      defaultLimit: currentSettings().dynamo.pageSize,
     })
     if (!built.ok) {
       patch(tabId, (t) => failDynamoRun(t, { kind: "invalid_input", message: built.error }))

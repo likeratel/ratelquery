@@ -1,0 +1,57 @@
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-section__title {
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.settings-section__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-number .ui-input {
+  max-width: 140px;
+}
+
+.settings-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.settings-toggle input {
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.settings-toggle__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-toggle__hint {
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+}
+
+.settings-footer__spacer {
+  flex: 1;
+}

@@ -193,6 +193,7 @@ mod tests {
             is_primary: name == "id",
             is_auto_increment: false,
             default_value: None,
+            comment: String::new(),
         };
         SchemaTable {
             name: "cus`t".into(),

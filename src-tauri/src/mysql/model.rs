@@ -105,6 +105,8 @@ pub struct SchemaColumn {
     pub is_primary: bool,
     pub is_auto_increment: bool,
     pub default_value: Option<String>,
+    /// `COLUMN_COMMENT`; empty when the column has none.
+    pub comment: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -200,4 +202,43 @@ mod tests {
             json!({ "connectionId": "a", "state": "reconnecting" })
         );
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexInfo {
+    pub name: String,
+    pub unique: bool,
+    /// In `SEQ_IN_INDEX` order.
+    pub columns: Vec<String>,
+    #[serde(rename = "type")]
+    pub index_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForeignKeyInfo {
+    pub name: String,
+    pub columns: Vec<String>,
+    pub referenced_table: String,
+    pub referenced_columns: Vec<String>,
+    pub on_update: String,
+    pub on_delete: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableDetails {
+    pub database: String,
+    pub table: String,
+    pub kind: TableKind,
+    pub engine: Option<String>,
+    pub row_estimate: Option<u64>,
+    pub data_length: Option<u64>,
+    pub collation: Option<String>,
+    pub comment: String,
+    pub columns: Vec<SchemaColumn>,
+    pub indexes: Vec<IndexInfo>,
+    pub foreign_keys: Vec<ForeignKeyInfo>,
+    pub ddl: String,
 }

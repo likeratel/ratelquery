@@ -151,9 +151,10 @@ export function parseValues(text: string): Result<Record<string, AttributeValue>
   return ok(Object.fromEntries(entries))
 }
 
-export function parseLimit(text: string): Result<number> {
+/** Parses the page size; an empty field means `fallback` (the configured default page size). */
+export function parseLimit(text: string, fallback: number = DEFAULT_LIMIT): Result<number> {
   const trimmed = text.trim()
-  if (trimmed === "") return ok(DEFAULT_LIMIT)
+  if (trimmed === "") return ok(fallback)
   // Digits only: Number() would also accept "1e2", "0x10" or "1.0".
   const value = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN
   if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
@@ -170,12 +171,12 @@ interface CommonParts {
   limit: number
 }
 
-function commonParts(form: DynamoForm): Result<CommonParts> {
+function commonParts(form: DynamoForm, defaultLimit?: number): Result<CommonParts> {
   const names = parseNames(form.names)
   if (!names.ok) return names
   const values = parseValues(form.values)
   if (!values.ok) return values
-  const limit = parseLimit(form.limit)
+  const limit = parseLimit(form.limit, defaultLimit)
   if (!limit.ok) return limit
   const filter = form.filter.trim()
   return ok({
@@ -209,12 +210,14 @@ export interface BuildRequestInput {
   form: DynamoForm
   /** Needed for query key types; scans work without it. */
   description: TableDescription | null
+  /** Page size used when the limit field is empty; `DEFAULT_LIMIT` when omitted. */
+  defaultLimit?: number
 }
 
 /** Validates the form and builds the first-page request (no start key). */
 export function buildDynamoRequest(input: BuildRequestInput): Result<DynamoExportRequest> {
-  const { table, mode, form, description } = input
-  const common = commonParts(form)
+  const { table, mode, form, description, defaultLimit } = input
+  const common = commonParts(form, defaultLimit)
   if (!common.ok) return common
   if (mode === "scan") return ok({ scan: { table, ...common.value } })
   if (!description) return fail("Table details are still loading; try again in a moment")

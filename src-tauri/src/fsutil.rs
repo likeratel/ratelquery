@@ -1,6 +1,7 @@
 //! File helpers shared by the config store and exports.
 
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::Path;
 
 /// Files the app writes (configs, exports) are readable only by the owner on unix.
@@ -17,6 +18,29 @@ pub fn create_private(path: &Path) -> std::io::Result<File> {
         options.mode(PRIVATE_MODE);
     }
     options.open(path)
+}
+
+/// Replaces `path` with `bytes` through a synced owner-only temp file in the same directory
+/// and a rename, so readers see either the old or the new contents. Creates the directory.
+pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent directory")
+    })?;
+    fs::create_dir_all(dir)?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
+    let written = write_synced(&tmp, bytes).and_then(|()| fs::rename(&tmp, path));
+    if written.is_err() {
+        // Best effort cleanup; the original file is untouched either way.
+        let _ = fs::remove_file(&tmp);
+    }
+    written
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = create_private(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 #[cfg(test)]

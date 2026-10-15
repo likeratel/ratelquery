@@ -16,6 +16,7 @@ mod registry;
 mod schema;
 mod session;
 mod splitter;
+mod table_details;
 mod type_meta;
 
 pub use bind::{BindValue, to_bind_value};
@@ -26,9 +27,9 @@ pub use errors::{UNKNOWN_OUTCOME, describe_sqlx_error, is_connection_error};
 pub use events::{RecordingSink, STATE_EVENT, StateSink};
 pub use export::run_export;
 pub use model::{
-    ApplyChangesResult, ColumnInfo, ExecResult, MysqlSessionInfo, MysqlStateEvent, QueryOptions,
-    QueryResult, RowChange, RowsResult, SchemaColumn, SchemaSnapshot, SchemaTable, SessionState,
-    TableKind,
+    ApplyChangesResult, ColumnInfo, ExecResult, ForeignKeyInfo, IndexInfo, MysqlSessionInfo,
+    MysqlStateEvent, QueryOptions, QueryResult, RowChange, RowsResult, SchemaColumn,
+    SchemaSnapshot, SchemaTable, SessionState, TableDetails, TableKind,
 };
 pub use options::{connect_options, fetch_server_version, quote_ident};
 pub use query::run_query;
@@ -38,6 +39,7 @@ pub use splitter::split_statements;
 
 use schema::{fetch_schema, list_databases};
 use session::boxed;
+use table_details::fetch_table_details;
 
 use crate::error::AppResult;
 
@@ -57,4 +59,20 @@ pub async fn schema(session: &MysqlSession, database: &str) -> AppResult<SchemaS
         })
         .await?;
     Ok(snapshot)
+}
+
+/// `mysql_table_details` for an open session.
+pub async fn table_details(
+    session: &MysqlSession,
+    database: &str,
+    table: &str,
+) -> AppResult<TableDetails> {
+    let (details, _) = session
+        .run(|mut conn| {
+            let database = database.to_string();
+            let table = table.to_string();
+            boxed(async move { fetch_table_details(&mut conn, &database, &table).await })
+        })
+        .await?;
+    Ok(details)
 }
