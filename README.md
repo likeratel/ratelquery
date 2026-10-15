@@ -74,7 +74,7 @@ pnpm verify         # Prettier, TypeScript, Vitest, clippy and cargo test
 
 Live database tests run only when `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample` and `DBCLIENT_TEST_DYNAMODB_ENDPOINT=http://localhost:8000` are set. An optional `DBCLIENT_TEST_MYSQL_CA=<server ca.pem>` enables the TLS verification test.
 
-On macOS, a development build is ad-hoc signed, so the keychain asks before the app may read a saved password after each rebuild. Signed release builds ask once.
+On macOS, `tauri dev` re-signs the debug binary with your first code-signing identity (see `scripts/cargo.sh`) so the keychain's "Always allow" on saved passwords survives rebuilds. Without an identity the build stays ad-hoc signed and the keychain asks again after every rebuild. Set `DBCLIENT_DEV_SIGN=0` to skip signing.
 
 See [docs/architecture.md](docs/architecture.md) for the module layout and security model, and [docs/ipc-contract.md](docs/ipc-contract.md) for the commands between the webview and Rust.
 
