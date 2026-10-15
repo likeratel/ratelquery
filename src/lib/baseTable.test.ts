@@ -41,6 +41,12 @@ describe("inferBaseTable", () => {
       "SHOW TABLES",
       "UPDATE a SET x = 1",
       "SELECT 1",
+      // Comment markers inside strings must not hide a UNION.
+      "SELECT * FROM a WHERE tag = '#x' UNION SELECT * FROM b",
+      "SELECT * FROM a WHERE tag = 'a -- b' UNION ALL SELECT * FROM b",
+      "SELECT * FROM a WHERE note = '/*' UNION SELECT * FROM b WHERE note = '*/'",
+      // Quotes inside comments must not swallow the rest of the statement.
+      "SELECT * FROM a /* it's */ JOIN b ON a.id = b.a_id",
     ]
     for (const sql of readOnly) expect(inferBaseTable(sql), sql).toBeNull()
   })

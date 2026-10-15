@@ -5,6 +5,8 @@
  * unions, grouping or subqueries. Anything else is treated as read only.
  */
 
+import { blankStringsAndComments } from "./sqlContext"
+
 export interface BaseTable {
   database: string | null
   table: string
@@ -15,20 +17,8 @@ const FROM_PATTERN = new RegExp(`\\bfrom\\s+(?:${IDENT}\\s*\\.\\s*)?${IDENT}`, "
 const READ_ONLY_KEYWORDS =
   /\b(join|union|group\s+by|having|distinct|limit\s+\d+\s*,|procedure|into\s+outfile|straight_join)\b|,\s*(?:`[^`]+`|[A-Za-z_][A-Za-z0-9_$]*)\s+(?=(?:as\s+)?[A-Za-z_`]+\s*(?:where|order|limit|$))/i
 
-function stripComments(sql: string): string {
-  return sql
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/--[^\n]*/g, " ")
-    .replace(/#[^\n]*/g, " ")
-}
-
-/** Removes the contents of string literals so keywords inside them don't count. */
-function blankStrings(sql: string): string {
-  return sql.replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, "''")
-}
-
 export function inferBaseTable(statement: string): BaseTable | null {
-  const sql = blankStrings(stripComments(statement)).trim()
+  const sql = blankStringsAndComments(statement).trim()
   if (!/^select\b/i.test(sql)) return null
   if (/\bselect\b[\s\S]*\bselect\b/i.test(sql)) return null // subquery or union
   const fromMatch = FROM_PATTERN.exec(sql)

@@ -24,8 +24,42 @@ function isWhitespace(ch: string | undefined): boolean {
   return ch === undefined || /\s/.test(ch)
 }
 
+/**
+ * Replaces comments with spaces and the inside of string literals with nothing, in one pass so
+ * a quote inside a comment or a comment marker inside a string can't confuse the other.
+ * Backtick identifiers are kept as they are.
+ */
+export function blankStringsAndComments(sql: string): string {
+  let out = ""
+  let i = 0
+  while (i < sql.length) {
+    const ch = sql[i] as string
+    const commentEnd = skipComment(sql, i)
+    if (commentEnd !== -1) {
+      out += " "
+      i = commentEnd
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      const end = skipQuoted(sql, i)
+      out += ch + ch
+      i = end
+      continue
+    }
+    if (ch === "`") {
+      const end = skipQuoted(sql, i)
+      out += sql.slice(i, end)
+      i = end
+      continue
+    }
+    out += ch
+    i += 1
+  }
+  return out
+}
+
 /** Index just past the end of a quoted run starting at `start`. */
-function skipQuoted(sql: string, start: number): number {
+export function skipQuoted(sql: string, start: number): number {
   const quote = sql[start]
   let i = start + 1
   while (i < sql.length) {
@@ -41,7 +75,7 @@ function skipQuoted(sql: string, start: number): number {
 }
 
 /** Returns the index just past a comment starting at `i`, or -1 if none starts there. */
-function skipComment(sql: string, i: number): number {
+export function skipComment(sql: string, i: number): number {
   const ch = sql[i]
   const next = sql[i + 1]
   const lineComment = ch === "#" || (ch === "-" && next === "-" && isWhitespace(sql[i + 2]))
