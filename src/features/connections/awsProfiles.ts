@@ -1,6 +1,9 @@
 import type { AwsProfile } from "../../lib/connections"
 import { DEFAULT_REGION, type DynamoDraft } from "./form"
 
+/** The draft fields a profile choice reads and fills; DynamoDB and Athena drafts both have them. */
+export type ProfileDraft = Pick<DynamoDraft, "name" | "region" | "profile">
+
 /** Result of loading the AWS profiles when the connection dialog opens. */
 export type AwsProfilesState =
   | { status: "loading" }
@@ -61,11 +64,11 @@ function replaceable(current: string, previousFill: string | undefined, fallback
 
 /** Draft changes for choosing `name` in the profile list. */
 export function profileChoicePatch(
-  draft: DynamoDraft,
+  draft: ProfileDraft,
   name: string,
   state: AwsProfilesState,
   context: ProfileChoiceContext,
-): Partial<DynamoDraft> {
+): Partial<ProfileDraft> {
   const chosen = findProfile(state, name)
   const previous = findProfile(state, draft.profile)
   const defaultRegion = context.creating ? DEFAULT_REGION : undefined
@@ -85,10 +88,10 @@ export function profileChoicePatch(
  * typed name the list can't show, so the field never displays one profile while holding another.
  */
 export function manualTogglePatch(
-  draft: DynamoDraft,
+  draft: ProfileDraft,
   toManual: boolean,
   state: AwsProfilesState,
-): Partial<DynamoDraft> {
+): Partial<ProfileDraft> {
   if (toManual || draft.profile === "" || findProfile(state, draft.profile)) return {}
   return { profile: "" }
 }

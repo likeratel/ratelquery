@@ -1,17 +1,18 @@
 import type { EditorView } from "@codemirror/view"
-import { Play } from "lucide-react"
+import { Play, Square } from "lucide-react"
 import { useCallback } from "react"
 import { SqlEditor } from "../../components/editor/lazyEditors"
 import type { SchemaSnapshot } from "../../lib/mysql"
 import type { QueryTab } from "../../lib/queryTabs"
 import { formatShortcut } from "../../lib/shortcuts"
+import { useAthenaStore } from "../../state/athenaStore"
 import { useSessionsStore } from "../../state/sessionsStore"
 import { useTabsStore } from "../../state/tabsStore"
-import { runActiveTab } from "./actions"
+import { cancelActiveRun, runActiveTab } from "./actions"
 import { APP_SHORTCUTS, handleAppShortcut } from "./appShortcuts"
 import { useCompletionSources } from "./completion"
 import { DatabaseSwitcher } from "./DatabaseSwitcher"
-import { tabDatabase } from "./editing"
+import { athenaTabDatabase, tabDatabase } from "./editing"
 import { registerEditor } from "./editorRegistry"
 
 interface EditorPaneProps {
@@ -27,8 +28,11 @@ export function EditorPane({ tab }: EditorPaneProps) {
   const setSql = useTabsStore((s) => s.setSql)
   const tabId = tab.id
   const connectionId = tab.connectionId
-  const database = useSessionsStore((s) => tabDatabase(tab, s.sessions[connectionId]))
-  const completionSources = useCompletionSources(connectionId, database)
+  const athena = tab.engine === "athena"
+  const mysqlDatabase = useSessionsStore((s) => tabDatabase(tab, s.sessions[connectionId]))
+  const athenaDatabase = useAthenaStore((s) => athenaTabDatabase(tab, s.catalogs[connectionId]))
+  const database = athena ? athenaDatabase : mysqlDatabase
+  const completionSources = useCompletionSources(connectionId, database, tab.engine)
 
   const onChange = useCallback((sql: string) => setSql(tabId, sql), [setSql, tabId])
   const onViewChange = useCallback(
@@ -75,6 +79,17 @@ export function EditorPane({ tab }: EditorPaneProps) {
           Run statement
           <kbd className="q-kbd">{formatShortcut(APP_SHORTCUTS.runStatement)}</kbd>
         </button>
+        {athena && tab.running && (
+          <button
+            type="button"
+            className="q-button"
+            onClick={() => void cancelActiveRun()}
+            title="Stop the running Athena query; later statements don't start"
+          >
+            <Square size={11} strokeWidth={2.4} />
+            Cancel
+          </button>
+        )}
         <span className="editor-pane__spacer" />
         {tab.running && <span className="editor-pane__status">Running…</span>}
         <DatabaseSwitcher tab={tab} />

@@ -1,6 +1,6 @@
 import type { AppError, AppErrorKind } from "../../lib/ipc"
 
-export type ConnectionAction = "load" | "save" | "delete" | "test"
+export type ConnectionAction = "load" | "save" | "delete" | "test" | "create-bucket"
 
 export interface FriendlyError {
   /** Short sentence safe to show in the UI. */
@@ -26,6 +26,7 @@ const ACTION_PREFIX: Record<ConnectionAction, string> = {
   save: "Couldn't save the connection.",
   delete: "Couldn't delete the connection.",
   test: "Connection test failed.",
+  "create-bucket": "Couldn't create the bucket.",
 }
 
 /** Appended to the detail when the user denied the keychain prompt. */

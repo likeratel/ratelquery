@@ -1,4 +1,6 @@
 import { create } from "zustand"
+import { athenaApi } from "../lib/athena"
+import { athenaStatements } from "../lib/athenaRun"
 import type { ConnectionId } from "../lib/connections"
 import { buildRowChanges, EMPTY_EDITS, type EditTarget, type GridEdits } from "../lib/gridEdits"
 import type { DynamoTab } from "../lib/dynamoTabs"
@@ -17,17 +19,21 @@ import {
   openTableTab,
   replaceResult,
   requestCloseTab,
+  setExecutionId,
   setTabEdits,
   startRun,
   tabPendingCount,
   updateDynamoTab,
   updateTab,
   updateTableTab,
+  type QueryEngine,
   type QueryTab,
   type TableTab,
   type TabsState,
   type WorkspaceTab,
 } from "../lib/queryTabs"
+import { useAthenaStore } from "./athenaStore"
+import { runAthenaStatements } from "./athenaRun"
 import { useSessionsStore } from "./sessionsStore"
 import { currentSettings } from "./settingsStore"
 
@@ -37,7 +43,8 @@ export const maxRows = (): number => currentSettings().query.maxRows
 export type RunOutcome = "ran" | "failed" | "empty" | "busy" | "pending-edits"
 
 interface TabsStore extends TabsState {
-  open: (connectionId: ConnectionId, database: string | null) => string
+  /** Opens a query tab; `engine` defaults to MySQL. */
+  open: (connectionId: ConnectionId, database: string | null, engine?: QueryEngine) => string
   /** Opens a DynamoDB tab; its requests run from the dynamo feature through `updateDynamo`. */
   openDynamo: (connectionId: ConnectionId) => string
   updateDynamo: (id: string, update: (tab: DynamoTab) => DynamoTab) => void
@@ -63,6 +70,11 @@ interface TabsStore extends TabsState {
   setDatabase: (id: string, database: string | null) => boolean
   /** Runs `sql` (the whole editor text when omitted) in the tab. */
   run: (id: string, sql?: string) => Promise<RunOutcome>
+  /**
+   * Stops a running Athena tab: the execution running now is cancelled and later statements
+   * never start. Rejects with the AppError when Athena refused to stop it.
+   */
+  cancel: (id: string) => Promise<void>
   updateEdits: (id: string, index: number, update: (edits: GridEdits) => GridEdits) => void
   discardEdits: (id: string, index: number) => void
   /**
@@ -74,6 +86,10 @@ interface TabsStore extends TabsState {
 }
 
 const newId = () => crypto.randomUUID()
+
+/** Runs whose cancel was requested, as `${tabId}:${runId}`. */
+const cancelledRuns = new Set<string>()
+const runKey = (id: string, runId: number) => `${id}:${runId}`
 
 export const useTabsStore = create<TabsStore>((set, get) => {
   const findTab = (id: string): QueryTab | undefined =>
@@ -116,12 +132,42 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     return applied
   }
 
+  /**
+   * Runs the statements of `text` one by one as Athena query executions. Athena results are
+   * read only and never re-run on their own, because every execution is billed.
+   */
+  const runAthena = async (tab: QueryTab, text: string): Promise<RunOutcome> => {
+    const statements = athenaStatements(text)
+    if (statements.length === 0) return "empty"
+    const { id, connectionId, runId } = tab
+    patchTab(id, startRun)
+    const isCurrent = (t: QueryTab) => t.runId === runId
+    const catalog = useAthenaStore.getState().catalogs[connectionId]
+    const ranDatabase = tab.database ?? catalog?.currentDatabase ?? null
+    const options = { maxRows: maxRows(), ...(ranDatabase ? { database: ranDatabase } : {}) }
+    const key = runKey(id, runId)
+    try {
+      const results = await runAthenaStatements(connectionId, statements, options, {
+        onExecution: (executionId) => patchTab(id, (t) => setExecutionId(t, runId, executionId)),
+        cancelled: () => cancelledRuns.has(key) || !findTab(id),
+      })
+      patchTab(id, (t) => (isCurrent(t) ? finishRun(t, text, results, ranDatabase) : t))
+      return "ran"
+    } catch (raw) {
+      const error = normalizeError(raw)
+      patchTab(id, (t) => (isCurrent(t) ? failRun(t, text, error) : t))
+      return "failed"
+    } finally {
+      cancelledRuns.delete(key)
+    }
+  }
+
   return {
     ...INITIAL_TABS,
 
-    open: (connectionId, database) => {
+    open: (connectionId, database, engine = "mysql") => {
       const id = newId()
-      set((state) => openTab(state, { id, connectionId, database }))
+      set((state) => openTab(state, { id, connectionId, database, engine }))
       return id
     },
 
@@ -161,7 +207,11 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       if (tab.database === database) return true
       if (tab.applying || tabPendingCount(tab) > 0) return false
       patchTab(id, (t) => ({ ...t, database }))
-      void useSessionsStore.getState().setCurrentDatabase(tab.connectionId, database)
+      if (tab.engine === "athena") {
+        void useAthenaStore.getState().setCurrentDatabase(tab.connectionId, database)
+      } else {
+        void useSessionsStore.getState().setCurrentDatabase(tab.connectionId, database)
+      }
       return true
     },
 
@@ -172,6 +222,7 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       if (tabPendingCount(tab) > 0) return "pending-edits"
       const text = sql ?? tab.sql
       if (text.trim() === "") return "empty"
+      if (tab.engine === "athena") return runAthena(tab, text)
       patchTab(id, startRun)
       const runId = tab.runId
       const isCurrent = (t: QueryTab) => t.runId === runId
@@ -192,6 +243,14 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       }
     },
 
+    cancel: async (id) => {
+      const tab = findTab(id)
+      if (!tab || !tab.running || tab.engine !== "athena") return
+      cancelledRuns.add(runKey(id, tab.runId))
+      // Without an id yet, the run stops the execution as soon as it starts.
+      if (tab.executionId) await athenaApi.cancel(tab.connectionId, tab.executionId)
+    },
+
     updateEdits: (id, index, update) =>
       patchTab(id, (tab) => setTabEdits(tab, index, update(tab.edits[index] ?? EMPTY_EDITS))),
 
@@ -201,7 +260,10 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       const tab = findTab(id)
       const result = tab?.results[index]
       const edits = tab?.edits[index]
-      if (!tab || tab.applying || !result || result.kind !== "rows" || !edits) return null
+      if (!tab || tab.engine !== "mysql" || tab.applying || !result || result.kind !== "rows") {
+        return null
+      }
+      if (!edits) return null
       const changes = buildRowChanges(edits, target, result.columns, result.rows)
       if (changes.length === 0) return null
       patchTab(id, (t) => ({ ...t, applying: true }))

@@ -1,5 +1,12 @@
 import { create } from "zustand"
-import { connectionsApi, type ConnectionConfig, type ConnectionId } from "../lib/connections"
+import { athenaApi } from "../lib/athena"
+import {
+  connectionsApi,
+  type AthenaConnectionConfig,
+  type AthenaTestInfo,
+  type ConnectionConfig,
+  type ConnectionId,
+} from "../lib/connections"
 import { emitAppEvent } from "../lib/events"
 import { normalizeError } from "../lib/ipc"
 import {
@@ -15,7 +22,7 @@ export type LoadStatus = "idle" | "loading" | "ready" | "error"
 export type TestState =
   | { status: "idle" }
   | { status: "testing" }
-  | { status: "ok"; latencyMs: number; serverVersion?: string }
+  | { status: "ok"; latencyMs: number; serverVersion?: string; athena?: AthenaTestInfo }
   | { status: "fail"; error: FriendlyError }
 
 export interface DialogState {
@@ -58,6 +65,16 @@ interface ConnectionsState {
     sshSecret?: string | null,
   ) => Promise<void>
   resetTest: () => void
+  /**
+   * Creates the missing default Athena result bucket the last test reported, then tests again.
+   * Writes to the user's AWS account, so only an explicit click calls it. Resolves with the
+   * error to show, or null once the bucket exists.
+   */
+  createOutputBucket: (
+    config: AthenaConnectionConfig,
+    secret: string | null,
+    bucket: string,
+  ) => Promise<FriendlyError | null>
   byId: (id: ConnectionId) => ConnectionConfig | undefined
 }
 
@@ -152,7 +169,9 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
     set({ saving: true, saveError: null })
     try {
       const saved = await connectionsApi.save(config, secret, sshSecret)
+      const existed = get().connections.some((c) => c.id === saved.id)
       set((state) => ({ connections: upsertConnection(state.connections, saved) }))
+      if (existed) emitAppEvent("connection-updated", saved.id)
       if (get().dialog.session === session) get().closeDialog()
       return { ok: true, value: saved }
     } catch (raw) {
@@ -195,7 +214,12 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
       )
       if (token !== testToken) return
       set({
-        test: { status: "ok", latencyMs: result.latencyMs, serverVersion: result.serverVersion },
+        test: {
+          status: "ok",
+          latencyMs: result.latencyMs,
+          serverVersion: result.serverVersion,
+          ...(result.athena && { athena: result.athena }),
+        },
       })
     } catch (raw) {
       if (token !== testToken) return
@@ -206,6 +230,19 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
   resetTest: () => {
     testToken++
     set({ test: IDLE_TEST })
+  },
+
+  createOutputBucket: async (config, secret, bucket) => {
+    const session = get().dialog.session
+    try {
+      await athenaApi.createOutputBucket(config, secret, bucket)
+    } catch (raw) {
+      return friendly(raw, "create-bucket")
+    }
+    if (get().dialog.open && get().dialog.session === session) {
+      await get().testConnection(config, secret)
+    }
+    return null
   },
 
   byId: (id) => get().connections.find((c) => c.id === id),

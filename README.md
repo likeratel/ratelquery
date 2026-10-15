@@ -1,6 +1,6 @@
 # dbclient (working title)
 
-A minimal, modern desktop client for MySQL and DynamoDB. Tauri 2, React 19 and Rust.
+A minimal, modern desktop client for MySQL, DynamoDB and Amazon Athena. Tauri 2, React 19 and Rust.
 
 ![MySQL result grid with typed cells](docs/screenshots/mysql-grid.png)
 
@@ -31,7 +31,13 @@ Most desktop database tools get four everyday things wrong. This one is built ar
 - Table and JSON views, item detail, a wire/plain JSON editor and a diff before every save
 - Export a scan or query as JSON, JSON Lines or CSV
 
-**Both**
+**Athena**
+
+- The same SQL editor and typed grid, with completion from the Glue Data Catalog
+- Only an AWS profile (or access keys) and a region are needed: the workgroup list is loaded for you, and the result location falls back to the workgroup's setting or the console's default bucket (created only when you say so)
+- Run, cancel, and see the bytes scanned and engine time for every statement; nothing is ever re-run on its own
+
+**All**
 
 - Secrets live in the OS keyring, never in the settings file
 - Export paths are limited to files you chose in the save dialog
@@ -79,7 +85,7 @@ Live database tests run only when `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0
 
 On macOS, `tauri dev` re-signs the debug binary (see `scripts/cargo.sh`) so the keychain's "Always allow" on saved passwords survives rebuilds. It uses `DBCLIENT_DEV_SIGN_IDENTITY` when set, otherwise the only code-signing identity in your keychain; with none or several it leaves the ad-hoc signature and says so. Set `DBCLIENT_DEV_SIGN=0` to skip signing.
 
-A DynamoDB connection that uses an AWS profile runs whatever that profile configures, including a `credential_process` command from your AWS config, exactly as the AWS CLI would.
+A DynamoDB or Athena connection that uses an AWS profile runs whatever that profile configures, including a `credential_process` command from your AWS config, exactly as the AWS CLI would. There is no local Athena emulator, so Athena is covered by unit tests on the result decoding and the location rules, and checked by hand against a real account.
 
 To avoid keychain prompts altogether, choose the file secret store in Settings: secrets are then kept in `<app config dir>/secrets.json` (mode 0600), protected by file permissions only. Secrets are moved when possible; ones the old store refuses to hand over stay there.
 

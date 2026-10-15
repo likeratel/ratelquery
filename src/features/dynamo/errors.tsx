@@ -1,12 +1,12 @@
 import type { ConnectionId, DynamoAuth } from "../../lib/connections"
+import { AWS_CREDENTIAL_HINT, AWS_KEYS_CREDENTIAL_HINT } from "../../lib/errorHints"
 import type { AppError, AppErrorKind } from "../../lib/ipc"
 import { useConnectionsStore } from "../../state/connectionsStore"
 
 const HINTS: Record<AppErrorKind, string> = {
   query: "DynamoDB rejected the request. Check the expression, placeholders and key values.",
   connection: "DynamoDB couldn't be reached. Check the region, endpoint and network, then retry.",
-  credential:
-    "AWS credentials are missing, expired or rejected. For SSO profiles run aws sso login, or edit the connection.",
+  credential: AWS_CREDENTIAL_HINT,
   invalid_input: "Fix the highlighted input and run again.",
   not_found: "The table or connection no longer exists.",
   io: "A local file or system operation failed.",
@@ -15,13 +15,9 @@ const HINTS: Record<AppErrorKind, string> = {
   unknown: "Something unexpected happened.",
 }
 
-/** A key connection without a stored secret access key fails with `credential`. */
-const KEYS_CREDENTIAL_HINT =
-  "AWS credentials are missing or rejected. Edit the connection to enter the secret key."
-
 /** Guidance under a DynamoDB error, chosen by `kind` and the connection's auth type only. */
 export function dynamoErrorHint(kind: AppErrorKind, authType?: DynamoAuth["type"]): string {
-  if (kind === "credential" && authType === "keys") return KEYS_CREDENTIAL_HINT
+  if (kind === "credential" && authType === "keys") return AWS_KEYS_CREDENTIAL_HINT
   return HINTS[kind]
 }
 

@@ -5,10 +5,15 @@ import { pendingCount } from "./gridEdits"
 import type { AppError } from "./ipc"
 import type { QueryResult, TableDetails } from "./mysql"
 
+/** What runs a query tab's SQL: a MySQL session, or Athena query executions. */
+export type QueryEngine = "mysql" | "athena"
+
 export interface QueryTab {
   kind: "query"
   id: string
   connectionId: ConnectionId
+  /** Fixed when the tab opens; a connection's kind never changes. */
+  engine: QueryEngine
   title: string
   sql: string
   /** Database the tab's queries run against; null uses the session default. */
@@ -33,6 +38,8 @@ export interface QueryTab {
   /** Editor text when the last run started; compared to `sql` for the dirty marker. */
   sqlAtRun: string | null
   lastElapsedMs: number | null
+  /** Athena execution running right now, so it can be cancelled; always null for MySQL. */
+  executionId: string | null
 }
 
 /** Structure of one MySQL table or view: columns, indexes, foreign keys and DDL. */
@@ -71,11 +78,13 @@ export function createTab(
   connectionId: ConnectionId,
   title: string,
   database: string | null,
+  engine: QueryEngine = "mysql",
 ): QueryTab {
   return {
     kind: "query",
     id,
     connectionId,
+    engine,
     title,
     sql: "",
     database,
@@ -90,16 +99,28 @@ export function createTab(
     lastRunSql: null,
     sqlAtRun: null,
     lastElapsedMs: null,
+    executionId: null,
   }
 }
 
 /** Appends a tab titled "Query N" and activates it. */
 export function openTab(
   state: TabsState,
-  params: { id: string; connectionId: ConnectionId; database: string | null },
+  params: {
+    id: string
+    connectionId: ConnectionId
+    database: string | null
+    engine?: QueryEngine
+  },
 ): TabsState {
   const seq = state.seq + 1
-  const tab = createTab(params.id, params.connectionId, `Query ${seq}`, params.database)
+  const tab = createTab(
+    params.id,
+    params.connectionId,
+    `Query ${seq}`,
+    params.database,
+    params.engine,
+  )
   return { ...state, tabs: [...state.tabs, tab], activeId: tab.id, seq }
 }
 
@@ -262,6 +283,15 @@ export function startRun(tab: QueryTab): QueryTab {
   return { ...tab, running: true, error: null, sqlAtRun: tab.sql }
 }
 
+/**
+ * Records the Athena execution running for the run started at `runId`; ignored once that run
+ * finished (a late answer must not attach an execution to a newer run).
+ */
+export function setExecutionId(tab: QueryTab, runId: number, executionId: string | null): QueryTab {
+  if (!tab.running || tab.runId !== runId || tab.executionId === executionId) return tab
+  return { ...tab, executionId }
+}
+
 /** Index of the last rows result, so a script ending in SELECT lands on its rows. */
 export function preferredResultIndex(results: readonly QueryResult[]): number {
   for (let i = results.length - 1; i >= 0; i -= 1) {
@@ -280,6 +310,7 @@ export function finishRun(
   return {
     ...tab,
     running: false,
+    executionId: null,
     error: null,
     ranDatabase,
     results,
@@ -292,7 +323,14 @@ export function finishRun(
 }
 
 export function failRun(tab: QueryTab, sql: string, error: AppError): QueryTab {
-  return { ...tab, running: false, error, runId: tab.runId + 1, lastRunSql: sql }
+  return {
+    ...tab,
+    running: false,
+    executionId: null,
+    error,
+    runId: tab.runId + 1,
+    lastRunSql: sql,
+  }
 }
 
 /** Replaces one result after edits were applied and its statement re-ran. */

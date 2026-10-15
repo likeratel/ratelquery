@@ -4,6 +4,7 @@ import { onAppEvent } from "../../lib/events"
 import { normalizeError } from "../../lib/ipc"
 import { mysqlApi } from "../../lib/mysql"
 import { failTableLoad, finishTableLoad, startTableLoad, type TableTab } from "../../lib/queryTabs"
+import { useConnectionsStore } from "../../state/connectionsStore"
 import { useSessionsStore } from "../../state/sessionsStore"
 import { connectMysql, isPasswordCancelled } from "../connections/connectSession"
 import { errorDetail } from "../connections/errors"
@@ -190,7 +191,17 @@ export function refreshDynamoTables(connectionId: ConnectionId): Promise<void> {
   return useDynamoCatalog.getState().loadTables(connectionId, true)
 }
 
-/** Drops tree state of deleted connections. Returns the unsubscribe function. */
+/**
+ * Drops tree state of deleted connections, and of edited Athena connections (their databases
+ * may differ in the new region or account). Returns the unsubscribe function.
+ */
 export function subscribeTreeCleanup(): () => void {
-  return onAppEvent("connection-removed", (id) => tree().forget(id))
+  const offRemoved = onAppEvent("connection-removed", (id) => tree().forget(id))
+  const offUpdated = onAppEvent("connection-updated", (id) => {
+    if (useConnectionsStore.getState().byId(id)?.kind === "athena") tree().forget(id)
+  })
+  return () => {
+    offRemoved()
+    offUpdated()
+  }
 }

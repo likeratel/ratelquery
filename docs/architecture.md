@@ -10,19 +10,20 @@ Tauri commands and events, documented in [ipc-contract.md](ipc-contract.md).
 
 | Directory | Contents |
 | --- | --- |
-| `features/` | One folder per screen: `connections/` (connection list and dialog), `query/` (MySQL editor, results grid, edits and export), `dynamo/` (table browser, query form, item editor). Components here stay thin and call into `lib/` and `state/`. |
-| `lib/` | Pure, unit-tested helpers: the typed IPC wrapper (`ipc.ts`), MySQL and DynamoDB types, cell formatting, grid edits, DynamoDB JSON conversion and diffing, SQL context for autocomplete, and physical-key shortcut matching (`shortcuts.ts`). |
-| `state/` | zustand stores: `connectionsStore` (saved configs, dialog state), `sessionsStore` (per-connection session state and schema cache), `tabsStore` (open tabs, SQL text, last result), `uiStore`. Updates are immutable. |
+| `features/` | One folder per screen: `connections/` (connection list and dialog), `query/` (MySQL editor, results grid, edits and export), `dynamo/` (table browser, query form, item editor), `athena/` (catalog store and the Athena branch of the query tab). Components here stay thin and call into `lib/` and `state/`. |
+| `lib/` | Pure, unit-tested helpers: the typed IPC wrapper (`ipc.ts`), MySQL, DynamoDB and Athena types, cell formatting, grid edits, DynamoDB JSON conversion and diffing, SQL context for autocomplete, and physical-key shortcut matching (`shortcuts.ts`). |
+| `state/` | zustand stores: `connectionsStore` (saved configs, dialog state), `sessionsStore` (per-connection session state and schema cache), `tabsStore` (open tabs, SQL text, last result), `athenaStore` (per-connection Glue catalog cache), `uiStore`. Updates are immutable. |
 | `components/` | Shared UI: the shell (sidebar, tab bar, editor bar), CodeMirror SQL and JSON editors, the virtualized result grid, and small UI primitives. |
 
 ### Backend (`src-tauri/src/`)
 
 | Module | Contents |
 | --- | --- |
-| `commands/` | Tauri command handlers grouped by area (`connections`, `mysql`, `dynamo`, `export`, `system`). They translate IPC arguments into calls on the modules below. |
+| `commands/` | Tauri command handlers grouped by area (`connections`, `mysql`, `dynamo`, `athena`, `export`, `system`). They translate IPC arguments into calls on the modules below. |
 | `connections/` | Connection model and validation, the JSON config store, the secret stores (OS keyring or `secrets.json`, switched by settings, with secret migration on a switch), and connection probes for `connections_test`. |
 | `mysql/` | Per-connection `sqlx` pools and their registry, the statement splitter, read-statement classification for retries, cell decoding, schema snapshots, transactional grid edits, and streaming export. |
 | `dynamo/` | Per-connection AWS SDK clients and their registry, wire-format items, key and filter expressions, query/scan/get/put/delete, and export. |
+| `athena/` | Per-connection Athena clients with the resolved result location, Glue catalog listing as `SchemaSnapshot`, start/wait/cancel of query executions with paged result reading, and the text-to-`Cell` decoding by column type. |
 | `export/` | CSV, JSON and SQL formatters, and the safe file writer used by every export. |
 | `error.rs` | `AppError`, the single error type serialized to the webview as `{ kind, message }`. |
 | `util.rs` | Shared helpers: `run_blocking` (keyring and file I/O from commands and exports runs on the blocking pool, never on an async worker) and `elapsed_ms`. |
@@ -93,9 +94,21 @@ DynamoDB has no long-lived session. A client is built per connection on first us
 credentials are resolved once and cached, and missing or expired credentials surface as
 `kind: "credential"` with the command to fix them (for example `aws sso login`).
 
+Athena is asynchronous on the AWS side: `athena_start` submits one statement and returns its
+execution id, `athena_wait` polls it to a terminal state and reads the result pages, and
+`athena_cancel` stops it. The query tab keeps the id while a statement runs so Cancel works. Every
+statement is billed by bytes scanned, so nothing is retried; the result location is resolved
+once per client (workgroup setting, then the connection's, then the console's default bucket,
+which is only created after an explicit confirmation in the connection dialog).
+
 ## Known limitations
 
 From [ipc-contract.md](ipc-contract.md):
+
+- **Athena** results are read through `GetQueryResults` (text values typed by column), so very
+  large results are capped by the row limit rather than streamed, and `varbinary` is decoded
+  from Athena's hex text. Multi-statement scripts run one statement at a time; a failure stops
+  the rest.
 
 - **TLS `verify_ca`** currently also checks the host name (with sqlx 0.8.6 and rustls 0.23.46), so
   it behaves like `verify_identity` and fails closed.

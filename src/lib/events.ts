@@ -8,6 +8,8 @@ import type { ConnectionId } from "./connections"
 export type AppEvents = {
   /** A connection was deleted on the backend; its tabs, session and caches should go. */
   "connection-removed": ConnectionId
+  /** A saved connection was changed; caches built from its old settings should go. */
+  "connection-updated": ConnectionId
 }
 
 type Listener<T> = (payload: T) => void

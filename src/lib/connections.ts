@@ -30,8 +30,11 @@ export interface SshConfig {
 
 export type MysqlTlsMode = "preferred" | "required" | "verify_ca" | "verify_identity"
 
-export type DynamoAuth =
-  { type: "profile"; profile: string } | { type: "keys"; accessKeyId: string }
+/** AWS credentials of a DynamoDB or Athena connection; a `keys` secret lives in the secret store. */
+export type AwsAuth = { type: "profile"; profile: string } | { type: "keys"; accessKeyId: string }
+
+/** Kept for existing DynamoDB code; the same union as `AwsAuth`. */
+export type DynamoAuth = AwsAuth
 
 export interface DynamoConnectionConfig {
   kind: "dynamodb"
@@ -43,12 +46,40 @@ export interface DynamoConnectionConfig {
   color?: string
 }
 
-export type ConnectionConfig = MysqlConnectionConfig | DynamoConnectionConfig
+export interface AthenaConnectionConfig {
+  kind: "athena"
+  id: ConnectionId
+  name: string
+  region: string
+  auth: AwsAuth
+  /** Absent means "primary". */
+  workgroup?: string
+  /** `s3://bucket[/prefix/]`; absent uses the workgroup's, else the default bucket. */
+  outputLocation?: string
+  /** Default database of new query tabs. */
+  database?: string
+  color?: string
+}
+
+export type ConnectionConfig =
+  MysqlConnectionConfig | DynamoConnectionConfig | AthenaConnectionConfig
+
+/** What `connections_test` found out about an Athena connection's workgroup and output. */
+export interface AthenaTestInfo {
+  /** The workgroup probed ("primary" when the config has none). */
+  workgroup: string
+  /** Where results are written; null only when `missingBucket` is set. */
+  outputLocation: string | null
+  /** Default result bucket that doesn't exist yet and would have to be created. */
+  missingBucket: string | null
+}
 
 export interface ConnectionTestResult {
   ok: true
   serverVersion?: string
   latencyMs: number
+  /** Set for Athena configs only. */
+  athena?: AthenaTestInfo
 }
 
 /** A profile from the shared AWS config / credentials files. Never carries secret values. */

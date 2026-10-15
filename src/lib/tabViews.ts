@@ -37,6 +37,7 @@ export type ResultsView = Pick<
   QueryTab,
   | "id"
   | "connectionId"
+  | "engine"
   | "results"
   | "activeResult"
   | "running"
@@ -54,6 +55,7 @@ export function selectResultsView(state: TabsState, id: string): ResultsView | n
   return {
     id,
     connectionId,
+    engine: tab.engine,
     results,
     activeResult,
     running,

@@ -1,4 +1,4 @@
-import { Cloud, Database, Ellipsis, Pencil, Trash } from "lucide-react"
+import { Cloud, Database, Ellipsis, Pencil, ScanSearch, Trash, type LucideIcon } from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { Button, Menu, showToast } from "../../components/ui"
 import type { ConnectionConfig, ConnectionId } from "../../lib/connections"
@@ -19,6 +19,18 @@ import { connectionSubtitle } from "./filter"
 import { hasNewRecovery, sessionStatus } from "./sessionStatus"
 
 type RowMode = "idle" | "menu" | "confirm" | "deleting"
+
+const KIND_ICON: Record<ConnectionConfig["kind"], LucideIcon> = {
+  mysql: Database,
+  dynamodb: Cloud,
+  athena: ScanSearch,
+}
+
+const KIND_LABEL: Record<ConnectionConfig["kind"], string> = {
+  mysql: "MySQL",
+  dynamodb: "DynamoDB",
+  athena: "Athena",
+}
 
 function openTab(config: ConnectionConfig): void {
   openQueryTabFor(config.id).catch((raw: unknown) => {
@@ -99,7 +111,7 @@ export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
   const [mode, setMode] = useState<RowMode>("idle")
   const closeMenu = useCallback(() => setMode((m) => (m === "menu" ? "idle" : m)), [])
   const moreRef = useRef<HTMLButtonElement>(null)
-  const Icon = config.kind === "mysql" ? Database : Cloud
+  const Icon = KIND_ICON[config.kind]
   const key = connectionKey(config.id)
   const expanded = useSchemaTree((s) => Boolean(s.expanded[key]))
   const tabIndex = useTreeTabIndex(key, tabStop)
@@ -169,7 +181,7 @@ export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
               size={14}
               strokeWidth={1.75}
               className="conn-row__icon"
-              aria-label={config.kind === "mysql" ? "MySQL" : "DynamoDB"}
+              aria-label={KIND_LABEL[config.kind]}
             />
             {config.kind === "mysql" && <SessionDot connectionId={config.id} />}
           </span>

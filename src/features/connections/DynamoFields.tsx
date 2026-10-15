@@ -1,13 +1,8 @@
-import { SegmentedControl, TextField } from "../../components/ui"
+import { TextField } from "../../components/ui"
 import type { AwsProfilesState } from "./awsProfiles"
+import { AwsAuthFields } from "./AwsAuthFields"
 import { ColorSwatches } from "./ColorSwatches"
-import {
-  insecureEndpointWarning,
-  type DynamoAuthType,
-  type DynamoDraft,
-  type FieldErrors,
-} from "./form"
-import { ProfileField } from "./ProfileField"
+import { insecureEndpointWarning, type DynamoDraft, type FieldErrors } from "./form"
 
 interface DynamoFieldsProps {
   draft: DynamoDraft
@@ -20,11 +15,6 @@ interface DynamoFieldsProps {
   creating: boolean
   onChange: (patch: Partial<DynamoDraft>) => void
 }
-
-const AUTH_OPTIONS = [
-  { value: "profile", label: "AWS profile" },
-  { value: "keys", label: "Access keys" },
-] as const
 
 export function DynamoFields({
   draft,
@@ -72,47 +62,14 @@ export function DynamoFields({
         }
         mono
       />
-      <div className="conn-form__wide conn-form__auth">
-        <span className="ui-field__label">Authentication</span>
-        <SegmentedControl<DynamoAuthType>
-          label="Authentication"
-          value={draft.authType}
-          options={AUTH_OPTIONS}
-          onChange={(authType) => onChange({ authType })}
-        />
-      </div>
-      {draft.authType === "profile" ? (
-        <ProfileField
-          draft={draft}
-          profiles={profiles}
-          error={errors.profile}
-          creating={creating}
-          onChange={onChange}
-        />
-      ) : (
-        <>
-          <TextField
-            label="Access key ID"
-            value={draft.accessKeyId}
-            onValueChange={(accessKeyId) => onChange({ accessKeyId })}
-            error={errors.accessKeyId}
-            mono
-          />
-          <TextField
-            label="Secret access key"
-            type="password"
-            value={draft.secretAccessKey}
-            onValueChange={(secretAccessKey) => onChange({ secretAccessKey })}
-            error={errors.secretAccessKey}
-            placeholder={secretOptional ? "Saved secret" : ""}
-            hint={
-              secretOptional
-                ? "Saved secret is kept. Type a new one to replace it."
-                : "Stored in the system keychain."
-            }
-          />
-        </>
-      )}
+      <AwsAuthFields
+        draft={draft}
+        errors={errors}
+        secretOptional={secretOptional}
+        profiles={profiles}
+        creating={creating}
+        onChange={onChange}
+      />
       <div className="conn-form__wide">
         <ColorSwatches value={draft.color} onChange={(color) => onChange({ color })} />
       </div>

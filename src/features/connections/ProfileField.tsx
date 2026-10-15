@@ -9,16 +9,16 @@ import {
   profileInputMode,
   profileOptionLabel,
   type AwsProfilesState,
+  type ProfileDraft,
 } from "./awsProfiles"
-import type { DynamoDraft } from "./form"
 
 interface ProfileFieldProps {
-  draft: DynamoDraft
+  draft: ProfileDraft
   profiles: AwsProfilesState
   error?: string
   /** Whether the dialog creates a connection (its region is then still the form default). */
   creating: boolean
-  onChange: (patch: Partial<DynamoDraft>) => void
+  onChange: (patch: Partial<ProfileDraft>) => void
 }
 
 const MANUAL_HINT = "A profile from your AWS config. SSO profiles work too."

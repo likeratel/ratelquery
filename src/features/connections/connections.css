@@ -492,3 +492,42 @@
 .conn-profile__toggle:hover {
   text-decoration: underline;
 }
+
+/* Optional Athena settings, folded away until needed. */
+
+.conn-advanced {
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.conn-advanced__summary {
+  width: fit-content;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  user-select: none;
+}
+
+.conn-advanced__summary:hover {
+  color: var(--text);
+}
+
+.conn-advanced__body {
+  margin-top: 10px;
+}
+
+.conn-test__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.conn-test[data-status="warn"] {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+.conn-test[data-status="warn"] svg {
+  color: var(--warn);
+}

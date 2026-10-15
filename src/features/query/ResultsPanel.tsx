@@ -22,16 +22,16 @@ function resultLabel(result: QueryResult, index: number): string {
 export function ResultsPanel({ tab, session }: ResultsPanelProps) {
   const setActiveResult = useTabsStore((s) => s.setActiveResult)
   const result = tab.results[tab.activeResult]
-  const ranDatabase = tab.ranDatabase
+  const { ranDatabase, engine } = tab
   const edit = useMemo(
-    () => editTargetFor({ ranDatabase }, result, session),
-    [ranDatabase, result, session],
+    () => editTargetFor({ ranDatabase, engine }, result, session),
+    [ranDatabase, engine, result, session],
   )
 
   if (tab.error) {
     return (
       <section className="results">
-        <ErrorPanel error={tab.error} />
+        <ErrorPanel error={tab.error} engine={engine} connectionId={tab.connectionId} />
       </section>
     )
   }
@@ -76,7 +76,8 @@ export function ResultsPanel({ tab, session }: ResultsPanelProps) {
           edit={edit}
           edits={tab.edits[tab.activeResult]}
           applying={tab.applying}
-          allowFull={tab.results.length === 1}
+          // Athena has no streaming export, and re-running a statement would be billed again.
+          allowFull={engine === "mysql" && tab.results.length === 1}
           database={tab.ranDatabase}
         />
       ) : (

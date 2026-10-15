@@ -1,5 +1,7 @@
 import { z } from "zod"
 import type {
+  AthenaConnectionConfig,
+  AwsAuth,
   ConnectionConfig,
   ConnectionId,
   DynamoConnectionConfig,
@@ -13,6 +15,8 @@ import { HEX_COLOR } from "./colors"
 export const DEFAULT_MYSQL_PORT = 3306
 export const DEFAULT_SSH_PORT = 22
 export const DEFAULT_REGION = "ap-northeast-2"
+/** Athena's built-in workgroup; a config without `workgroup` uses it. */
+export const DEFAULT_WORKGROUP = "primary"
 
 export type ConnectionKind = ConnectionConfig["kind"]
 export type DynamoAuthType = "profile" | "keys"
@@ -62,10 +66,26 @@ export interface DynamoDraft {
   color: string
 }
 
+export interface AthenaDraft {
+  name: string
+  region: string
+  authType: DynamoAuthType
+  profile: string
+  accessKeyId: string
+  secretAccessKey: string
+  workgroup: string
+  /** `s3://bucket[/prefix/]`; blank uses the workgroup's (or the default bucket). */
+  outputLocation: string
+  /** Default database of new query tabs; blank means none. */
+  database: string
+  color: string
+}
+
 export interface ConnectionForm {
   kind: ConnectionKind
   mysql: MysqlDraft
   dynamodb: DynamoDraft
+  athena: AthenaDraft
 }
 
 export interface FormContext {
@@ -112,6 +132,8 @@ const portField = z
   .regex(/^\d+$/, "Port must be a number")
   .transform(Number)
   .pipe(z.number().int().min(1, "Port must be 1 to 65535").max(65535, "Port must be 1 to 65535"))
+
+const regionField = required("Region").regex(/^[a-z0-9-]+$/, "Use a region code such as us-east-1")
 
 export const ENDPOINT_FULL_URL = "Use a full URL such as http://localhost:8000"
 export const ENDPOINT_NO_USERINFO = "Leave user names and passwords out of the endpoint URL"
@@ -194,7 +216,7 @@ type SshFormValues = z.infer<typeof sshFormSchema>
 
 const dynamoBase = {
   name: required("Name"),
-  region: required("Region").regex(/^[a-z0-9-]+$/, "Use a region code such as us-east-1"),
+  region: regionField,
   endpoint: endpointField,
   color: colorField,
 }
@@ -204,6 +226,36 @@ export function dynamoFormSchema(requireSecret: boolean) {
     z.object({ ...dynamoBase, authType: z.literal("profile"), profile: required("Profile") }),
     z.object({
       ...dynamoBase,
+      authType: z.literal("keys"),
+      accessKeyId: required("Access key ID"),
+      secretAccessKey: requireSecret ? required("Secret access key") : z.string(),
+    }),
+  ])
+}
+
+export const OUTPUT_LOCATION_FORMAT = "Use an S3 URI such as s3://my-bucket/athena/"
+
+/** `s3://bucket` or `s3://bucket/prefix`, bucket of 3–63 lowercase letters, digits, dots or hyphens. */
+const OUTPUT_LOCATION = /^s3:\/\/[a-z0-9.-]{3,63}(\/[^\s]*)?$/
+
+const athenaBase = {
+  name: required("Name"),
+  region: regionField,
+  workgroup: required("Workgroup"),
+  outputLocation: z
+    .string()
+    .trim()
+    .refine((value) => value === "" || OUTPUT_LOCATION.test(value), OUTPUT_LOCATION_FORMAT)
+    .transform((value) => (value === "" ? undefined : value)),
+  database: optionalText,
+  color: colorField,
+}
+
+export function athenaFormSchema(requireSecret: boolean) {
+  return z.discriminatedUnion("authType", [
+    z.object({ ...athenaBase, authType: z.literal("profile"), profile: required("Profile") }),
+    z.object({
+      ...athenaBase,
       authType: z.literal("keys"),
       accessKeyId: required("Access key ID"),
       secretAccessKey: requireSecret ? required("Secret access key") : z.string(),
@@ -243,11 +295,47 @@ export function emptyForm(kind: ConnectionKind = "mysql"): ConnectionForm {
       secretAccessKey: "",
       color: "",
     },
+    athena: {
+      name: "",
+      region: DEFAULT_REGION,
+      authType: "profile",
+      profile: "",
+      accessKeyId: "",
+      secretAccessKey: "",
+      workgroup: DEFAULT_WORKGROUP,
+      outputLocation: "",
+      database: "",
+      color: "",
+    },
+  }
+}
+
+const authFields = (auth: AwsAuth) => ({
+  authType: auth.type,
+  profile: auth.type === "profile" ? auth.profile : "",
+  accessKeyId: auth.type === "keys" ? auth.accessKeyId : "",
+})
+
+function athenaFormFrom(config: AthenaConnectionConfig): ConnectionForm {
+  const base = emptyForm("athena")
+  return {
+    ...base,
+    athena: {
+      ...base.athena,
+      name: config.name,
+      region: config.region,
+      ...authFields(config.auth),
+      workgroup: config.workgroup ?? DEFAULT_WORKGROUP,
+      outputLocation: config.outputLocation ?? "",
+      database: config.database ?? "",
+      color: config.color ?? "",
+    },
   }
 }
 
 /** Builds form values from a saved config. Secrets are never prefilled. */
 export function formFromConfig(config: ConnectionConfig): ConnectionForm {
+  if (config.kind === "athena") return athenaFormFrom(config)
   const base = emptyForm(config.kind)
   if (config.kind === "mysql") {
     const { ssh } = config
@@ -282,9 +370,7 @@ export function formFromConfig(config: ConnectionConfig): ConnectionForm {
       name: config.name,
       region: config.region,
       endpoint: config.endpoint ?? "",
-      authType: config.auth.type,
-      profile: config.auth.type === "profile" ? config.auth.profile : "",
-      accessKeyId: config.auth.type === "keys" ? config.auth.accessKeyId : "",
+      ...authFields(config.auth),
       color: config.color ?? "",
     },
   }
@@ -314,6 +400,7 @@ export function isFormChanged(initial: ConnectionForm, current: ConnectionForm):
 
 export const MYSQL_SECRET_AGAIN = "Enter the password again for the new server"
 export const DYNAMO_SECRET_AGAIN = "Enter the secret access key again for the new endpoint or key"
+export const ATHENA_SECRET_AGAIN = "Enter the secret access key again for the new region or key"
 export const SSH_PASSWORD_AGAIN = "Enter the SSH password again for the new SSH server or user"
 
 /** Where the tunnel goes; part of the backend's same-target rule for the database password. */
@@ -384,6 +471,13 @@ export function secretReentryError(
       (config.endpoint ?? "") !== (original.endpoint ?? "") ||
       config.auth.accessKeyId !== original.auth.accessKeyId
     return moved ? { secretAccessKey: DYNAMO_SECRET_AGAIN } : null
+  }
+  if (config.kind === "athena" && original?.kind === "athena") {
+    if (config.auth.type !== "keys" || original.auth.type !== "keys") return null
+    // Workgroup, output location and database don't change where the key is sent.
+    const moved =
+      config.region !== original.region || config.auth.accessKeyId !== original.auth.accessKeyId
+    return moved ? { secretAccessKey: ATHENA_SECRET_AGAIN } : null
   }
   return null
 }
@@ -477,14 +571,55 @@ function parseDynamo(draft: DynamoDraft, context: FormContext): ParseResult {
   return { ok: true, config, secret: secret === "" ? null : secret }
 }
 
+function parseAthena(draft: AthenaDraft, context: FormContext): ParseResult {
+  const original = context.original?.kind === "athena" ? context.original : undefined
+  const hadKeys = original?.auth.type === "keys"
+  const requireSecret = !(hadKeys && context.hasStoredSecret)
+  const result = athenaFormSchema(requireSecret).safeParse(draft)
+  if (!result.success) return { ok: false, errors: collectErrors(result.error) }
+  const data = result.data
+  const shared = {
+    kind: "athena" as const,
+    id: idFor(context, "athena"),
+    name: data.name,
+    region: data.region,
+    // "primary" is what an absent workgroup means; leaving it out keeps the config minimal.
+    workgroup: data.workgroup === DEFAULT_WORKGROUP ? undefined : data.workgroup,
+    outputLocation: data.outputLocation,
+    database: data.database,
+    color: data.color,
+  }
+  if (data.authType === "profile") {
+    const config: AthenaConnectionConfig = {
+      ...shared,
+      auth: { type: "profile", profile: data.profile },
+    }
+    // Switching away from access keys clears the stale secret from the secret store.
+    return { ok: true, config, secret: hadKeys ? "" : null }
+  }
+  const config: AthenaConnectionConfig = {
+    ...shared,
+    auth: { type: "keys", accessKeyId: data.accessKeyId },
+  }
+  const secret = data.secretAccessKey.trim()
+  return { ok: true, config, secret: secret === "" ? null : secret }
+}
+
+const PARSERS: {
+  [K in ConnectionKind]: (form: ConnectionForm, context: FormContext) => ParseResult
+} = {
+  mysql: (form, context) => parseMysql(form.mysql, context),
+  dynamodb: (form, context) => parseDynamo(form.dynamodb, context),
+  athena: (form, context) => parseAthena(form.athena, context),
+}
+
 function stripUndefined<T extends object>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, v]) => v !== undefined)) as T
 }
 
 /** Validates the active kind and converts it to a config plus the secret to send over IPC. */
 export function parseForm(form: ConnectionForm, context: FormContext): ParseResult {
-  const result =
-    form.kind === "mysql" ? parseMysql(form.mysql, context) : parseDynamo(form.dynamodb, context)
+  const result = PARSERS[form.kind](form, context)
   if (!result.ok) return result
   const reentry = secretReentryError(result.config, result.secret, context, result.sshSecret)
   if (reentry) return { ok: false, errors: reentry }

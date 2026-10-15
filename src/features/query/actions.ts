@@ -1,10 +1,11 @@
 import { forgetEditorState } from "../../components/editor/editorStateCache"
 import { forgetTabColumnWidths } from "../../components/grid/useColumnWidths"
-import type { ConnectionId } from "../../lib/connections"
+import type { AthenaConnectionConfig, ConnectionId } from "../../lib/connections"
 import { onAppEvent } from "../../lib/events"
 import { isAppError } from "../../lib/ipc"
 import { tabPendingCount, tabsForConnection, type QueryTab } from "../../lib/queryTabs"
 import { statementAtCursor } from "../../lib/sqlContext"
+import { useAthenaStore } from "../../state/athenaStore"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useSessionsStore } from "../../state/sessionsStore"
 import { currentSettings } from "../../state/settingsStore"
@@ -24,8 +25,8 @@ import { forgetTabCountUps } from "./useCountUp"
 import { showToast } from "../../components/ui"
 
 /**
- * Opens a tab for any connection: a query tab for MySQL, a table browser for DynamoDB.
- * A failed MySQL connect rejects with the AppError; the caller reports it.
+ * Opens a tab for any connection: a query tab for MySQL and Athena, a table browser for
+ * DynamoDB. A failed MySQL connect rejects with the AppError; the caller reports it.
  */
 export async function openConnection(connectionId: ConnectionId): Promise<void> {
   const config = useConnectionsStore.getState().byId(connectionId)
@@ -33,7 +34,27 @@ export async function openConnection(connectionId: ConnectionId): Promise<void> 
     openDynamoTabFor(connectionId)
     return
   }
+  if (config?.kind === "athena") {
+    openAthenaTab(config)
+    return
+  }
   await openMysqlTab(connectionId)
+}
+
+/**
+ * Opens an Athena query tab on the connection's current database (the configured default the
+ * first time) and starts listing its databases. Nothing runs until the user asks: every
+ * statement is billed. Returns the tab id.
+ */
+export function openAthenaTab(config: AthenaConnectionConfig, database?: string | null): string {
+  const athena = useAthenaStore.getState()
+  const target =
+    database !== undefined
+      ? database
+      : (athena.catalogs[config.id]?.currentDatabase ?? config.database ?? null)
+  void athena.loadDatabases(config.id)
+  if (target) void athena.setCurrentDatabase(config.id, target)
+  return useTabsStore.getState().open(config.id, target, "athena")
 }
 
 /**
@@ -63,7 +84,9 @@ export function newTabFromActive(): void {
     return
   }
   if (active.kind === "dynamo") openDynamoTabFor(active.connectionId)
-  else useTabsStore.getState().open(active.connectionId, active.database)
+  else if (active.kind === "query") {
+    useTabsStore.getState().open(active.connectionId, active.database, active.engine)
+  } else useTabsStore.getState().open(active.connectionId, active.database)
 }
 
 /** Drops everything kept per tab outside the tabs store: editor state, badges, widths. */
@@ -74,8 +97,31 @@ function forgetTabState(id: string): void {
   forgetTabCountUps(id)
 }
 
-/** Drops a tab and its cached state without asking. */
-function removeTab(id: string): void {
+/**
+ * Stops the Athena execution of a tab that is about to close, so it doesn't keep scanning (and
+ * billing) with nobody to see the result. A failed stop is reported, not retried.
+ */
+function stopAthenaRun(id: string): void {
+  const tab = useTabsStore.getState().tabs.find((t) => t.id === id)
+  if (tab?.kind !== "query" || tab.engine !== "athena" || !tab.running) return
+  useTabsStore
+    .getState()
+    .cancel(id)
+    .catch((raw: unknown) =>
+      showToast({
+        tone: "warning",
+        message: "Couldn't stop the running Athena query",
+        detail: isAppError(raw) ? raw.message : undefined,
+      }),
+    )
+}
+
+/**
+ * Drops a tab and its cached state without asking. `stop` cancels its running Athena execution;
+ * a deleted connection has no client left to cancel with.
+ */
+function removeTab(id: string, stop = true): void {
+  if (stop) stopAthenaRun(id)
   useTabsStore.getState().close(id)
   forgetTabState(id)
 }
@@ -86,6 +132,8 @@ function removeTab(id: string): void {
  */
 export function closeQueryTab(id: string): void {
   const store = useTabsStore.getState()
+  // Athena tabs never hold pending edits, so they close right away.
+  stopAthenaRun(id)
   store.requestClose(id)
   if (useTabsStore.getState().closing !== id) forgetTabState(id)
 }
@@ -108,14 +156,39 @@ export function closeActiveTab(): void {
 /** Closes every tab of a deleted connection and drops its session and table catalog. */
 export function forgetConnection(connectionId: ConnectionId): void {
   // The connection is gone, so its tabs close without asking.
-  for (const id of tabsForConnection(useTabsStore.getState(), connectionId)) removeTab(id)
+  // The backend already dropped its client, so running Athena executions finish on AWS.
+  for (const id of tabsForConnection(useTabsStore.getState(), connectionId)) removeTab(id, false)
   useSessionsStore.getState().forget(connectionId)
   useDynamoCatalog.getState().forget(connectionId)
+  useAthenaStore.getState().forget(connectionId)
 }
 
-/** Cleans up after deleted connections. Returns the unsubscribe function. */
+/**
+ * Cleans up after deleted connections, and drops an edited Athena connection's catalog (its
+ * region or credentials may point somewhere else now). Returns the unsubscribe function.
+ */
 export function subscribeConnectionCleanup(): () => void {
-  return onAppEvent("connection-removed", forgetConnection)
+  const offRemoved = onAppEvent("connection-removed", forgetConnection)
+  const offUpdated = onAppEvent("connection-updated", (id) => useAthenaStore.getState().forget(id))
+  return () => {
+    offRemoved()
+    offUpdated()
+  }
+}
+
+/** Stops the active Athena tab's run (the Cancel button). */
+export async function cancelActiveRun(): Promise<void> {
+  const tab = selectActiveQueryTab(useTabsStore.getState())
+  if (!tab || tab.engine !== "athena" || !tab.running) return
+  try {
+    await useTabsStore.getState().cancel(tab.id)
+  } catch (raw) {
+    showToast({
+      tone: "error",
+      message: "Couldn't cancel the query",
+      detail: isAppError(raw) ? raw.message : undefined,
+    })
+  }
 }
 
 const OUTCOME_MESSAGES: Partial<Record<RunOutcome, string>> = {

@@ -14,6 +14,7 @@ import {
   refreshTable,
   selectRows,
 } from "./actions"
+import { AthenaDatabases } from "./AthenaTree"
 import { ChildList } from "./ChildList"
 import { TreeNode } from "./TreeNode"
 import { childKey, connectionKey, databaseKey, type TreeChild } from "./treeState"
@@ -195,11 +196,16 @@ function DynamoTables({ connectionId }: { connectionId: ConnectionId }) {
   )
 }
 
-/** What a connection shows when expanded: databases for MySQL, tables for DynamoDB. */
+/**
+ * What a connection shows when expanded: databases for MySQL and Athena, tables for DynamoDB.
+ */
 export function SchemaChildren({ config }: { config: ConnectionConfig }) {
-  return config.kind === "mysql" ? (
-    <MysqlDatabases connectionId={config.id} />
-  ) : (
-    <DynamoTables connectionId={config.id} />
-  )
+  switch (config.kind) {
+    case "mysql":
+      return <MysqlDatabases connectionId={config.id} />
+    case "athena":
+      return <AthenaDatabases connectionId={config.id} />
+    case "dynamodb":
+      return <DynamoTables connectionId={config.id} />
+  }
 }

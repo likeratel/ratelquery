@@ -1,3 +1,5 @@
+import { isAthenaResult, type AthenaStats } from "../../lib/athena"
+import { formatDataSize } from "../../lib/athenaRun"
 import { formatElapsed } from "../../lib/cellFormat"
 import type { QueryResult } from "../../lib/mysql"
 import { useCountUp } from "./useCountUp"
@@ -6,6 +8,25 @@ interface ResultMetaProps {
   result: QueryResult
   /** Unique per finished run, e.g. `${tabId}:${runId}`; drives the one-time count-up. */
   runKey: string
+}
+
+/** Bytes scanned (what Athena bills) and engine time of one execution. */
+function AthenaMeta({ stats }: { stats: AthenaStats }) {
+  return (
+    <>
+      <span
+        className="result-meta__muted"
+        title={`Data scanned by execution ${stats.executionId}; Athena bills by this amount`}
+      >
+        Scanned {formatDataSize(stats.dataScannedBytes)}
+      </span>
+      {stats.engineMs !== null && (
+        <span className="result-meta__muted" title="Engine execution time reported by Athena">
+          Engine {formatElapsed(stats.engineMs)}
+        </span>
+      )}
+    </>
+  )
 }
 
 /** Row count (or affected rows), elapsed time and status badges for one result. */
@@ -37,7 +58,9 @@ export function ResultMeta({ result, runKey }: ResultMetaProps) {
         <span className="result-meta__muted">Last insert id {result.lastInsertId}</span>
       )}
       <span className="result-meta__muted">{formatElapsed(result.elapsedMs)}</span>
-      {result.reconnected && (
+      {isAthenaResult(result) && <AthenaMeta stats={result.athena} />}
+      {/* Athena never retries, so it never shows a reconnect. */}
+      {result.reconnected && !isAthenaResult(result) && (
         <span
           className="badge badge--warn"
           title="The connection dropped and was restored for this query"

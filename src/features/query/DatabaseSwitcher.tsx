@@ -1,30 +1,26 @@
 import { RefreshCw } from "lucide-react"
 import { showToast } from "../../components/ui"
+import { isAthenaSchemaLoading } from "../../lib/athenaCatalog"
 import type { QueryTab } from "../../lib/queryTabs"
+import { useAthenaStore } from "../../state/athenaStore"
 import { isSchemaLoading, useSessionsStore } from "../../state/sessionsStore"
 import { useTabsStore } from "../../state/tabsStore"
+import { athenaTabDatabase } from "./editing"
 
-/** Database picker and schema refresh for a query tab, shown in the editor bar. */
-export function DatabaseSwitcher({ tab }: { tab: QueryTab }) {
-  const setDatabase = useTabsStore((s) => s.setDatabase)
-  const session = useSessionsStore((s) => s.sessions[tab.connectionId])
-  const loadDatabases = useSessionsStore((s) => s.loadDatabases)
-  const refreshSchema = useSessionsStore((s) => s.refreshSchema)
+interface SwitcherViewProps {
+  database: string | null
+  databases: readonly string[]
+  schemaLoading: boolean
+  refreshTitle: string
+  onOpen: () => void
+  onChange: (database: string | null) => void
+  onRefresh: (database: string) => void
+}
 
-  const database = tab.database ?? session?.currentDatabase ?? null
-  const databases = session?.databases ?? []
+/** The select and refresh button; the stores behind them differ per engine. */
+function SwitcherView(props: SwitcherViewProps) {
+  const { database, databases, schemaLoading } = props
   const options = database && !databases.includes(database) ? [database, ...databases] : databases
-  const schemaLoading = isSchemaLoading(session, database)
-
-  const changeDatabase = (next: string | null) => {
-    if (!setDatabase(tab.id, next)) {
-      showToast({
-        tone: "info",
-        message: "Apply or discard pending changes before switching databases",
-      })
-    }
-  }
-
   return (
     <div className="db-switch">
       <label className="db-switch__field">
@@ -32,10 +28,8 @@ export function DatabaseSwitcher({ tab }: { tab: QueryTab }) {
         <select
           className="db-switch__select"
           value={database ?? ""}
-          onFocus={() => {
-            if (databases.length === 0) void loadDatabases(tab.connectionId)
-          }}
-          onChange={(event) => changeDatabase(event.target.value || null)}
+          onFocus={props.onOpen}
+          onChange={(event) => props.onChange(event.target.value || null)}
         >
           <option value="">None</option>
           {options.map((name) => (
@@ -51,13 +45,77 @@ export function DatabaseSwitcher({ tab }: { tab: QueryTab }) {
           className="ui-icon-button"
           data-size="md"
           disabled={schemaLoading}
-          onClick={() => void refreshSchema(tab.connectionId, database)}
+          onClick={() => props.onRefresh(database)}
           aria-label={schemaLoading ? "Loading schema" : "Refresh schema"}
-          title="Reload tables and columns for completion and editing"
+          title={props.refreshTitle}
         >
           <RefreshCw size={13} strokeWidth={2} className={schemaLoading ? "spin" : undefined} />
         </button>
       )}
     </div>
+  )
+}
+
+function useChangeDatabase(tabId: string) {
+  const setDatabase = useTabsStore((s) => s.setDatabase)
+  return (next: string | null) => {
+    if (!setDatabase(tabId, next)) {
+      showToast({
+        tone: "info",
+        message: "Apply or discard pending changes before switching databases",
+      })
+    }
+  }
+}
+
+function MysqlDatabaseSwitcher({ tab }: { tab: QueryTab }) {
+  const session = useSessionsStore((s) => s.sessions[tab.connectionId])
+  const loadDatabases = useSessionsStore((s) => s.loadDatabases)
+  const refreshSchema = useSessionsStore((s) => s.refreshSchema)
+  const changeDatabase = useChangeDatabase(tab.id)
+  const database = tab.database ?? session?.currentDatabase ?? null
+  const databases = session?.databases ?? []
+  return (
+    <SwitcherView
+      database={database}
+      databases={databases}
+      schemaLoading={isSchemaLoading(session, database)}
+      refreshTitle="Reload tables and columns for completion and editing"
+      onOpen={() => {
+        if (databases.length === 0) void loadDatabases(tab.connectionId)
+      }}
+      onChange={changeDatabase}
+      onRefresh={(name) => void refreshSchema(tab.connectionId, name)}
+    />
+  )
+}
+
+function AthenaDatabaseSwitcher({ tab }: { tab: QueryTab }) {
+  const catalog = useAthenaStore((s) => s.catalogs[tab.connectionId])
+  const changeDatabase = useChangeDatabase(tab.id)
+  const database = athenaTabDatabase(tab, catalog)
+  const { loadDatabases, refreshSchema } = useAthenaStore.getState()
+  return (
+    <SwitcherView
+      database={database}
+      databases={catalog?.databases ?? []}
+      schemaLoading={isAthenaSchemaLoading(catalog, database)}
+      refreshTitle="Reload tables and columns for completion"
+      onOpen={() => {
+        // A failed list is retried when the picker opens again.
+        if (!catalog?.databases) void loadDatabases(tab.connectionId)
+      }}
+      onChange={changeDatabase}
+      onRefresh={(name) => void refreshSchema(tab.connectionId, name)}
+    />
+  )
+}
+
+/** Database picker and schema refresh for a query tab, shown in the editor bar. */
+export function DatabaseSwitcher({ tab }: { tab: QueryTab }) {
+  return tab.engine === "athena" ? (
+    <AthenaDatabaseSwitcher tab={tab} />
+  ) : (
+    <MysqlDatabaseSwitcher tab={tab} />
   )
 }

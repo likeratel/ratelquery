@@ -1,14 +1,17 @@
-import { Cloud, Database } from "lucide-react"
+import { Cloud, Database, ScanSearch } from "lucide-react"
 import { useId, useState, type FormEvent } from "react"
 import { Button, Dialog, SegmentedControl, showToast } from "../../components/ui"
 import type { ConnectionConfig } from "../../lib/connections"
 import { useConnectionsStore } from "../../state/connectionsStore"
+import { AthenaFields } from "./AthenaFields"
+import { workgroupRequest } from "./athenaWorkgroups"
 import { DynamoFields } from "./DynamoFields"
 import {
   emptyForm,
   formFromConfig,
   isFormChanged,
   parseForm,
+  type AthenaDraft,
   type ConnectionForm,
   type ConnectionKind,
   type DynamoDraft,
@@ -17,6 +20,8 @@ import {
 } from "./form"
 import { MysqlFields } from "./MysqlFields"
 import { TestResult } from "./TestResult"
+import type { FriendlyError } from "./errors"
+import { useAthenaWorkgroups } from "./useAthenaWorkgroups"
 import { useAwsProfiles } from "./useAwsProfiles"
 
 /** Mounts the connection dialog while the store says it is open. */
@@ -52,6 +57,15 @@ function kindOptions(editing: ConnectionConfig | null) {
       ),
       disabled: editing !== null && editing.kind !== "dynamodb",
     },
+    {
+      value: "athena",
+      label: (
+        <>
+          <ScanSearch size={13} aria-hidden /> Athena
+        </>
+      ),
+      disabled: editing !== null && editing.kind !== "athena",
+    },
   ] as const
 }
 
@@ -68,11 +82,18 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
   const test = useConnectionsStore((s) => s.test)
   const saving = useConnectionsStore((s) => s.saving)
   const saveError = useConnectionsStore((s) => s.saveError)
-  const { closeDialog, save, testConnection, resetTest } = useConnectionsStore.getState()
+  const { closeDialog, save, testConnection, resetTest, createOutputBucket } =
+    useConnectionsStore.getState()
 
   const context = { original: editing ?? undefined, hasStoredSecret, hasStoredSshSecret }
+  // Access keys reuse a stored secret the same way for DynamoDB and Athena.
   const secretOptional =
-    editing?.kind === "dynamodb" && editing.auth.type === "keys" && hasStoredSecret
+    (editing?.kind === "dynamodb" || editing?.kind === "athena") &&
+    editing.auth.type === "keys" &&
+    hasStoredSecret
+  const workgroups = useAthenaWorkgroups(
+    form.kind === "athena" ? workgroupRequest(form.athena, context) : null,
+  )
 
   const touch = (keys: readonly string[]) => {
     setErrors((current) => withoutKeys(current, keys))
@@ -84,6 +105,10 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
   }
   const updateDynamo = (patch: Partial<DynamoDraft>) => {
     setForm((current) => ({ ...current, dynamodb: { ...current.dynamodb, ...patch } }))
+    touch(Object.keys(patch))
+  }
+  const updateAthena = (patch: Partial<AthenaDraft>) => {
+    setForm((current) => ({ ...current, athena: { ...current.athena, ...patch } }))
     touch(Object.keys(patch))
   }
   const changeKind = (kind: ConnectionKind) => {
@@ -101,6 +126,15 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
   const onTest = () => {
     const parsed = validate()
     if (parsed) void testConnection(parsed.config, parsed.secret, parsed.sshSecret)
+  }
+
+  /** Only the Create bucket button calls this: it writes to the user's AWS account. */
+  const onCreateBucket = async (bucket: string): Promise<FriendlyError | null> => {
+    const parsed = validate()
+    if (!parsed || parsed.config.kind !== "athena") {
+      return { summary: "Fix the highlighted fields first.", detail: "" }
+    }
+    return createOutputBucket(parsed.config, parsed.secret, bucket)
   }
 
   const onSubmit = async (event: FormEvent) => {
@@ -139,7 +173,17 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
           options={kindOptions(editing)}
           onChange={changeKind}
         />
-        {form.kind === "mysql" ? (
+        {form.kind === "athena" ? (
+          <AthenaFields
+            draft={form.athena}
+            errors={errors}
+            secretOptional={secretOptional}
+            profiles={awsProfiles}
+            workgroups={workgroups}
+            creating={editing === null}
+            onChange={updateAthena}
+          />
+        ) : form.kind === "mysql" ? (
           <MysqlFields
             draft={form.mysql}
             errors={errors}
@@ -159,7 +203,7 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
             onChange={updateDynamo}
           />
         )}
-        <TestResult test={test} />
+        <TestResult test={test} onCreateBucket={onCreateBucket} />
         {saveError && (
           <div className="conn-test" data-status="fail" role="alert">
             <span className="conn-test__text">
