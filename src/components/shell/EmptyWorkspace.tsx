@@ -1,3 +1,4 @@
+import { Fragment } from "react"
 import { formatShortcut, parseShortcut } from "../../lib/shortcuts"
 
 const HINTS = [
@@ -18,14 +19,12 @@ export function EmptyWorkspace() {
         </p>
         <dl className="empty__shortcuts">
           {HINTS.map((hint) => (
-            <>
-              <dt key={`${hint.keys}-k`}>
+            <Fragment key={hint.keys}>
+              <dt>
                 <kbd className="kbd">{formatShortcut(parseShortcut(hint.keys))}</kbd>
               </dt>
-              <dd key={`${hint.keys}-v`} style={{ margin: 0 }}>
-                {hint.label}
-              </dd>
-            </>
+              <dd>{hint.label}</dd>
+            </Fragment>
           ))}
         </dl>
       </div>

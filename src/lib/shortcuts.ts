@@ -57,6 +57,7 @@ function keyToCode(key: string): string {
     if (/[0-9]/.test(key)) return `Digit${key}`
     const mapped = SINGLE_CHAR_CODES[key]
     if (mapped) return mapped
+    throw new Error(`Unsupported key "${key}"; use Shift plus the unshifted key instead`)
   }
   return key
 }
@@ -69,12 +70,18 @@ export function matchesShortcut(event: KeyLike, shortcut: Shortcut, mac = isMac(
   const modPressed = mac ? event.metaKey : event.ctrlKey
   const otherModPressed = mac ? event.ctrlKey : event.metaKey
   return (
-    event.code === shortcut.code &&
+    codeMatches(event.code, shortcut.code) &&
     modPressed === shortcut.mod &&
     !otherModPressed &&
     event.shiftKey === shortcut.shift &&
     event.altKey === shortcut.alt
   )
+}
+
+/** Enter and the numeric keypad Enter are interchangeable for every shortcut. */
+function codeMatches(actual: string, expected: string): boolean {
+  if (actual === expected) return true
+  return expected === "Enter" && actual === "NumpadEnter"
 }
 
 /** Human-readable label such as "⌘⏎" or "Ctrl+Enter". */

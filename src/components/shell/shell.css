@@ -24,7 +24,10 @@
 .sidebar__drag {
   height: var(--titlebar-inset);
   flex: none;
-  -webkit-app-region: drag;
+}
+
+.empty__shortcuts dd {
+  margin: 0;
 }
 
 .sidebar__header {
@@ -75,11 +78,19 @@
   align-items: stretch;
   border-bottom: 1px solid var(--line);
   background: var(--bg);
-  -webkit-app-region: drag;
 }
 
-.shell[data-sidebar="collapsed"] .tabbar {
+/* Room for the macOS traffic lights when the sidebar that normally holds them is hidden. */
+:root[data-platform="macos"] .shell[data-sidebar="collapsed"] .tabbar {
   padding-left: 78px;
+}
+
+.sidebar__drag {
+  display: none;
+}
+
+:root[data-platform="macos"] .sidebar__drag {
+  display: block;
 }
 
 .tabbar__tabs {
@@ -87,7 +98,6 @@
   align-items: stretch;
   min-width: 0;
   overflow: hidden;
-  -webkit-app-region: no-drag;
 }
 
 .tabbar__spacer {
@@ -99,7 +109,6 @@
   align-items: center;
   gap: 2px;
   padding: 0 8px;
-  -webkit-app-region: no-drag;
 }
 
 .workspace__main {
@@ -234,4 +243,164 @@
 .icon-button[aria-pressed="true"] {
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+.dot {
+  position: relative;
+}
+
+.dot[data-state="reconnecting"] {
+  background: var(--warn);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.dot__ripple {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 var(--ok);
+  animation: ripple 700ms var(--ease-out) 1 forwards;
+  pointer-events: none;
+}
+
+@keyframes ripple {
+  from {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 70%, transparent);
+  }
+  to {
+    box-shadow: 0 0 0 9px color-mix(in srgb, var(--ok) 0%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot__ripple {
+    display: none;
+  }
+}
+
+.statusbar__db {
+  gap: 4px;
+}
+
+.statusbar__label {
+  color: var(--text-faint);
+}
+
+.statusbar__select {
+  height: 18px;
+  max-width: 180px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.statusbar__select:hover {
+  background: var(--surface-hover);
+}
+
+.statusbar__link {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.statusbar__link:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 200px;
+  padding: 0 6px 0 12px;
+  border-right: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  cursor: default;
+}
+
+.tab:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.tab__color {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.tab__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab__trail {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.tab__dirty {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.tab__close {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  opacity: 0;
+}
+
+.tab__close:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.tab:hover .tab__close,
+.tab[aria-selected="true"] .tab__close,
+.tab__close:focus-visible {
+  opacity: 1;
+}
+
+.tab__trail[data-dirty] .tab__close {
+  opacity: 0;
+}
+
+.tab:hover .tab__trail[data-dirty] .tab__close,
+.tab__trail[data-dirty] .tab__close:focus-visible {
+  opacity: 1;
+}
+
+.tab:hover .tab__dirty {
+  visibility: hidden;
+}
+
+.tabbar__new {
+  align-self: center;
+  margin: 0 4px;
 }

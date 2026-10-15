@@ -1,4 +1,5 @@
 -- Seed data for local development. Loaded once when the volume is created.
+SET NAMES utf8mb4;
 USE sample;
 
 CREATE TABLE customers (

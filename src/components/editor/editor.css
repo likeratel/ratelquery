@@ -1,0 +1,9 @@
+.sql-editor {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sql-editor .cm-editor {
+  height: 100%;
+}

@@ -1,0 +1,66 @@
+import { describe, expect, it } from "vitest"
+import { splitStatements, statementAtCursor } from "./sqlContext"
+
+const texts = (sql: string) => splitStatements(sql).map((s) => s.text)
+
+describe("splitStatements", () => {
+  it("splits on semicolons and keeps the terminator", () => {
+    expect(texts("select 1; select 2;")).toEqual(["select 1;", "select 2;"])
+    expect(texts("select 1;\nselect 2")).toEqual(["select 1;", "select 2"])
+  })
+
+  it("ignores semicolons inside strings, identifiers and comments", () => {
+    const sql = [
+      "select ';', \"a;b\", `c;d` from t; -- trailing; comment",
+      "# hash; comment",
+      "/* block ; */ select 'it''s; ok', 'esc\\'; still';",
+    ].join("\n")
+    expect(texts(sql)).toEqual([
+      "select ';', \"a;b\", `c;d` from t;",
+      "select 'it''s; ok', 'esc\\'; still';",
+    ])
+  })
+
+  it("treats -- without a following space as an operator, like MySQL", () => {
+    expect(texts("select 1--1; select 2")).toEqual(["select 1--1;", "select 2"])
+  })
+
+  it("drops empty and comment-only segments", () => {
+    expect(texts(";; -- nothing\n  ;")).toEqual([])
+    expect(texts("")).toEqual([])
+  })
+
+  it("reports offsets into the original text", () => {
+    const sql = "  select 1 ;  select 2"
+    const [first, second] = splitStatements(sql)
+    expect(sql.slice(first.from, first.to)).toBe("select 1 ;")
+    expect(sql.slice(second.from, second.to)).toBe("select 2")
+  })
+})
+
+describe("statementAtCursor", () => {
+  const sql = "select 1;\n\nselect 2;\nselect 3"
+
+  it("finds the statement under the cursor", () => {
+    expect(statementAtCursor(sql, 3)?.text).toBe("select 1;")
+    expect(statementAtCursor(sql, sql.indexOf("2"))?.text).toBe("select 2;")
+    expect(statementAtCursor(sql, sql.length)?.text).toBe("select 3")
+  })
+
+  it("keeps the statement that just ended when the cursor is right after its semicolon", () => {
+    expect(statementAtCursor(sql, sql.indexOf(";") + 1)?.text).toBe("select 1;")
+    expect(statementAtCursor("select 1;   ", 11)?.text).toBe("select 1;")
+  })
+
+  it("picks the next statement from a blank line before it", () => {
+    expect(statementAtCursor(sql, sql.indexOf("\n\n") + 1)?.text).toBe("select 2;")
+  })
+
+  it("falls back to the previous statement in trailing whitespace", () => {
+    expect(statementAtCursor("select 1;\n\n", 11)?.text).toBe("select 1;")
+  })
+
+  it("returns null when there is nothing to run", () => {
+    expect(statementAtCursor("  -- only a comment", 5)).toBeNull()
+  })
+})

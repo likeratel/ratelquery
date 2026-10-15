@@ -100,6 +100,8 @@ export interface ExportOptions {
   path: string
   tableName?: string
   includeHeader?: boolean
+  /** Schema to run a full export in; defaults to the session database. */
+  database?: string
 }
 
 export interface ExportResult {

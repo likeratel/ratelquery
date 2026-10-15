@@ -1,4 +1,4 @@
-/* Design tokens. Dark is the default; light follows the system unless data-theme overrides. */
+/* Design tokens. Dark is the default; `data-theme="light"` switches the palette. */
 :root {
   color-scheme: dark;
 
@@ -55,36 +55,7 @@
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    color-scheme: light;
-    --bg: #f5f6f8;
-    --bg-sunken: #eceef2;
-    --surface: #ffffff;
-    --surface-raised: #ffffff;
-    --surface-hover: #eef1f6;
-    --line: #e2e5eb;
-    --line-strong: #cbd1db;
-    --text: #1b1f27;
-    --text-muted: #5d6676;
-    --text-faint: #9aa3b2;
-    --accent: #3d63e6;
-    --accent-soft: rgba(61, 99, 230, 0.1);
-    --accent-ring: rgba(61, 99, 230, 0.35);
-    --ok: #1f9d6c;
-    --warn: #b7850a;
-    --danger: #d64545;
-    --danger-soft: rgba(214, 69, 69, 0.1);
-    --data-number: #6d3fd6;
-    --data-string: #1b1f27;
-    --data-bool: #1f9d6c;
-    --data-date: #1c6fb8;
-    --data-json: #9a6c00;
-    --data-null: #9aa3b2;
-    --shadow-pop: 0 12px 32px rgba(20, 30, 50, 0.14), 0 0 0 1px var(--line);
-  }
-}
-
+/* `data-theme` is always set by applyTheme(); "system" resolves to light or dark there. */
 :root[data-theme="light"] {
   color-scheme: light;
   --bg: #f5f6f8;

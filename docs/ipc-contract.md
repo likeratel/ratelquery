@@ -175,6 +175,7 @@ interface ExportOptions {
   path: string                 // absolute path chosen by the user via the dialog plugin
   tableName?: string           // for "sql" INSERT statements; default "export"
   includeHeader?: boolean      // csv, default true
+  database?: string            // mysql_export only: schema to run `sql` in; default the session database
 }
 interface ExportResult { rows: number; bytes: number; elapsedMs: number }
 ```

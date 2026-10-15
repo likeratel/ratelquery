@@ -25,6 +25,16 @@ describe("parseShortcut", () => {
     })
   })
 
+  it("rejects characters that need Shift to type", () => {
+    expect(() => parseShortcut("Mod+?")).toThrow(/Unsupported key/)
+  })
+
+  it("accepts the keypad Enter for Enter shortcuts", () => {
+    expect(
+      matchesShortcut(press("NumpadEnter", { meta: true }), parseShortcut("Mod+Enter"), true),
+    ).toBe(true)
+  })
+
   it("rejects unknown modifiers", () => {
     expect(() => parseShortcut("Hyper+K")).toThrow(/Unknown modifier/)
   })

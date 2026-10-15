@@ -1,18 +1,166 @@
-// STUB owned by the connections feature. The connections implementer replaces this file.
-// Other features may rely on this public surface only.
 import { create } from "zustand"
-import type { ConnectionConfig, ConnectionId } from "../lib/connections"
+import { connectionsApi, type ConnectionConfig, type ConnectionId } from "../lib/connections"
+import { normalizeError } from "../lib/ipc"
+import {
+  describeError,
+  type ConnectionAction,
+  type FriendlyError,
+} from "../features/connections/errors"
+import { sortByName, upsertConnection } from "../features/connections/filter"
+
+export type LoadStatus = "idle" | "loading" | "ready" | "error"
+
+export type TestState =
+  | { status: "idle" }
+  | { status: "testing" }
+  | { status: "ok"; latencyMs: number; serverVersion?: string }
+  | { status: "fail"; error: FriendlyError }
+
+export interface DialogState {
+  open: boolean
+  /** Connection being edited, or null when creating a new one. */
+  editing: ConnectionConfig | null
+  /** True once the backend confirms a secret is stored for `editing`. */
+  hasStoredSecret: boolean
+  /** Increments on every open so stale async results can be ignored. */
+  session: number
+}
+
+export type ActionResult<T = void> = { ok: true; value: T } | { ok: false; error: FriendlyError }
 
 interface ConnectionsState {
   connections: ConnectionConfig[]
+  status: LoadStatus
+  loadError: FriendlyError | null
+  dialog: DialogState
+  test: TestState
+  saving: boolean
+  saveError: FriendlyError | null
   load: () => Promise<void>
   openDialog: (existing?: ConnectionConfig) => void
+  closeDialog: () => void
+  save: (config: ConnectionConfig, secret: string | null) => Promise<ActionResult<ConnectionConfig>>
+  remove: (id: ConnectionId) => Promise<ActionResult>
+  testConnection: (config: ConnectionConfig, secret: string | null) => Promise<void>
+  resetTest: () => void
   byId: (id: ConnectionId) => ConnectionConfig | undefined
 }
 
-export const useConnectionsStore = create<ConnectionsState>((_set, get) => ({
+const IDLE_TEST: TestState = { status: "idle" }
+
+const CLOSED_DIALOG: DialogState = {
+  open: false,
+  editing: null,
+  hasStoredSecret: false,
+  session: 0,
+}
+
+function friendly(raw: unknown, action: ConnectionAction): FriendlyError {
+  return describeError(normalizeError(raw), action)
+}
+
+let loadToken = 0
+let testToken = 0
+
+export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
   connections: [],
-  load: async () => {},
-  openDialog: () => {},
+  status: "idle",
+  loadError: null,
+  dialog: CLOSED_DIALOG,
+  test: IDLE_TEST,
+  saving: false,
+  saveError: null,
+
+  load: async () => {
+    const token = ++loadToken
+    set({ status: "loading", loadError: null })
+    try {
+      const list = await connectionsApi.list()
+      if (token !== loadToken) return
+      set({ connections: sortByName(list), status: "ready" })
+    } catch (raw) {
+      if (token !== loadToken) return
+      set({ status: "error", loadError: friendly(raw, "load") })
+    }
+  },
+
+  openDialog: (existing) => {
+    const session = get().dialog.session + 1
+    testToken++
+    set({
+      dialog: { open: true, editing: existing ?? null, hasStoredSecret: false, session },
+      test: IDLE_TEST,
+      saving: false,
+      saveError: null,
+    })
+    if (!existing) return
+    connectionsApi
+      .hasSecret(existing.id)
+      .then((hasStoredSecret) => {
+        const { dialog } = get()
+        if (dialog.open && dialog.session === session) {
+          set({ dialog: { ...dialog, hasStoredSecret } })
+        }
+      })
+      .catch(() => {
+        // Unknown keyring state: treat as no stored secret, so the user is asked for one.
+      })
+  },
+
+  closeDialog: () => {
+    testToken++
+    set((state) => ({
+      dialog: { ...CLOSED_DIALOG, session: state.dialog.session },
+      test: IDLE_TEST,
+      saving: false,
+      saveError: null,
+    }))
+  },
+
+  save: async (config, secret) => {
+    const session = get().dialog.session
+    set({ saving: true, saveError: null })
+    try {
+      const saved = await connectionsApi.save(config, secret)
+      set((state) => ({ connections: upsertConnection(state.connections, saved) }))
+      if (get().dialog.session === session) get().closeDialog()
+      return { ok: true, value: saved }
+    } catch (raw) {
+      const error = friendly(raw, "save")
+      if (get().dialog.session === session) set({ saving: false, saveError: error })
+      return { ok: false, error }
+    }
+  },
+
+  remove: async (id) => {
+    try {
+      await connectionsApi.delete(id)
+      set((state) => ({ connections: state.connections.filter((c) => c.id !== id) }))
+      return { ok: true, value: undefined }
+    } catch (raw) {
+      return { ok: false, error: friendly(raw, "delete") }
+    }
+  },
+
+  testConnection: async (config, secret) => {
+    const token = ++testToken
+    set({ test: { status: "testing" } })
+    try {
+      const result = await connectionsApi.test(config, secret)
+      if (token !== testToken) return
+      set({
+        test: { status: "ok", latencyMs: result.latencyMs, serverVersion: result.serverVersion },
+      })
+    } catch (raw) {
+      if (token !== testToken) return
+      set({ test: { status: "fail", error: friendly(raw, "test") } })
+    }
+  },
+
+  resetTest: () => {
+    testToken++
+    set({ test: IDLE_TEST })
+  },
+
   byId: (id) => get().connections.find((c) => c.id === id),
 }))

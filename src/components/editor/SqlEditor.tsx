@@ -1,0 +1,162 @@
+import {
+  autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+  completionKeymap,
+} from "@codemirror/autocomplete"
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
+import { MySQL, sql, type SQLNamespace } from "@codemirror/lang-sql"
+import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language"
+import { highlightSelectionMatches, searchKeymap } from "@codemirror/search"
+import { Compartment, EditorState, type Extension } from "@codemirror/state"
+import {
+  drawSelection,
+  EditorView,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  keymap,
+  lineNumbers,
+  placeholder,
+  type ViewUpdate,
+} from "@codemirror/view"
+import { useEffect, useRef } from "react"
+import { tokenHighlightStyle, tokenTheme } from "./editorTheme"
+import "./editor.css"
+
+export interface SqlEditorProps {
+  /** Identity of the document; editor state (undo history, selection) is kept per key. */
+  stateKey: string
+  value: string
+  onChange: (value: string) => void
+  /** Table name to column names, for completion. */
+  schema?: SQLNamespace
+  placeholderText?: string
+  /**
+   * Runs in the keydown capture phase, before CodeMirror's `key`-based keymap. Return true to
+   * claim the event; it is then prevented and stopped so the editor never sees it.
+   */
+  onKeyDownCapture?: (event: KeyboardEvent, view: EditorView) => boolean
+  onViewChange?: (view: EditorView | null) => void
+  autoFocus?: boolean
+}
+
+const languageSlot = new Compartment()
+const stateCache = new Map<string, EditorState>()
+const changeHandlers = new Map<string, (update: ViewUpdate) => void>()
+
+/** Drops the remembered editor state for a closed document. */
+export function forgetEditorState(stateKey: string): void {
+  stateCache.delete(stateKey)
+}
+
+function languageFor(schema: SQLNamespace | undefined): Extension {
+  return sql({ dialect: MySQL, schema, upperCaseKeywords: true })
+}
+
+function baseExtensions(stateKey: string, placeholderText: string): Extension[] {
+  return [
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightActiveLine(),
+    history(),
+    drawSelection(),
+    indentOnInput(),
+    bracketMatching(),
+    closeBrackets(),
+    autocompletion({ icons: false }),
+    highlightSelectionMatches(),
+    // Completion must come before the default keymap so Enter accepts a suggestion
+    // instead of inserting a newline while the list is open.
+    keymap.of([
+      ...closeBracketsKeymap,
+      ...completionKeymap,
+      ...defaultKeymap,
+      ...historyKeymap,
+      ...searchKeymap,
+      indentWithTab,
+    ]),
+    syntaxHighlighting(tokenHighlightStyle),
+    tokenTheme,
+    placeholder(placeholderText),
+    EditorView.updateListener.of((update) => changeHandlers.get(stateKey)?.(update)),
+  ]
+}
+
+export function SqlEditor({
+  stateKey,
+  value,
+  onChange,
+  schema,
+  placeholderText = "",
+  onKeyDownCapture,
+  onViewChange,
+  autoFocus = false,
+}: SqlEditorProps) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  const viewRef = useRef<EditorView | null>(null)
+  const latest = useRef({ onChange, onKeyDownCapture, onViewChange })
+
+  useEffect(() => {
+    latest.current = { onChange, onKeyDownCapture, onViewChange }
+  })
+
+  useEffect(() => {
+    changeHandlers.set(stateKey, (update) => {
+      if (update.docChanged) latest.current.onChange(update.state.doc.toString())
+    })
+    return () => {
+      changeHandlers.delete(stateKey)
+    }
+  }, [stateKey])
+
+  useEffect(() => {
+    const host = hostRef.current
+    if (!host) return
+    const cached = stateCache.get(stateKey)
+    const state =
+      cached && cached.doc.toString() === value
+        ? cached
+        : EditorState.create({
+            doc: value,
+            extensions: [
+              ...baseExtensions(stateKey, placeholderText),
+              languageSlot.of(languageFor(schema)),
+            ],
+          })
+    const view = new EditorView({ state, parent: host })
+    viewRef.current = view
+    latest.current.onViewChange?.(view)
+    if (autoFocus) view.focus()
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (latest.current.onKeyDownCapture?.(event, view)) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+    }
+    host.addEventListener("keydown", onKeyDown, { capture: true })
+    return () => {
+      host.removeEventListener("keydown", onKeyDown, { capture: true })
+      stateCache.set(stateKey, view.state)
+      latest.current.onViewChange?.(null)
+      view.destroy()
+      viewRef.current = null
+    }
+    // The view is created once per document; value and schema changes are synced below.
+  }, [stateKey])
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: languageSlot.reconfigure(languageFor(schema)) })
+  }, [schema])
+
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    const current = view.state.doc.toString()
+    if (current !== value) {
+      view.dispatch({ changes: { from: 0, to: current.length, insert: value } })
+    }
+  }, [value])
+
+  return <div className="sql-editor" ref={hostRef} />
+}
