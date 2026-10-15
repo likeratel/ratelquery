@@ -106,10 +106,9 @@ describe("editing an Athena connection", () => {
 
     emitAppEvent("connection-updated", "a1")
     await flush()
-    expect(calls.at(-1)).toEqual({
-      command: "athena_cancel",
-      args: { connectionId: "a1", executionId: "e1" },
-    })
+    // The backend stopped the old client's executions on save; a cancel through the new client
+    // would hit another region or account.
+    expect(calls.some((c) => c.command === "athena_cancel")).toBe(false)
     rejectWait({ kind: "query", message: "The query was cancelled" })
     await expect(run).resolves.toBe("failed")
     expect(calls.filter((c) => c.command === "athena_start")).toHaveLength(1)

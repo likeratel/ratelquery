@@ -210,6 +210,12 @@ describe("Athena rules", () => {
       /UNLOAD/,
     )
     expect(danger("MSCK REPAIR TABLE logs")).toMatch(/MSCK REPAIR/)
+    expect(danger("MERGE INTO t USING s ON t.id = s.id WHEN MATCHED THEN DELETE")).toMatch(/MERGE/)
+    expect(danger("CREATE VIEW v AS SELECT 1")).toMatch(/CREATE VIEW/)
+    expect(danger("create or replace view v as select 1")).toMatch(/CREATE VIEW/)
+    expect(danger("OPTIMIZE t REWRITE DATA USING BIN_PACK")).toMatch(/OPTIMIZE/)
+    expect(danger("VACUUM t")).toMatch(/VACUUM/)
+    expect(danger("CREATE TABLE t (id int)")).toBeNull()
   })
 
   it("keeps the shared rules and lets reads through", () => {

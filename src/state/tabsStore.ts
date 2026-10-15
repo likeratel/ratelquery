@@ -75,6 +75,11 @@ interface TabsStore extends TabsState {
    * never start. Rejects with the AppError when Athena refused to stop it.
    */
   cancel: (id: string) => Promise<void>
+  /**
+   * Marks the running Athena tab as cancelled without calling Athena: later statements never
+   * start. For when the backend already stopped the execution (an edited connection).
+   */
+  abandonRun: (id: string) => void
   updateEdits: (id: string, index: number, update: (edits: GridEdits) => GridEdits) => void
   discardEdits: (id: string, index: number) => void
   /**
@@ -249,6 +254,12 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       cancelledRuns.add(runKey(id, tab.runId))
       // Without an id yet, the run stops the execution as soon as it starts.
       if (tab.executionId) await athenaApi.cancel(tab.connectionId, tab.executionId)
+    },
+
+    abandonRun: (id) => {
+      const tab = findTab(id)
+      if (!tab || !tab.running || tab.engine !== "athena") return
+      cancelledRuns.add(runKey(id, tab.runId))
     },
 
     updateEdits: (id, index, update) =>

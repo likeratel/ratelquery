@@ -631,7 +631,7 @@ interface AthenaRowsResult extends RowsResult { athena: AthenaStats }
 | `athena_schema` | `connectionId`, `database` | `SchemaSnapshot` (`mysql_schema` shape) from `ListTableMetadata` across all pages. `kind` is `"view"` for `TableType` `VIRTUAL_VIEW`, else `"table"`. Columns are the table's columns followed by its partition keys; `typeName` is the Athena/Glue type as returned (e.g. `varchar`, `bigint`, `array<string>`), `nullable` true, `isPrimary` / `isAutoIncrement` false, `defaultValue` null, `comment` from the column comment. An unknown database rejects with `not_found` (Athena's `MetadataException`). |
 | `athena_start` | `connectionId`, `sql: string`, `options: AthenaQueryOptions` | `{ executionId: string }` from `StartQueryExecution` in the config's workgroup with the resolved output location. `sql` is **one** statement (Athena rejects several); the frontend splits scripts and runs statements one after another. An empty statement rejects with `invalid_input`. |
 | `athena_wait` | `connectionId`, `executionId`, `maxRows?: number` | `AthenaRowsResult`. Polls `GetQueryExecution` (0.5 s, growing to 2 s) until the state is terminal, then pages through `GetQueryResults` (1000 per page) until `maxRows` rows are kept; `truncated` is true when more existed. `FAILED` rejects with `kind: "query"` and `AthenaError.ErrorMessage` (else `StateChangeReason`); `CANCELLED` rejects with `kind: "query"` and the message "The query was cancelled". The first result row is dropped when it repeats the column names (Athena returns a header row for `SELECT`-like statements only). Metadata statements (`SHOW ...`, DDL) return their text rows as `str` cells; a statement with no result set returns `columns: []`, `rows: []`. |
-| `athena_cancel` | `connectionId`, `executionId` | `void`. `StopQueryExecution`; already finished executions are a no-op. The execution is no longer tracked for the stop on delete or edit below. |
+| `athena_cancel` | `connectionId`, `executionId` | `void`. `StopQueryExecution`; already finished executions are a no-op. Once stopped, the execution is no longer tracked for the stop on delete or edit below. |
 
 When `maxRows` rows are kept and Athena still reports a next page, one more page of one row is read and `truncated` is set only when it holds a row.
 
@@ -641,7 +641,8 @@ keeps the `executionId` while it runs.
 Frontend rules for Athena tabs: a script is split on `;` outside `'…'` strings, `"…"`
 identifiers (`""` escapes a quote; a backslash does not escape) and comments, and each statement
 goes to `athena_start` on its own. Statements that write to S3 or the Glue catalog (`CREATE TABLE
-… AS`, `INSERT`, `UNLOAD`, `MSCK REPAIR`) go through the same confirmation as `DROP` / `ALTER`.
+… AS`, `CREATE [OR REPLACE] VIEW`, `INSERT`, `MERGE`, `UNLOAD`, `MSCK REPAIR`, `OPTIMIZE`, `VACUUM`) go
+through the same confirmation as `DROP` / `ALTER`.
 The default `LIMIT` is not added to a `SELECT` with a top-level `FETCH FIRST|NEXT … ROWS ONLY`.
 `athena_workgroups` with access keys is called only once the secret field loses focus (or with a
 stored secret that may be reused), never with a half-typed secret.
@@ -672,5 +673,6 @@ is `query`.
 (best effort, failures are only logged and the command does not wait for them), so a deleted
 connection does not keep scanning. Dropping the client after a `credential` error or after
 `athena_create_output_bucket` stops nothing. The frontend
-also cancels the running Athena tabs of a connection when its config is saved, so a script's
+also marks the running Athena tabs of a connection as cancelled when its config is saved (without
+an `athena_cancel`, which would go through a client built from the new settings), so a script's
 remaining statements never start under the new region or workgroup.

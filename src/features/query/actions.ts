@@ -165,12 +165,14 @@ export function forgetConnection(connectionId: ConnectionId): void {
 }
 
 /**
- * An edited connection may point at another region, account or workgroup now: its running
- * Athena tabs stop the way the Cancel button stops them, so no later statement of the run starts
- * with the new settings, and its Athena catalog is dropped.
+ * An edited connection may point at another region, account or workgroup now. The backend
+ * already stopped the executions of its old client when the config was saved, so the running
+ * Athena tabs are only marked cancelled here (an `athena_cancel` would go through a client built
+ * from the new settings): no later statement of the run starts, and the catalog is dropped.
  */
 function connectionEdited(connectionId: ConnectionId): void {
-  for (const id of tabsForConnection(useTabsStore.getState(), connectionId)) stopAthenaRun(id)
+  const tabs = useTabsStore.getState()
+  for (const id of tabsForConnection(tabs, connectionId)) tabs.abandonRun(id)
   useAthenaStore.getState().forget(connectionId)
 }
 

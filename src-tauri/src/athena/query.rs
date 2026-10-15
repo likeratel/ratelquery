@@ -158,10 +158,9 @@ pub async fn wait(
     })
 }
 
-/// StopQueryExecution; finished executions are left as they are. The execution is no longer
-/// tracked for the stop on delete / edit.
+/// StopQueryExecution; finished executions are left as they are. Once stopped, the execution
+/// is no longer tracked for the stop on delete / edit (a failed stop keeps it tracked).
 pub async fn cancel(handle: &AthenaHandle, execution_id: &str) -> AppResult<()> {
-    handle.forget_start(execution_id);
     handle
         .client()
         .stop_query_execution()
@@ -169,6 +168,7 @@ pub async fn cancel(handle: &AthenaHandle, execution_id: &str) -> AppResult<()> 
         .send()
         .await
         .map_err(|e| map_sdk_error(&e, handle.auth()))?;
+    handle.forget_start(execution_id);
     Ok(())
 }
 

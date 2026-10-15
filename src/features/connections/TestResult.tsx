@@ -46,11 +46,13 @@ function MissingBucket({
       <TriangleAlert size={14} aria-hidden />
       <span className="conn-test__text">
         <span>
-          Bucket <span className="mono">s3://{bucket}/</span> doesn&apos;t exist. Create it?
+          Bucket <span className="mono">s3://{bucket}/</span> doesn&apos;t exist or isn&apos;t owned
+          by this account. Create it?
         </span>
         <span className="conn-test__detail">
           Athena writes query results there. It is created in this region with public access
-          blocked. Or set an output location under Advanced.
+          blocked. If the bucket is yours but the check fails, set an output location under Advanced
+          instead.
         </span>
         {error && (
           <span className="conn-test__detail" role="alert">

@@ -129,6 +129,14 @@ async fn max_rows_truncates_and_metadata_statements_return_text() {
     assert_eq!(result.rows.row_count, 2);
     assert!(result.rows.truncated);
 
+    // 999 rows plus the header fill the first 1000-row page exactly, so the next-page probe runs
+    // and must find nothing.
+    let sql = "SELECT x FROM UNNEST(SEQUENCE(1, 999)) AS t(x)";
+    let started = athena::start(&handle, sql, &options(Some(999))).await.expect("start");
+    let result = athena::wait(&handle, &started.execution_id, Some(999)).await.expect("wait");
+    assert_eq!(result.rows.row_count, 999);
+    assert!(!result.rows.truncated, "probe page was empty");
+
     let started = athena::start(&handle, "SHOW DATABASES", &options(None)).await.expect("start");
     let result = athena::wait(&handle, &started.execution_id, None).await.expect("wait");
     assert!(!result.rows.rows.is_empty());

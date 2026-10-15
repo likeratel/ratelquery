@@ -172,6 +172,10 @@ const ATHENA_WRITE_REASONS = {
   INSERT: "INSERT writes new data files to the table's S3 location",
   UNLOAD: "UNLOAD writes the query result to S3",
   MSCK: "MSCK REPAIR TABLE adds the partitions it finds in S3 to the catalog",
+  MERGE: "MERGE INTO changes data files of the target table in S3",
+  VIEW: "CREATE VIEW adds or replaces a view in the catalog",
+  OPTIMIZE: "OPTIMIZE rewrites the table's data files in S3",
+  VACUUM: "VACUUM deletes unreferenced data files of the table from S3",
 } as const
 
 /** The word after the leading keyword, upper-cased (`TABLE` in `ALTER TABLE t`). */
@@ -192,16 +196,23 @@ function athenaWriteReason(masked: string, top: string, verb: string): string | 
   if (verb === "CREATE" && second === "TABLE" && /\bAS\b/i.test(top)) {
     return ATHENA_WRITE_REASONS.CTAS
   }
+  if (verb === "CREATE" && /^\s*CREATE\s+(OR\s+REPLACE\s+)?VIEW\b/i.test(masked)) {
+    return ATHENA_WRITE_REASONS.VIEW
+  }
   if (verb === "INSERT") return ATHENA_WRITE_REASONS.INSERT
   if (verb === "UNLOAD") return ATHENA_WRITE_REASONS.UNLOAD
   if (verb === "MSCK" && second === "REPAIR") return ATHENA_WRITE_REASONS.MSCK
+  if (verb === "MERGE") return ATHENA_WRITE_REASONS.MERGE
+  if (verb === "OPTIMIZE") return ATHENA_WRITE_REASONS.OPTIMIZE
+  if (verb === "VACUUM") return ATHENA_WRITE_REASONS.VACUUM
   return null
 }
 
 /**
  * Why `statement` deserves a confirmation before it runs, or null when it doesn't. Flags
  * UPDATE/DELETE without a top-level WHERE, DROP, TRUNCATE, ALTER and RENAME TABLE; on Athena
- * also `CREATE TABLE ... AS`, INSERT, UNLOAD and MSCK REPAIR, which write to S3 or the catalog.
+ * also `CREATE TABLE ... AS`, `CREATE [OR REPLACE] VIEW`, INSERT, MERGE, UNLOAD, MSCK REPAIR,
+ * OPTIMIZE and VACUUM, which write to S3 or the catalog.
  */
 export function classifyDanger(
   statement: string,
