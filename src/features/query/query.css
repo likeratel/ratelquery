@@ -67,6 +67,49 @@
   flex: 1;
 }
 
+.db-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.db-switch__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+}
+
+.db-switch__label {
+  color: var(--text-faint);
+}
+
+.db-switch__select {
+  height: 22px;
+  max-width: 200px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.db-switch__select:hover {
+  background: var(--surface-hover);
+}
+
+.spin {
+  animation: spin 900ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .editor-pane__status {
   color: var(--text-muted);
   font-size: var(--text-xs);

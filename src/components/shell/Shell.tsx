@@ -9,7 +9,6 @@ import { applyPlatformAttribute, applyTheme, useUiStore } from "../../state/uiSt
 import { isModalOpen, Toaster } from "../ui"
 import { EmptyWorkspace } from "./EmptyWorkspace"
 import { Sidebar } from "./Sidebar"
-import { StatusBar } from "./StatusBar"
 import { TabBar } from "./TabBar"
 import "./shell.css"
 
@@ -56,7 +55,6 @@ export function Shell() {
           )}
         </div>
       </div>
-      <StatusBar />
       {/* Outside the sidebar, which turns inert when collapsed. */}
       <ConnectionDialog />
       <Toaster />

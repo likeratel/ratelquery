@@ -9,6 +9,7 @@ import { formatShortcut } from "../../lib/shortcuts"
 import { useTabsStore } from "../../state/tabsStore"
 import { runActiveTab } from "./actions"
 import { APP_SHORTCUTS, handleAppShortcut } from "./appShortcuts"
+import { DatabaseSwitcher } from "./DatabaseSwitcher"
 import { registerEditor } from "./editorRegistry"
 
 /** Completion namespace: table name to column names for the tab's database. */
@@ -74,6 +75,7 @@ export function EditorPane({ tab, schema }: EditorPaneProps) {
         </button>
         <span className="editor-pane__spacer" />
         {tab.running && <span className="editor-pane__status">Running…</span>}
+        <DatabaseSwitcher tab={tab} />
       </div>
       <div className="run-line" data-running={tab.running || undefined} aria-hidden="true" />
     </div>

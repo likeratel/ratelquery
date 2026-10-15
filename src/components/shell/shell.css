@@ -1,7 +1,7 @@
 .shell {
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
-  grid-template-rows: 1fr var(--statusbar-height);
+  grid-template-rows: 1fr;
   height: 100%;
   background: var(--bg);
   transition: grid-template-columns 180ms var(--ease-out);
@@ -166,30 +166,6 @@
   font-size: var(--text-xs);
 }
 
-.statusbar {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 0 12px;
-  border-top: 1px solid var(--line);
-  background: var(--bg-sunken);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-
-.statusbar__spacer {
-  flex: 1;
-}
-
-.statusbar__item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-
 .dot {
   width: 7px;
   height: 7px;
@@ -276,39 +252,6 @@
   .dot__ripple {
     display: none;
   }
-}
-
-.statusbar__db {
-  gap: 4px;
-}
-
-.statusbar__label {
-  color: var(--text-faint);
-}
-
-.statusbar__select {
-  height: 18px;
-  max-width: 180px;
-  padding: 0 2px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text);
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-
-.statusbar__select:hover {
-  background: var(--surface-hover);
-}
-
-.statusbar__link {
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-
-.statusbar__link:hover:not(:disabled) {
-  color: var(--text);
 }
 
 .tab {
