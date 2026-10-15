@@ -13,6 +13,10 @@ const CONNECTION_RESET_TEXT: &str = "connection reset";
 /// without global privileges) and `ER_BAD_DB_ERROR` (unknown database).
 const UNUSABLE_DATABASE_CODES: [u16; 2] = [1044, 1049];
 
+/// Message when every pooled connection stayed checked out for the whole acquire timeout.
+pub const POOL_BUSY: &str =
+    "All pooled connections are busy; wait for a running query or open another connection";
+
 /// Message for a non-read statement whose connection dropped while it ran.
 pub const UNKNOWN_OUTCOME: &str = "The server dropped the connection while the statement was \
      running; it may or may not have been applied. Check the data before running it again.";
@@ -35,9 +39,13 @@ fn mysql_error(err: &sqlx::Error) -> Option<&MySqlDatabaseError> {
 /// Connection-level errors are retryable. A server (`Database`) error is classified by its
 /// error number only: its message can quote user text such as `connection reset`. The message
 /// is only inspected for driver-side errors (protocol, TLS, ...).
+///
+/// `PoolTimedOut` is not a lost connection: it usually means every pooled connection is busy.
+/// [`super::session::MysqlSession::acquire`] tells the two causes apart.
 pub fn is_connection_error(err: &sqlx::Error) -> bool {
     match err {
-        sqlx::Error::Io(_) | sqlx::Error::PoolClosed | sqlx::Error::PoolTimedOut => true,
+        sqlx::Error::Io(_) | sqlx::Error::PoolClosed => true,
+        sqlx::Error::PoolTimedOut => false,
         sqlx::Error::Database(_) => {
             mysql_error(err).is_some_and(|db| is_connection_error_code(db.number()))
         }
@@ -94,6 +102,7 @@ impl OpError {
     /// `query`.
     pub fn into_app_error(self) -> AppError {
         match self {
+            OpError::Sql(sqlx::Error::PoolTimedOut) => AppError::Connection(POOL_BUSY.into()),
             OpError::Sql(e) if is_connection_error(&e) => connection_error(&e),
             OpError::Sql(e) => query_error(&e),
             OpError::App(e) => e,
@@ -110,7 +119,15 @@ mod tests {
         let io = sqlx::Error::Io(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe"));
         assert!(is_connection_error(&io));
         assert!(is_connection_error(&sqlx::Error::PoolClosed));
-        assert!(is_connection_error(&sqlx::Error::PoolTimedOut));
+    }
+
+    #[test]
+    fn pool_timeout_is_busy_not_lost() {
+        assert!(!is_connection_error(&sqlx::Error::PoolTimedOut));
+        let op = OpError::Sql(sqlx::Error::PoolTimedOut);
+        assert!(!op.is_connection_level(), "never retried");
+        let err = op.into_app_error();
+        assert_eq!((err.kind(), err.to_string().as_str()), ("connection", POOL_BUSY));
     }
 
     #[test]

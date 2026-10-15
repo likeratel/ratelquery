@@ -48,6 +48,11 @@ export interface DynamoTab {
   error: AppError | null
   /** Index into `page.items`. */
   selected: number | null
+  /**
+   * An item shown in the side panel that isn't on the page, such as one just created before
+   * any request ran. A page selection replaces it.
+   */
+  detail: Item | null
   view: ItemView
   editor: ItemEditorState | null
   /** Increments on every finished request; drives stale-response checks and count-up. */
@@ -72,6 +77,7 @@ export function createDynamoTab(id: string, connectionId: ConnectionId, title: s
     running: false,
     error: null,
     selected: null,
+    detail: null,
     view: "table",
     editor: null,
     runId: 0,
@@ -143,6 +149,7 @@ export function finishDynamoRun(
     startKeys,
     page,
     selected: null,
+    detail: null,
     runId: tab.runId + 1,
     lastElapsedMs: page.elapsedMs,
   }
@@ -156,11 +163,17 @@ export function failDynamoRun(tab: DynamoTab, error: AppError): DynamoTab {
 export function selectItem(tab: DynamoTab, index: number | null): DynamoTab {
   const count = tab.page?.items.length ?? 0
   const selected = index !== null && index >= 0 && index < count ? index : null
-  return { ...tab, selected }
+  return { ...tab, selected, detail: null }
+}
+
+/** Shows `item` in the side panel without a page row behind it. */
+export function showDetail(tab: DynamoTab, item: Item): DynamoTab {
+  return { ...tab, selected: null, detail: item }
 }
 
 export function selectedItem(tab: DynamoTab): Item | null {
-  return tab.selected !== null ? (tab.page?.items[tab.selected] ?? null) : null
+  if (tab.selected === null) return tab.detail
+  return tab.page?.items[tab.selected] ?? null
 }
 
 /** Opens the item editor. `seed` is the starting text for a new item (defaults to `{}`). */

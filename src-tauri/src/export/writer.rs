@@ -3,11 +3,13 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::time::Instant;
 
+use super::csv_out::{csv_error, csv_writer, finish_csv, json_error};
 use super::file::{AtomicFile, validate_target};
 use super::format::{csv_field, json_value, sql_literal};
 use super::model::{ExportFormat, ExportOptions, ExportResult};
 use crate::error::{AppError, AppResult};
 use crate::mysql::{Cell, ColumnInfo, quote_ident};
+use crate::util::elapsed_ms;
 
 const BUFFER_SIZE: usize = 64 * 1024;
 
@@ -52,19 +54,12 @@ pub struct RowWriter<W: Write> {
     rows: u64,
 }
 
-fn csv_error(err: csv::Error) -> AppError {
-    AppError::Io(format!("could not write CSV: {err}"))
-}
-
 impl<W: Write> RowWriter<W> {
     pub fn new(out: W, columns: &[String], options: &ExportOptions) -> AppResult<Self> {
         let out = CountingWriter::new(out);
         let inner = match options.format {
             ExportFormat::Csv => {
-                let mut writer = csv::WriterBuilder::new()
-                    .terminator(csv::Terminator::Any(b'\n'))
-                    .quote_style(csv::QuoteStyle::Necessary)
-                    .from_writer(out);
+                let mut writer = csv_writer(out);
                 if options.include_header() {
                     writer.write_record(columns).map_err(csv_error)?;
                 }
@@ -74,7 +69,8 @@ impl<W: Write> RowWriter<W> {
                 let keys = unique_keys(columns)
                     .iter()
                     .map(serde_json::to_string)
-                    .collect::<Result<_, _>>()?;
+                    .collect::<Result<_, _>>()
+                    .map_err(json_error)?;
                 Inner::Json { out, keys }
             }
             ExportFormat::Sql => {
@@ -129,9 +125,7 @@ impl<W: Write> RowWriter<W> {
     /// Writes any trailer and returns the inner writer, row count and byte count.
     pub fn finish(self) -> AppResult<(W, u64, u64)> {
         let counting = match self.inner {
-            Inner::Csv(writer) => writer
-                .into_inner()
-                .map_err(|e| AppError::Io(format!("could not write CSV: {}", e.error())))?,
+            Inner::Csv(writer) => finish_csv(*writer)?,
             Inner::Json { mut out, .. } => {
                 out.write_all(if self.rows == 0 { b"[]\n" } else { b"\n]\n" })?;
                 out
@@ -210,8 +204,7 @@ pub fn export_rows(
         writer.write_row(row)?;
     }
     let (rows, bytes) = writer.commit()?;
-    let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    Ok(ExportResult { rows, bytes, elapsed_ms })
+    Ok(ExportResult { rows, bytes, elapsed_ms: elapsed_ms(start) })
 }
 
 #[cfg(test)]

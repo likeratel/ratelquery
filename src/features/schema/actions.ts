@@ -10,7 +10,6 @@ import { errorDetail } from "../connections/errors"
 import { useTabsStore } from "../../state/tabsStore"
 import { chooseTable, openDynamoTabFor } from "../dynamo"
 import { useDynamoCatalog } from "../dynamo/catalogStore"
-import { toast } from "../query"
 import { selectRowsSql } from "./sql"
 import { connectionKey, databaseChildren, databaseKey, needsLoad, tableChildren } from "./treeState"
 import { useSchemaTree } from "./treeStore"
@@ -132,7 +131,7 @@ export async function selectRows(
     if (isPasswordCancelled(raw)) return
     showToast({
       tone: "error",
-      message: `Could not connect to select rows from ${table}.`,
+      message: `Couldn't connect to select rows from ${table}`,
       detail: errorDetail(normalizeError(raw)),
     })
     return
@@ -166,9 +165,9 @@ export async function refreshTable(
 export async function copyText(text: string, message: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text)
-    toast(message, "success")
+    showToast({ tone: "success", message })
   } catch {
-    toast("Couldn't copy to the clipboard", "danger")
+    showToast({ tone: "error", message: "Couldn't copy to the clipboard" })
   }
 }
 

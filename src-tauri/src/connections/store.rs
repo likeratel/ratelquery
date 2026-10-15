@@ -1,12 +1,11 @@
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use super::model::ConnectionConfig;
 use crate::error::{AppError, AppResult};
-use crate::fsutil::create_private;
+use crate::fsutil::write_private_atomic;
 
 const FILE_NAME: &str = "connections.json";
 const FORMAT_VERSION: u32 = 1;
@@ -53,29 +52,12 @@ impl ConnectionStore {
 
     /// Writes all configs via a temp file in the same directory followed by a rename.
     pub fn save(&self, connections: &[ConnectionConfig]) -> AppResult<()> {
-        let dir = self
-            .path
-            .parent()
-            .ok_or_else(|| AppError::Io("connections file has no parent directory".into()))?;
-        fs::create_dir_all(dir)?;
         let contents = FileContents { version: FORMAT_VERSION, connections: connections.to_vec() };
         let json = serde_json::to_vec_pretty(&contents)
             .map_err(|e| AppError::Io(format!("could not encode connections: {e}")))?;
-        let tmp = dir.join(format!(".{FILE_NAME}.{}.tmp", uuid::Uuid::new_v4()));
-        let written = write_synced(&tmp, &json).and_then(|()| fs::rename(&tmp, &self.path));
-        if let Err(e) = written {
-            // Best effort cleanup; the original file is untouched either way.
-            let _ = fs::remove_file(&tmp);
-            return Err(AppError::Io(format!("could not write {FILE_NAME}: {e}")));
-        }
-        Ok(())
+        write_private_atomic(&self.path, &json)
+            .map_err(|e| AppError::Io(format!("could not write {FILE_NAME}: {e}")))
     }
-}
-
-fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = create_private(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
 }
 
 #[cfg(test)]

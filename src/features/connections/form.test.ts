@@ -3,8 +3,13 @@ import type { ConnectionConfig } from "../../lib/connections"
 import {
   DYNAMO_SECRET_AGAIN,
   emptyForm,
+  ENDPOINT_FULL_URL,
+  ENDPOINT_NO_FRAGMENT,
+  ENDPOINT_NO_USERINFO,
+  endpointProblem,
   formFromConfig,
   insecureEndpointWarning,
+  isFormChanged,
   MYSQL_SECRET_AGAIN,
   mysqlFormSchema,
   parseForm,
@@ -306,5 +311,42 @@ describe("insecureEndpointWarning", () => {
     ["http://localhost.example.com", true],
   ])("%j warns: %s", (endpoint, warns) => {
     expect(insecureEndpointWarning(endpoint) !== null).toBe(warns)
+  })
+})
+
+describe("endpointProblem", () => {
+  it.each([
+    ["", null],
+    ["http://localhost:8000", null],
+    ["https://dynamodb.us-east-1.amazonaws.com/", null],
+    ["localhost:8000", ENDPOINT_FULL_URL],
+    ["ftp://example.com", ENDPOINT_FULL_URL],
+    ["http://user:secret@localhost:8000", ENDPOINT_NO_USERINFO],
+    ["http://user@localhost:8000", ENDPOINT_NO_USERINFO],
+    ["http://@localhost:8000", ENDPOINT_NO_USERINFO],
+    ["http://localhost:8000/#frag", ENDPOINT_NO_FRAGMENT],
+    ["http://localhost:8000#", ENDPOINT_NO_FRAGMENT],
+  ])("%j -> %s", (endpoint, problem) => {
+    expect(endpointProblem(endpoint)).toBe(problem)
+  })
+
+  it("reports the problem on the endpoint field", () => {
+    const result = parseForm(dynamoForm({ endpoint: "https://a:b@proxy.example" }), NEW)
+    expect(result).toEqual({ ok: false, errors: { endpoint: ENDPOINT_NO_USERINFO } })
+  })
+})
+
+describe("isFormChanged", () => {
+  it("is false until a visible field or the kind changes", () => {
+    const initial = mysqlForm()
+    expect(isFormChanged(initial, { ...initial })).toBe(false)
+    expect(isFormChanged(initial, mysqlForm({ host: "db" }))).toBe(true)
+    expect(isFormChanged(initial, { ...initial, kind: "dynamodb" })).toBe(true)
+  })
+
+  it("ignores the hidden draft of the other kind", () => {
+    const initial = mysqlForm()
+    const hidden = { ...initial, dynamodb: { ...initial.dynamodb, name: "typed earlier" } }
+    expect(isFormChanged(initial, hidden)).toBe(false)
   })
 })

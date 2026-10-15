@@ -1,4 +1,5 @@
 import { forgetEditorState } from "../../components/editor/editorStateCache"
+import { forgetTabColumnWidths } from "../../components/grid/useColumnWidths"
 import type { ConnectionId } from "../../lib/connections"
 import { onAppEvent } from "../../lib/events"
 import { isAppError } from "../../lib/ipc"
@@ -19,7 +20,8 @@ import { useDynamoCatalog } from "../dynamo/catalogStore"
 import { editTargetFor } from "./editing"
 import { editorFor } from "./editorRegistry"
 import { confirmDangerousRun, planRun, useRunGuardStore } from "./runGuard"
-import { toast } from "./toastStore"
+import { forgetTabCountUps } from "./useCountUp"
+import { showToast } from "../../components/ui"
 
 /**
  * Opens a tab for any connection: a query tab for MySQL, a table browser for DynamoDB.
@@ -57,18 +59,25 @@ async function openMysqlTab(connectionId: ConnectionId): Promise<void> {
 export function newTabFromActive(): void {
   const active = selectActiveTab(useTabsStore.getState())
   if (!active) {
-    toast("Open a connection from the sidebar first")
+    showToast({ tone: "info", message: "Open a connection from the sidebar first" })
     return
   }
   if (active.kind === "dynamo") openDynamoTabFor(active.connectionId)
   else useTabsStore.getState().open(active.connectionId, active.database)
 }
 
-/** Drops a tab and its cached editor state without asking. */
-function removeTab(id: string): void {
-  useTabsStore.getState().close(id)
+/** Drops everything kept per tab outside the tabs store: editor state, badges, widths. */
+function forgetTabState(id: string): void {
   forgetEditorState(id)
   useRunGuardStore.getState().forgetTab(id)
+  forgetTabColumnWidths(id)
+  forgetTabCountUps(id)
+}
+
+/** Drops a tab and its cached state without asking. */
+function removeTab(id: string): void {
+  useTabsStore.getState().close(id)
+  forgetTabState(id)
 }
 
 /**
@@ -78,10 +87,7 @@ function removeTab(id: string): void {
 export function closeQueryTab(id: string): void {
   const store = useTabsStore.getState()
   store.requestClose(id)
-  if (useTabsStore.getState().closing !== id) {
-    forgetEditorState(id)
-    useRunGuardStore.getState().forgetTab(id)
-  }
+  if (useTabsStore.getState().closing !== id) forgetTabState(id)
 }
 
 /** Confirms the pending close and throws the unsaved work away. */
@@ -119,7 +125,7 @@ const OUTCOME_MESSAGES: Partial<Record<RunOutcome, string>> = {
 
 function reportOutcome(outcome: RunOutcome): void {
   const message = OUTCOME_MESSAGES[outcome]
-  if (message) toast(message)
+  if (message) showToast({ tone: "info", message })
 }
 
 /** Mod+Enter runs the whole editor; Mod+Shift+Enter only the statement at the cursor. */
@@ -180,10 +186,16 @@ export async function applyActiveEdits(): Promise<void> {
     const applied = await useTabsStore.getState().applyEdits(tab.id, index, resolved.target)
     if (applied) {
       const rows = applied.affectedRows === 1 ? "row" : "rows"
-      toast(`Applied changes · ${applied.affectedRows} ${rows} affected`, "success")
+      showToast({
+        tone: "success",
+        message: `Applied changes · ${applied.affectedRows} ${rows} affected`,
+      })
     }
   } catch (raw) {
-    const message = isAppError(raw) ? raw.message : "Couldn't apply changes"
-    toast(`Changes rolled back: ${message}`, "danger")
+    showToast({
+      tone: "error",
+      message: "Changes rolled back",
+      detail: isAppError(raw) ? raw.message : "Couldn't apply changes",
+    })
   }
 }

@@ -1,7 +1,11 @@
 import { useEffect } from "react"
-import { ConnectionDialog, PasswordPromptDialog } from "../../features/connections"
+import {
+  ConnectionDialog,
+  PasswordPromptDialog,
+  useNewConnectionShortcut,
+} from "../../features/connections"
 import { DynamoWorkspace } from "../../features/dynamo"
-import { TableWorkspace } from "../../features/schema"
+import { subscribeTreeCleanup, TableWorkspace } from "../../features/schema"
 import {
   handleAppShortcut,
   QueryWorkspace,
@@ -37,9 +41,14 @@ export function Shell() {
 
   useEffect(() => applyPlatformAttribute(), [])
 
+  // App-wide subscriptions and listeners live here, mounted once for the whole window.
+  useNewConnectionShortcut()
+
   useEffect(() => subscribeSessionEvents(), [])
 
   useEffect(() => subscribeConnectionCleanup(), [])
+
+  useEffect(() => subscribeTreeCleanup(), [])
 
   useEffect(() => {
     // The SQL editor handles these in its own capture phase and stops the event, so this

@@ -6,7 +6,7 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{Connected, connect, create_table, drop_table, query, rows, test_db, unique};
+use common::{Cleanup, Connected, connect, query, rows, test_db, unique};
 use std::sync::Arc;
 
 use dbclient_lib::connections::{
@@ -14,8 +14,8 @@ use dbclient_lib::connections::{
     MysqlConnectionConfig, MysqlTlsMode, SecretStore, probe_mysql,
 };
 use dbclient_lib::mysql::{
-    self, Cell, MysqlSessions, QueryOptions, RecordingSink, SessionState, UNKNOWN_OUTCOME,
-    run_query,
+    self, Cell, MysqlSessions, POOL_BUSY, QueryOptions, RecordingSink, SessionState,
+    UNKNOWN_OUTCOME, run_query,
 };
 
 const CA_VAR: &str = "DBCLIENT_TEST_MYSQL_CA";
@@ -90,8 +90,10 @@ async fn retries_read_statement_once_when_connection_dies_mid_query() {
 async fn write_statement_lost_mid_run_is_not_retried() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
+    let cleanup = Cleanup::new(&db);
     let killer = connect(&db).await;
-    let t = create_table(&c.session, "it_once", "id INT PRIMARY KEY, n INT", "(1, 0)").await;
+    let t =
+        cleanup.create_table(&c.session, "it_once", "id INT PRIMARY KEY, n INT", "(1, 0)").await;
     let tag = unique("upd");
     let sql = format!("UPDATE `{t}` SET n = n + 1 WHERE id = 1 AND SLEEP(1) = 0 AND '{tag}' <> ''");
     let session = c.session.clone();
@@ -105,7 +107,6 @@ async fn write_statement_lost_mid_run_is_not_retried() {
     assert!(after[0].reconnected(), "the next result reports the lost connection");
     let n = rows(&after[0]).rows[0][0].clone();
     assert!(matches!(&n, Cell::Int(v) if v == "0" || v == "1"), "applied at most once: {n:?}");
-    drop_table(&c.session, &t).await;
 }
 
 #[tokio::test]
@@ -249,7 +250,8 @@ async fn session_only_secret_is_used_but_never_stored() {
     let Some(db) = test_db() else { return };
     let dir = tempfile::tempdir().unwrap();
     let secrets = Arc::new(MemorySecretStore::default());
-    let connections = ConnectionsService::new(ConnectionStore::new(dir.path()), secrets.clone());
+    let connections =
+        Arc::new(ConnectionsService::new(ConnectionStore::new(dir.path()), secrets.clone()));
     let sessions = MysqlSessions::new(Arc::new(RecordingSink::default()));
     let password = db.password.clone().unwrap_or_default();
 
@@ -275,5 +277,137 @@ async fn session_only_secret_is_used_but_never_stored() {
     assert_eq!(err.kind(), "connection");
     connections.save(&saved, Some(&password)).unwrap();
     sessions.connect_saved(&connections, &id, None).await.expect("stored secret");
+    sessions.disconnect(&id).await;
+}
+
+fn ends_with(c: &Connected, tail: &[SessionState]) -> bool {
+    states(c).ends_with(tail)
+}
+
+async fn wait_until_closed(pool: &sqlx::MySqlPool) -> bool {
+    for _ in 0..100 {
+        if pool.is_closed() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    pool.is_closed()
+}
+
+/// Waits until `count` statements containing `tag` run on the server.
+async fn wait_running(killer: &Connected, tag: &str, count: usize) {
+    let find = format!(
+        "SELECT ID FROM information_schema.PROCESSLIST WHERE INFO LIKE '%{tag}%' \
+         AND INFO NOT LIKE '%PROCESSLIST%'"
+    );
+    for _ in 0..200 {
+        if rows(&query(&killer.session, &find).await[0]).rows.len() >= count {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("{count} statements tagged {tag} did not start");
+}
+
+#[tokio::test]
+async fn saturated_pool_is_busy_not_a_lost_connection() {
+    let Some(db) = test_db() else { return };
+    let sink = Arc::new(RecordingSink::default());
+    let sessions =
+        MysqlSessions::new(sink.clone()).with_acquire_timeout(Duration::from_millis(500));
+    let id = db.config.id.clone();
+    sessions.connect(&id, &db.config, db.password.as_deref()).await.expect("connect");
+    let session = sessions.get(&id).await.unwrap();
+    let killer = connect(&db).await;
+    let tag = unique("busy");
+    let running: Vec<_> = (0..mysql::MAX_CONNECTIONS)
+        .map(|_| {
+            let (session, sql) = (session.clone(), format!("SELECT SLEEP(3) AS s, '{tag}' AS tag"));
+            tokio::spawn(async move { run_query(&session, &sql, &QueryOptions::default()).await })
+        })
+        .collect();
+    wait_running(&killer, &tag, running.len()).await;
+    let before = sink.events().len();
+
+    let start = Instant::now();
+    let err = run_query(&session, "SELECT 1", &QueryOptions::default()).await.unwrap_err();
+    assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
+    assert_eq!((err.kind(), err.to_string().as_str()), ("connection", POOL_BUSY));
+    // The background check skips a busy pool instead of reporting it.
+    session.ping().await;
+    assert_eq!(sink.events().len(), before, "no state events: {:?}", sink.events());
+
+    for task in running {
+        assert!(task.await.unwrap().is_ok(), "the running queries are unaffected");
+    }
+    let after = query(&session, "SELECT 1").await;
+    assert!(!after[0].reconnected(), "nothing was lost");
+    assert!(
+        !sink
+            .events()
+            .iter()
+            .any(|e| matches!(e.state, SessionState::Reconnecting | SessionState::Error)),
+        "{:?}",
+        sink.events()
+    );
+}
+
+#[tokio::test]
+async fn reconnecting_an_open_id_replaces_the_session() {
+    let Some(db) = test_db() else { return };
+    let c = connect(&db).await;
+    c.sessions.connect(&c.id, &db.config, db.password.as_deref()).await.expect("reconnect");
+    assert!(ends_with(
+        &c,
+        &[SessionState::Disconnected, SessionState::Connecting, SessionState::Connected]
+    ));
+    assert!(wait_until_closed(c.session.pool()).await, "the old pool is closed");
+    let current = c.sessions.get(&c.id).await.unwrap();
+    assert!(!Arc::ptr_eq(&current, &c.session));
+    assert_eq!(query(&current, "SELECT 1").await.len(), 1);
+}
+
+#[tokio::test]
+async fn failed_reconnect_leaves_no_session_behind() {
+    let Some(db) = test_db() else { return };
+    let c = connect(&db).await;
+    let err = c.sessions.connect(&c.id, &db.config, Some("definitely-wrong")).await.unwrap_err();
+    assert_eq!(err.kind(), "connection");
+    assert!(ends_with(
+        &c,
+        &[SessionState::Disconnected, SessionState::Connecting, SessionState::Error]
+    ));
+    assert!(!c.sessions.is_open(&c.id).await, "error means no session");
+    assert!(wait_until_closed(c.session.pool()).await, "the old pool is closed");
+    // A later connect works and owns the state again.
+    c.sessions.connect(&c.id, &db.config, db.password.as_deref()).await.expect("connect");
+    assert_eq!(states(&c).last(), Some(&SessionState::Connected));
+}
+
+#[tokio::test]
+async fn background_ping_notices_a_killed_connection() {
+    let Some(db) = test_db() else { return };
+    let sink = Arc::new(RecordingSink::default());
+    let sessions = MysqlSessions::with_ping_interval(sink.clone(), Duration::from_millis(100));
+    let id = db.config.id.clone();
+    sessions.connect(&id, &db.config, db.password.as_deref()).await.expect("connect");
+    let session = sessions.get(&id).await.unwrap();
+    let killer = connect(&db).await;
+    let own = rows(&query(&session, "SELECT CONNECTION_ID()").await[0]).rows[0][0].clone();
+    let Cell::Int(own) = own else { panic!("unexpected id {own:?}") };
+    query(&killer.session, &format!("KILL {own}")).await;
+
+    let mut noticed = false;
+    for _ in 0..100 {
+        if sink.events().iter().any(|e| e.state == SessionState::Error) {
+            noticed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(noticed, "ping reports error: {:?}", sink.events());
+    let after = query(&session, "SELECT 1").await;
+    assert!(after[0].reconnected(), "the next result reports the lost connection");
+    assert_eq!(sink.events().last().map(|e| e.state), Some(SessionState::Connected));
     sessions.disconnect(&id).await;
 }

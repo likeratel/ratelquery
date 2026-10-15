@@ -68,7 +68,9 @@ pub fn profile_credentials(profile: &str, region: &str) -> ProfileFileCredential
         .build()
 }
 
-async fn sdk_config(
+/// SDK config for a connection: its region, optional endpoint and either exactly the named
+/// profile or the stored access key. A missing secret for a `keys` connection is `credential`.
+pub async fn sdk_config(
     config: &DynamoConnectionConfig,
     secret: Option<&str>,
 ) -> AppResult<aws_types::SdkConfig> {

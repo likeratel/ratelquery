@@ -24,6 +24,17 @@ describe("WidthMemory", () => {
     expect(memory.recall("a", ["x"])).toEqual([11])
   })
 
+  it("forgets the grids of a closed tab only", () => {
+    const memory = new WidthMemory()
+    memory.remember("t1:0", ["id"], [80])
+    memory.remember("t1:1", ["id"], [90])
+    memory.remember("t10:0", ["id"], [70])
+    memory.forgetPrefix("t1:")
+    expect(memory.recall("t1:0", ["id"])).toBeUndefined()
+    expect(memory.recall("t1:1", ["id"])).toBeUndefined()
+    expect(memory.recall("t10:0", ["id"])).toEqual([70])
+  })
+
   it("keeps names with separators apart", () => {
     expect(columnSignature(["a,b"])).not.toBe(columnSignature(["a", "b"]))
   })

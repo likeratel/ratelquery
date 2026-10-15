@@ -1,14 +1,29 @@
+use std::sync::Arc;
+
 use tauri::State;
 
 use crate::connections::{
-    ConnectionConfig, ConnectionTestResult, probe_dynamodb, probe_mysql, validate_config,
+    ConnectionConfig, ConnectionTestResult, ConnectionsService, probe_dynamodb, probe_mysql,
+    validate_config,
 };
 use crate::error::AppResult;
 use crate::state::AppState;
+use crate::util::run_blocking;
+
+/// Runs a call on the connections service (config file and secret store I/O) on the blocking
+/// pool.
+async fn blocking<T, F>(state: &AppState, work: F) -> AppResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&ConnectionsService) -> AppResult<T> + Send + 'static,
+{
+    let connections = Arc::clone(&state.connections);
+    run_blocking(move || work(&connections)).await
+}
 
 #[tauri::command]
 pub async fn connections_list(state: State<'_, AppState>) -> AppResult<Vec<ConnectionConfig>> {
-    state.connections.list()
+    blocking(&state, |c| c.list()).await
 }
 
 #[tauri::command]
@@ -17,24 +32,24 @@ pub async fn connections_save(
     config: ConnectionConfig,
     secret: Option<String>,
 ) -> AppResult<ConnectionConfig> {
-    let saved = state.connections.save(&config, secret.as_deref())?;
+    let saved = blocking(&state, move |c| c.save(&config, secret.as_deref())).await?;
     // A cached DynamoDB client would keep the old region, endpoint or credentials.
     state.dynamo.remove(saved.id()).await;
     Ok(saved)
 }
 
 /// Closes any open session first (without waiting for running queries), then removes the
-/// keyring entry and the config.
+/// stored secret and the config.
 #[tauri::command]
 pub async fn connections_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
     state.mysql.disconnect(&id).await;
     state.dynamo.remove(&id).await;
-    state.connections.delete(&id)
+    blocking(&state, move |c| c.delete(&id)).await
 }
 
 #[tauri::command]
 pub async fn connections_has_secret(state: State<'_, AppState>, id: String) -> AppResult<bool> {
-    state.connections.has_secret(&id)
+    blocking(&state, move |c| c.has_secret(&id)).await
 }
 
 #[tauri::command]
@@ -44,7 +59,9 @@ pub async fn connections_test(
     secret: Option<String>,
 ) -> AppResult<ConnectionTestResult> {
     let config = validate_config(&config)?;
-    let secret = state.connections.resolve_test_secret(&config, secret.as_deref())?;
+    let lookup = config.clone();
+    let secret =
+        blocking(&state, move |c| c.resolve_test_secret(&lookup, secret.as_deref())).await?;
     match &config {
         ConnectionConfig::Mysql(c) => probe_mysql(c, secret.as_deref()).await,
         ConnectionConfig::Dynamodb(c) => probe_dynamodb(c, secret.as_deref()).await,

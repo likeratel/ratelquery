@@ -59,15 +59,16 @@ written atomically (write temp file, rename) with owner-only permissions (`0600`
 | command | args | returns |
 | --- | --- | --- |
 | `connections_list` | – | `ConnectionConfig[]` sorted by name |
-| `connections_save` | `config: ConnectionConfig`, `secret: string \| null` | saved `ConnectionConfig` (with generated id). `secret === null` keeps the stored secret; `""` clears it. |
-| `connections_delete` | `id` | `void`. Closes any open session (without waiting for running queries), then removes the keyring entry and the config. If the keyring entry cannot be removed the config is still removed and the call rejects with `kind: "credential"` ("... its saved secret is still in the keychain ..."). |
+| `connections_save` | `config: ConnectionConfig`, `secret: string \| null` | saved `ConnectionConfig` (with generated id). `secret === null` keeps the stored secret; `""` clears it. Keeping a stored secret (`null`) while the config no longer targets the saved server (same rule as `connections_test` below) rejects with `kind: "invalid_input"` ("Enter the password again for the new server" / "Enter the secret access key again for the new endpoint or key") and saves nothing. |
+| `connections_delete` | `id` | `void`. Closes any open session (without waiting for running queries), then removes the secret from both secret stores and the config. Only the active store's failure counts: the config is still removed and the call rejects with `kind: "credential"` ("... its saved secret is still in the keychain ..." or "... still in secrets.json ..."); a failure of the inactive store is ignored. |
 | `connections_has_secret` | `id` | `boolean` |
 | `connections_test` | `config: ConnectionConfig`, `secret: string \| null` | `{ ok: true, serverVersion?: string, latencyMs: number }`. Rejects with `kind: "connection"` on failure. A `null` secret falls back to the stored one for `config.id` **only when the config still targets the saved server**: same host (case-insensitive), port, user, `tls` and `caCertPath` for MySQL; same endpoint, region and auth (`accessKeyId` / `profile`) for DynamoDB. Otherwise it rejects with `kind: "invalid_input"` ("Enter the password again to test a different server" / "Enter the secret access key again to test a different endpoint or key"); name, database and color changes do not matter. |
 
 Validation (backend, `kind: "invalid_input"`): name non-empty, host non-empty, port in range,
 region non-empty, profile non-empty, accessKeyId non-empty, `color` is `#rrggbb`, `endpoint` is
-an absolute `http://` or `https://` URL with a host, `caCertPath` is absolute and only set with
-`tls` `verify_ca` / `verify_identity`. An empty `id` passed to `connections_delete` or
+an absolute `http://` or `https://` URL with a host and without user info (`user:pass@`) or a
+`#` fragment, `caCertPath` is absolute and only set with `tls` `verify_ca` / `verify_identity`.
+Text fields, `user` and `id` are trimmed. An empty `id` passed to `connections_delete` or
 `connections_has_secret` is rejected.
 
 ## MySQL sessions
@@ -75,9 +76,15 @@ an absolute `http://` or `https://` URL with a host, `caCertPath` is absolute an
 One `sqlx::MySqlPool` per connection id, created on `mysql_connect`, `test_before_acquire(true)`,
 `max_connections(4)`, `acquire_timeout(10s)`.
 
-Connection-level errors are `sqlx::Error::Io`, `PoolClosed`, `PoolTimedOut`, server errors
-2006/2013/4031 (by error number only; a server error's message text is never inspected), and
-driver-side errors (protocol, TLS) whose text says "connection reset". Retry policy:
+Connection-level errors are `sqlx::Error::Io`, `PoolClosed`, server errors 2006/2013/4031 (by
+error number only; a server error's message text is never inspected), and driver-side errors
+(protocol, TLS) whose text says "connection reset".
+
+An acquire timeout while all 4 connections are checked out by running work is **not** a lost
+connection: the call rejects at once with `kind: "connection"` and the message "All pooled
+connections are busy; wait for a running query or open another connection", is not retried
+and changes no state. An acquire timeout while the pool had room (it could not open a
+connection in time) counts as connection-level. Retry policy:
 
 - A failure **before the statement is sent** (acquiring the connection, the `USE` for
   `options.database` or a replayed `USE`) is retried **once** on a fresh connection.
@@ -91,10 +98,17 @@ driver-side errors (protocol, TLS) whose text says "connection reset". Retry pol
 - A retried result has `reconnected: true`; after a connection was lost without a retry, the
   next result reports `reconnected: true`.
 
-A background task pings each pool every 30 s and emits state events. Any successful round trip
-while the state is `error` or `reconnecting` emits `connected`. `mysql_disconnect` (and
-`connections_delete`) remove the session and emit `disconnected` immediately; running queries
-finish on their connection and the pool closes afterwards without further state events.
+A background task pings each pool every 30 s and emits state events. It pings an idle pooled
+connection (a dead one emits `error` and the next result reports `reconnected: true`), opens one
+only when the pool is empty, and skips the check without any event while every open connection
+is checked out. Any successful round trip while the state is `error` or `reconnecting` emits
+`connected`. `mysql_disconnect` (and `connections_delete`) remove the session and emit
+`disconnected` immediately; running queries finish on their connection and the pool closes
+afterwards without further state events.
+
+`mysql_connect` for an id that is already open first closes that session (`disconnected`),
+then emits `connecting` and either `connected` (new session) or `error` (no session left), so
+the last event always matches whether a session exists.
 
 Event `mysql:state` payload:
 
@@ -173,7 +187,7 @@ and sqlx does not expose the collation. For such columns:
 | --- | --- | --- |
 | `mysql_connect` | `connectionId`, `secret?: string` (session-only password, see Secret storage) | `MysqlSessionInfo` |
 | `mysql_disconnect` | `connectionId` | `void` |
-| `mysql_query` | `connectionId`, `sql`, `options: QueryOptions` | `QueryResult[]` – one entry per statement in `sql` (split on `;` outside strings/comments by the backend; `/*! ... */` executable comments count as statements). Stops at the first failing statement and rejects with `kind: "query"`; the message starts with the MySQL error text. An `options.database` (or default database) that does not exist or is not accessible rejects with `kind: "invalid_input"`. |
+| `mysql_query` | `connectionId`, `sql`, `options: QueryOptions` | `QueryResult[]` – one entry per statement in `sql` (split on `;` outside strings/comments by the backend; `/*! ... */` executable comments count as statements). Only a statement's first result set is returned, even when it is empty (a `CALL` returning several sets); `mysql_export` does the same. Stops at the first failing statement and rejects with `kind: "query"`; the message starts with the MySQL error text. An `options.database` (or default database) that does not exist or is not accessible rejects with `kind: "invalid_input"`. |
 | `mysql_databases` | `connectionId` | `string[]` (excludes `information_schema`, `performance_schema`, `mysql`, `sys`) |
 | `mysql_schema` | `connectionId`, `database` | `SchemaSnapshot` for that database |
 
@@ -247,6 +261,15 @@ the first free `_2`, `_3`, ... suffix as its key (`id`, `id_2`). SQL writes
 
 Known limitation: CSV cells are written verbatim, so a value starting with `=`, `+`, `-` or `@`
 can be interpreted as a formula by spreadsheet applications (CSV formula injection).
+
+Known limitation (read-statement retry): a statement is classified as a read by its text only,
+so a `SELECT` that calls a stored function with side effects (one that writes data) is still
+re-run once after a connection loss.
+
+Known limitation (`NO_BACKSLASH_ESCAPES`): the statement splitter, the read-statement check and
+the SQL export format treat `\` inside quoted strings as an escape character, as MySQL does by
+default. Sessions with `sql_mode` `NO_BACKSLASH_ESCAPES` are not supported: a string ending in
+`\` can be split or classified wrongly, and exported INSERT statements need that mode off.
 
 ## Frontend stores (ownership)
 
@@ -410,8 +433,8 @@ interface Settings {
 
 | command | args | returns |
 | --- | --- | --- |
-| `settings_get` | – | `Settings` (defaults merged over the file) |
-| `settings_set` | `settings: Partial<Settings>` (nested groups may be partial too) | saved `Settings`. The input is deep-merged over the stored settings (objects key by key, other values replaced), so a client sends only the fields it changes. A non-object input or an out-of-range merged value → `invalid_input`. |
+| `settings_get` | – | `Settings` (defaults merged over the file). A `settings.json` that is not a JSON object returns the defaults (logged) and is left as is. |
+| `settings_set` | `settings: Partial<Settings>` (nested groups may be partial too) | saved `Settings`. The input is deep-merged over the stored settings (objects key by key, other values replaced), so a client sends only the fields it changes. A non-object input or an out-of-range merged value → `invalid_input`. Over a corrupt `settings.json` the file is moved to `settings.json.bak` and the input is merged over the defaults. A changed `secretStore` moves the secrets (see Secret storage). |
 
 ## Secret storage
 
@@ -423,9 +446,13 @@ Settings; the trade-off is spelled out there.
   atomically with mode 0600. It is protected by file permissions only, like `~/.aws/credentials`.
 
 The active store is read from settings on every secret operation, so switching takes effect at
-once. Secrets are not migrated between stores: after a switch, a connection whose secret lives in
-the other store reports `connections_has_secret === false` and the app asks for the password when
-the connection is opened. Deleting a connection removes its secret from the active store only.
+once; settings that cannot be read fall back to `keychain`. Secrets are moved when possible;
+ones the old store refuses to hand over stay there: when `settings_set` changes `secretStore`,
+each saved connection's secret is read from the old store, written to the new one and then
+removed from the old one. A connection whose secret could not be moved reports
+`connections_has_secret === false` and the app asks for the password when it is opened. The
+move never fails `settings_set` (failures are only logged). Deleting a connection removes its
+secret from both stores.
 
 ### Session-only passwords
 

@@ -1,10 +1,6 @@
 import { Plus } from "lucide-react"
 import { useEffect } from "react"
-import {
-  ConnectionList,
-  NEW_CONNECTION_SHORTCUT,
-  useNewConnectionShortcut,
-} from "../../features/connections"
+import { ConnectionList, NEW_CONNECTION_SHORTCUT } from "../../features/connections"
 import { formatShortcut } from "../../lib/shortcuts"
 import { useConnectionsStore } from "../../state/connectionsStore"
 
@@ -18,8 +14,6 @@ interface SidebarProps {
 const ADD_LABEL = `Add connection (${formatShortcut(NEW_CONNECTION_SHORTCUT)})`
 
 export function Sidebar({ onAddConnection, inert = false }: SidebarProps) {
-  useNewConnectionShortcut()
-
   useEffect(() => {
     const { status, load } = useConnectionsStore.getState()
     if (status === "idle") void load()
@@ -37,7 +31,8 @@ export function Sidebar({ onAddConnection, inert = false }: SidebarProps) {
         <span className="sidebar__title">Connections</span>
         <button
           type="button"
-          className="icon-button"
+          className="ui-icon-button"
+          data-size="md"
           onClick={onAdd}
           aria-label="Add connection"
           title={ADD_LABEL}

@@ -3,6 +3,7 @@
 mod file_secrets;
 mod model;
 mod probe;
+mod secret_migration;
 mod secrets;
 mod service;
 mod store;
@@ -15,8 +16,9 @@ pub use model::{
     MysqlConnectionConfig, MysqlTlsMode,
 };
 pub use probe::{probe_dynamodb, probe_mysql};
-pub use secrets::{KeyringSecretStore, MemorySecretStore, SecretStore};
+pub use secret_migration::update_settings;
+pub use secrets::{KeyringSecretStore, MemorySecretStore, SecretStore, StuckSecret};
 pub use service::ConnectionsService;
 pub use store::ConnectionStore;
-pub use switchable_secrets::SwitchableSecretStore;
+pub use switchable_secrets::{MigrationReport, SwitchableSecretStore};
 pub use validate::{same_target, validate_config};

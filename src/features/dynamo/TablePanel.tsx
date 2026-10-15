@@ -91,9 +91,10 @@ export function TablePanel({ tab }: { tab: DynamoTab }) {
         <span className="dyn-tables__spacer" />
         <button
           type="button"
-          className="icon-button"
-          aria-label="Reload tables"
-          title="Reload tables"
+          className="ui-icon-button"
+          data-size="md"
+          aria-label="Refresh"
+          title="Refresh"
           disabled={catalog?.loading}
           onClick={() => {
             void loadTables(tab.connectionId, true)

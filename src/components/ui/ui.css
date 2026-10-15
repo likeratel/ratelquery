@@ -5,7 +5,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 30px;
+  height: var(--control-md);
   padding: 0 12px;
   border-radius: var(--radius-md);
   border: 1px solid var(--line-strong);
@@ -21,7 +21,7 @@
 }
 
 .ui-button[data-size="sm"] {
-  height: 24px;
+  height: var(--control-sm);
   padding: 0 8px;
   border-radius: var(--radius-sm);
   font-size: var(--text-xs);
@@ -62,7 +62,7 @@
 }
 
 .ui-button:disabled {
-  opacity: 0.55;
+  opacity: 0.5;
   cursor: default;
 }
 
@@ -70,16 +70,34 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: var(--icon-button-sm);
+  height: var(--icon-button-sm);
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   flex: none;
+  transition:
+    background 120ms var(--ease-out),
+    color 120ms var(--ease-out);
 }
 
-.ui-icon-button:hover {
+.ui-icon-button[data-size="md"] {
+  width: var(--icon-button-md);
+  height: var(--icon-button-md);
+}
+
+.ui-icon-button:hover:not(:disabled) {
   background: var(--surface-hover);
   color: var(--text);
+}
+
+.ui-icon-button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.ui-icon-button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Fields */
@@ -300,6 +318,77 @@
 
 .ui-menu__item[data-tone="danger"] {
   color: var(--danger);
+}
+
+.ui-menu__item[data-hint] {
+  height: auto;
+  padding: 6px 8px;
+}
+
+.ui-menu__item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ui-menu__item:disabled:hover {
+  background: transparent;
+}
+
+.ui-menu__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ui-menu__hint {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.ui-menu__label {
+  padding: 4px 8px 2px;
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+
+.ui-menu__choice {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  margin: 0 4px 4px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+
+.ui-menu__choice-option {
+  flex: 1;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.ui-menu__choice-option:focus-visible {
+  outline-offset: -1px;
+}
+
+.ui-menu__choice-option[aria-checked="true"] {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--line-strong);
+}
+
+/* An "Export ▾" style trigger and the menu that drops below it. */
+.ui-menu-anchor {
+  position: relative;
+}
+
+.ui-menu--dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  width: 240px;
 }
 
 /* Toasts */

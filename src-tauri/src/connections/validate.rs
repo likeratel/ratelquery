@@ -29,7 +29,7 @@ fn validate_color(color: &Option<String>) -> AppResult<Option<String>> {
     Ok(Some(color))
 }
 
-/// An absolute `http(s)://host[:port]` URL, or nothing.
+/// An absolute `http(s)://host[:port]` URL without user info or fragment, or nothing.
 fn validate_endpoint(endpoint: &Option<String>) -> AppResult<Option<String>> {
     let Some(endpoint) = non_empty(endpoint) else { return Ok(None) };
     let invalid = |why: &str| AppError::InvalidInput(format!("endpoint {why}: {endpoint}"));
@@ -39,6 +39,12 @@ fn validate_endpoint(endpoint: &Option<String>) -> AppResult<Option<String>> {
     }
     if parsed.host_str().is_none_or(str::is_empty) {
         return Err(invalid("needs a host"));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(invalid("must not contain a user name or password"));
+    }
+    if parsed.fragment().is_some() {
+        return Err(invalid("must not contain a # fragment"));
     }
     Ok(Some(endpoint))
 }
@@ -70,7 +76,7 @@ fn validate_mysql(c: &MysqlConnectionConfig) -> AppResult<MysqlConnectionConfig>
         name: c.name.trim().to_string(),
         host: c.host.trim().to_string(),
         port: c.port,
-        user: c.user.clone(),
+        user: c.user.trim().to_string(),
         database: non_empty(&c.database),
         color: validate_color(&c.color)?,
         tls: c.tls,
@@ -173,6 +179,12 @@ mod tests {
         };
         assert_eq!(c.name, "local");
         assert_eq!(c.database, None);
+        let padded = MysqlConnectionConfig { user: "  dev ".into(), id: " x ".into(), ..mysql() };
+        let ConnectionConfig::Mysql(c) = validate_config(&ConnectionConfig::Mysql(padded)).unwrap()
+        else {
+            panic!("expected mysql");
+        };
+        assert_eq!((c.user.as_str(), c.id.as_str()), ("dev", "x"));
     }
 
     #[test]
@@ -230,7 +242,18 @@ mod tests {
         let check = |c| kind_of(validate_config(&ConnectionConfig::Dynamodb(c)));
         assert_eq!(check(with("http://localhost:8000")), "ok");
         assert_eq!(check(with("https://dynamodb.ap-northeast-2.amazonaws.com")), "ok");
-        for bad in ["localhost:8000", "file:///etc/passwd", "ftp://h", "http://", "not a url"] {
+        for bad in [
+            "localhost:8000",
+            "file:///etc/passwd",
+            "ftp://h",
+            "http://",
+            "not a url",
+            "http://user@localhost:8000",
+            "http://user:pw@localhost:8000",
+            "http://:pw@localhost:8000",
+            "http://localhost:8000/#x",
+            "http://localhost:8000#",
+        ] {
             assert_eq!(check(with(bad)), "invalid_input", "{bad}");
         }
     }

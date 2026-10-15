@@ -9,7 +9,7 @@ use super::secrets::SecretStore;
 use crate::error::{AppError, AppResult};
 use crate::fsutil::write_private_atomic;
 
-const FILE_NAME: &str = "secrets.json";
+pub const FILE_NAME: &str = "secrets.json";
 
 type Secrets = BTreeMap<String, String>;
 
@@ -78,6 +78,10 @@ impl SecretStore for FileSecretStore {
         }
         let next: Secrets = current.into_iter().filter(|(key, _)| key != id).collect();
         self.save(&next)
+    }
+
+    fn location(&self) -> &'static str {
+        FILE_NAME
     }
 }
 

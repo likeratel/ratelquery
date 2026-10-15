@@ -63,10 +63,10 @@ pub fn connect_options(
     })
 }
 
-pub fn pool_options() -> MySqlPoolOptions {
+pub fn pool_options(acquire_timeout: Duration) -> MySqlPoolOptions {
     MySqlPoolOptions::new()
         .max_connections(MAX_CONNECTIONS)
-        .acquire_timeout(ACQUIRE_TIMEOUT)
+        .acquire_timeout(acquire_timeout)
         .test_before_acquire(true)
 }
 

@@ -11,10 +11,10 @@ use super::cell::Cell;
 use super::errors::{OpError, describe_sqlx_error, is_connection_error};
 use super::model::{ApplyChangesResult, RowChange, SchemaTable, TableKind};
 use super::options::quote_ident;
-use super::query::elapsed_ms;
 use super::schema::fetch_schema;
 use super::session::{MysqlSession, boxed};
 use crate::error::{AppError, AppResult};
+use crate::util::elapsed_ms;
 
 /// Guards against runaway updates: two rows are enough to detect a non-unique key.
 const MATCH_LIMIT: u32 = 2;

@@ -10,9 +10,11 @@ use crate::dynamo::DynamoClients;
 use crate::mysql::{MysqlSessions, MysqlStateEvent, STATE_EVENT, StateSink};
 use crate::settings::{SettingsService, SettingsStore};
 
-/// Managed Tauri state shared by all commands.
+/// Managed Tauri state shared by all commands. The services doing file or keyring I/O are
+/// `Arc`s so commands can move them onto the blocking pool.
 pub struct AppState {
-    pub connections: ConnectionsService,
+    pub connections: Arc<ConnectionsService>,
+    pub secrets: Arc<SwitchableSecretStore>,
     pub mysql: MysqlSessions,
     pub dynamo: DynamoClients,
     pub settings: Arc<SettingsService>,
@@ -27,16 +29,18 @@ impl AppState {
         sink: Arc<dyn StateSink>,
     ) -> Self {
         let settings = Arc::new(SettingsService::new(SettingsStore::new(config_dir)));
-        let secrets = SwitchableSecretStore::new(
+        let secrets = Arc::new(SwitchableSecretStore::new(
             Arc::clone(&settings),
             keychain,
             Arc::new(FileSecretStore::new(config_dir)),
-        );
+        ));
+        let shared: Arc<dyn SecretStore> = secrets.clone();
         Self {
-            connections: ConnectionsService::new(
+            connections: Arc::new(ConnectionsService::new(
                 ConnectionStore::new(config_dir),
-                Arc::new(secrets),
-            ),
+                shared,
+            )),
+            secrets,
             mysql: MysqlSessions::new(sink),
             dynamo: DynamoClients::new(),
             settings,

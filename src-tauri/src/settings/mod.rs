@@ -11,11 +11,15 @@ pub use model::{
     DEFAULT_LIMIT_RANGE, DYNAMO_PAGE_SIZE_RANGE, DynamoSettings, EDITOR_FONT_SIZE_RANGE,
     MAX_ROWS_RANGE, QuerySettings, SecretStoreKind, Settings, Theme,
 };
-pub use store::SettingsStore;
+pub use store::{Loaded, SettingsStore};
 
 use crate::error::{AppError, AppResult};
 
 /// `settings_get` / `settings_set` over a store, with the last loaded or saved value cached.
+///
+/// A corrupt `settings.json` reads as the defaults (with a warning) and is never cached, so the
+/// next `set` still sees it: that call moves it to `settings.json.bak` and writes the patch
+/// over the defaults.
 pub struct SettingsService {
     store: SettingsStore,
     cache: Mutex<Option<Settings>>,
@@ -30,18 +34,25 @@ impl SettingsService {
         self.cache.lock().map_err(|_| AppError::Io("settings cache is unavailable".into()))
     }
 
-    fn current(&self, cache: &Option<Settings>) -> AppResult<Settings> {
+    fn current(&self, cache: &Option<Settings>) -> AppResult<Loaded> {
         match cache {
-            Some(settings) => Ok(settings.clone()),
+            Some(settings) => Ok(Loaded::Valid(settings.clone())),
             None => self.store.load(),
         }
     }
 
     pub fn get(&self) -> AppResult<Settings> {
         let mut cache = self.lock()?;
-        let settings = self.current(&cache)?;
-        *cache = Some(settings.clone());
-        Ok(settings)
+        match self.current(&cache)? {
+            Loaded::Valid(settings) => {
+                *cache = Some(settings.clone());
+                Ok(settings)
+            }
+            Loaded::Corrupt(reason) => {
+                eprintln!("{reason}; using default settings until they are saved again");
+                Ok(Settings::default())
+            }
+        }
     }
 
     /// Validates `input` (type or range errors are `invalid_input`) and saves it. It is merged
@@ -51,9 +62,17 @@ impl SettingsService {
             return Err(AppError::InvalidInput("settings must be an object".into()));
         }
         let mut cache = self.lock()?;
-        let current = serde_json::to_value(self.current(&cache)?)
+        let (base, corrupt) = match self.current(&cache)? {
+            Loaded::Valid(settings) => (settings, None),
+            Loaded::Corrupt(reason) => (Settings::default(), Some(reason)),
+        };
+        let current = serde_json::to_value(base)
             .map_err(|e| AppError::Io(format!("could not encode settings: {e}")))?;
         let next = Settings::from_value(model::merge(&current, input))?;
+        if let Some(reason) = corrupt {
+            let backup = self.store.set_aside()?;
+            eprintln!("{reason}; moved it to {} and saved fresh settings", backup.display());
+        }
         self.store.save(&next)?;
         *cache = Some(next.clone());
         Ok(next)
@@ -131,12 +150,40 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_is_an_io_error() {
+    fn corrupt_file_reads_as_defaults_and_is_kept_until_saved() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("settings.json"), "{nope").unwrap();
-        assert_eq!(service(dir.path()).get().unwrap_err().kind(), "io");
-        std::fs::write(dir.path().join("settings.json"), "[]").unwrap();
-        assert_eq!(service(dir.path()).set(&json!({})).unwrap_err().kind(), "io");
+        let path = dir.path().join("settings.json");
+        for bad in ["{nope", "[]"] {
+            std::fs::write(&path, bad).unwrap();
+            let svc = service(dir.path());
+            assert_eq!(svc.get().unwrap(), Settings::default(), "{bad}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), bad, "get never rewrites it");
+        }
+    }
+
+    #[test]
+    fn saving_over_a_corrupt_file_backs_it_up_and_applies_the_patch_to_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{nope").unwrap();
+        let svc = service(dir.path());
+        svc.get().unwrap();
+        let saved = svc.set(&json!({ "theme": "dark" })).unwrap();
+        assert_eq!(saved, Settings { theme: Theme::Dark, ..Settings::default() });
+        assert_eq!(std::fs::read_to_string(dir.path().join("settings.json.bak")).unwrap(), "{nope");
+        assert_eq!(service(dir.path()).get().unwrap(), saved);
+    }
+
+    #[test]
+    fn invalid_patch_over_a_corrupt_file_keeps_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "[]").unwrap();
+        let svc = service(dir.path());
+        let err = svc.set(&json!({ "editorFontSize": 99 })).unwrap_err();
+        assert_eq!(err.kind(), "invalid_input");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[]");
+        assert!(!dir.path().join("settings.json.bak").exists());
     }
 
     #[cfg(unix)]

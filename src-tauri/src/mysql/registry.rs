@@ -7,18 +7,26 @@ use tokio::sync::RwLock;
 use super::errors::connection_error;
 use super::events::StateSink;
 use super::model::{MysqlSessionInfo, MysqlStateEvent, SessionState};
-use super::options::{connect_options, fetch_current_database, fetch_server_version, pool_options};
+use super::options::{
+    ACQUIRE_TIMEOUT, connect_options, fetch_current_database, fetch_server_version, pool_options,
+};
 use super::session::MysqlSession;
 use crate::connections::{ConnectionConfig, ConnectionsService, MysqlConnectionConfig};
 use crate::error::{AppError, AppResult};
+use crate::util::run_blocking;
 
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
 
 /// All open MySQL sessions keyed by connection id.
+///
+/// The registry is the single owner of a connection's state: every insert or removal emits its
+/// state event while the map is locked, so the last event always matches whether a session is
+/// open.
 pub struct MysqlSessions {
     sessions: RwLock<HashMap<String, Arc<MysqlSession>>>,
     sink: Arc<dyn StateSink>,
     ping_interval: Duration,
+    acquire_timeout: Duration,
 }
 
 fn spawn_ping(session: &Arc<MysqlSession>, period: Duration) {
@@ -42,50 +50,85 @@ impl MysqlSessions {
     }
 
     pub fn with_ping_interval(sink: Arc<dyn StateSink>, ping_interval: Duration) -> Self {
-        Self { sessions: RwLock::new(HashMap::new()), sink, ping_interval }
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            sink,
+            ping_interval,
+            acquire_timeout: ACQUIRE_TIMEOUT,
+        }
+    }
+
+    /// Same registry with a different pool acquire timeout for sessions opened later.
+    pub fn with_acquire_timeout(self, acquire_timeout: Duration) -> Self {
+        Self { acquire_timeout, ..self }
     }
 
     fn emit(&self, id: &str, state: SessionState, message: Option<String>) {
         self.sink.emit(MysqlStateEvent { connection_id: id.to_string(), state, message });
     }
 
-    /// Opens (or reopens) the pool for `id` and returns server info.
+    /// Opens the pool for `id` and returns server info. An open session for `id` is closed
+    /// first (`disconnected`), so a failed reconnect ends in `error` with no session left
+    /// instead of a live session the UI shows as failed.
     pub async fn connect(
         &self,
         id: &str,
         config: &MysqlConnectionConfig,
         password: Option<&str>,
     ) -> AppResult<MysqlSessionInfo> {
+        self.disconnect(id).await;
         self.emit(id, SessionState::Connecting, None);
         match self.open(id, config, password).await {
             Ok((session, info)) => {
                 spawn_ping(&session, self.ping_interval);
-                let previous = self.sessions.write().await.insert(id.to_string(), session);
+                let previous = {
+                    let mut sessions = self.sessions.write().await;
+                    let previous = sessions.insert(id.to_string(), session);
+                    self.emit(id, SessionState::Connected, None);
+                    previous
+                };
+                // Only a concurrent connect for the same id can leave one; it is replaced.
                 if let Some(previous) = previous {
                     previous.shutdown();
                 }
-                self.emit(id, SessionState::Connected, None);
                 Ok(info)
             }
             Err(err) => {
-                self.emit(id, SessionState::Error, Some(err.to_string()));
+                let stale = {
+                    let mut sessions = self.sessions.write().await;
+                    let stale = sessions.remove(id);
+                    self.emit(id, SessionState::Error, Some(err.to_string()));
+                    stale
+                };
+                if let Some(stale) = stale {
+                    stale.shutdown();
+                }
                 Err(err)
             }
         }
     }
 
     /// Opens the saved connection `id`. A given `secret` is used for this session only and is
-    /// never stored; without one the stored secret (if any) is used.
+    /// never stored; without one the stored secret (if any) is used. The config file and the
+    /// secret store are read on the blocking pool.
     pub async fn connect_saved(
         &self,
-        connections: &ConnectionsService,
+        connections: &Arc<ConnectionsService>,
         id: &str,
         secret: Option<&str>,
     ) -> AppResult<MysqlSessionInfo> {
-        let ConnectionConfig::Mysql(config) = connections.get(id)? else {
-            return Err(AppError::InvalidInput(format!("{id} is not a MySQL connection")));
-        };
-        let password = connections.resolve_secret(id, secret)?;
+        let connections = Arc::clone(connections);
+        let (owned_id, secret) = (id.to_string(), secret.map(str::to_string));
+        let (config, password) = run_blocking(move || {
+            let ConnectionConfig::Mysql(config) = connections.get(&owned_id)? else {
+                return Err(AppError::InvalidInput(format!(
+                    "{owned_id} is not a MySQL connection"
+                )));
+            };
+            let password = connections.resolve_secret(&owned_id, secret.as_deref())?;
+            Ok((config, password))
+        })
+        .await?;
         self.connect(id, &config, password.as_deref()).await
     }
 
@@ -96,7 +139,10 @@ impl MysqlSessions {
         password: Option<&str>,
     ) -> AppResult<(Arc<MysqlSession>, MysqlSessionInfo)> {
         let options = connect_options(config, password)?;
-        let pool = pool_options().connect_with(options).await.map_err(|e| connection_error(&e))?;
+        let pool = pool_options(self.acquire_timeout)
+            .connect_with(options)
+            .await
+            .map_err(|e| connection_error(&e))?;
         let info = async {
             let mut conn = pool.acquire().await?;
             let server_version = fetch_server_version(&mut conn).await?;
@@ -140,10 +186,16 @@ impl MysqlSessions {
     /// Closes the session if open without waiting for running queries (they finish on their
     /// own connection; the pool closes afterwards). Closing an unknown id is a no-op.
     pub async fn disconnect(&self, id: &str) {
-        let removed = self.sessions.write().await.remove(id);
+        let removed = {
+            let mut sessions = self.sessions.write().await;
+            let removed = sessions.remove(id);
+            if removed.is_some() {
+                self.emit(id, SessionState::Disconnected, None);
+            }
+            removed
+        };
         if let Some(session) = removed {
             session.shutdown();
-            self.emit(id, SessionState::Disconnected, None);
         }
     }
 }

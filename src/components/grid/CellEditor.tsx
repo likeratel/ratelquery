@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { NULL_INPUT } from "../../lib/cellEdit"
 import { matchesShortcut, parseShortcut } from "../../lib/shortcuts"
+import { commitOnce, type CommitGate } from "./commitGate"
 
 /** Same physical key as the app's Apply shortcut. */
 const APPLY_SHORTCUT = parseShortcut("Mod+S")
@@ -18,7 +19,7 @@ export function CellEditor({ initial, onCommit, onCancel, onTab }: CellEditorPro
   const inputRef = useRef<HTMLInputElement>(null)
   const [text, setText] = useState(initial)
   const [error, setError] = useState<string | null>(null)
-  const done = useRef(false)
+  const gate = useRef<CommitGate>({ done: false })
 
   useEffect(() => {
     inputRef.current?.focus()
@@ -26,14 +27,8 @@ export function CellEditor({ initial, onCommit, onCancel, onTab }: CellEditorPro
   }, [])
 
   const commit = (): boolean => {
-    if (text === initial) {
-      done.current = true
-      onCancel()
-      return true
-    }
-    const message = onCommit(text)
+    const message = commitOnce(gate.current, text, initial, { onCommit, onCancel })
     setError(message)
-    if (message === null) done.current = true
     return message === null
   }
 
@@ -52,7 +47,7 @@ export function CellEditor({ initial, onCommit, onCancel, onTab }: CellEditorPro
     if (event.code === "Escape") {
       event.preventDefault()
       event.stopPropagation()
-      done.current = true
+      gate.current.done = true
       onCancel()
     } else if (event.code === "Enter" || event.code === "NumpadEnter") {
       if (event.metaKey || event.ctrlKey) return
@@ -67,7 +62,7 @@ export function CellEditor({ initial, onCommit, onCancel, onTab }: CellEditorPro
   }
 
   const onBlur = () => {
-    if (done.current) return
+    if (gate.current.done) return
     // Leaving the cell keeps a valid value and drops an invalid one rather than trapping focus.
     if (!commit()) onCancel()
   }

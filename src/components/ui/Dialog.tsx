@@ -8,6 +8,11 @@ interface DialogProps {
   footer?: ReactNode
   /** Accessible description shown under the title. */
   description?: ReactNode
+  /**
+   * Whether a click on the backdrop closes the dialog. Turn it off while the dialog holds
+   * unsaved input; Esc and the dialog's own buttons still close it.
+   */
+  closeOnBackdrop?: boolean
 }
 
 /** True while any modal <dialog> is open; app-wide shortcuts stand down until it closes. */
@@ -19,7 +24,14 @@ export function isModalOpen(): boolean {
  * Centered modal built on the native <dialog> element, which gives focus trapping,
  * top-layer stacking and inert background for free. Mount it only while open.
  */
-export function Dialog({ title, onClose, children, footer, description }: DialogProps) {
+export function Dialog({
+  title,
+  onClose,
+  children,
+  footer,
+  description,
+  closeOnBackdrop = true,
+}: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null)
   const titleId = useId()
   const descriptionId = useId()
@@ -47,7 +59,7 @@ export function Dialog({ title, onClose, children, footer, description }: Dialog
         onClose()
       }}
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose()
+        if (closeOnBackdrop && event.target === event.currentTarget) onClose()
       }}
     >
       <div className="ui-dialog__panel">

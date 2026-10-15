@@ -46,6 +46,12 @@
   --radius-md: 8px;
   --radius-lg: 12px;
 
+  /* Control heights shared by .ui-button and .q-button (compact toolbars use sm). */
+  --control-sm: 24px;
+  --control-md: 30px;
+  --icon-button-sm: 22px;
+  --icon-button-md: 26px;
+
   --sidebar-width: 264px;
   --tabbar-height: 38px;
   --titlebar-inset: 28px;

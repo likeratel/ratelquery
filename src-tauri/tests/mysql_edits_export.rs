@@ -4,9 +4,9 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{connect, create_table, drop_table, query, rows, test_db, unique};
+use common::{Cleanup, connect, query, rows, test_db, unique};
 use dbclient_lib::export::{ExportFormat, ExportOptions};
-use dbclient_lib::mysql::{Cell, MysqlSession, RowChange, apply_changes, run_export};
+use dbclient_lib::mysql::{Cell, MysqlSession, QueryResult, RowChange, apply_changes, run_export};
 
 fn cells(pairs: &[(&str, Cell)]) -> BTreeMap<String, Cell> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
@@ -24,7 +24,9 @@ async fn count(session: &MysqlSession, table: &str) -> Cell {
 async fn applies_changes_atomically_with_single_row_guarantee() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
+    let cleanup = Cleanup::new(&db);
     let t = unique("it_edit");
+    cleanup.table(&t);
     query(
         &c.session,
         &format!(
@@ -91,8 +93,6 @@ async fn applies_changes_atomically_with_single_row_guarantee() {
         apply_changes(&c.session, "no_db", &t, &ok).await.unwrap_err().kind(),
         "invalid_input"
     );
-
-    query(&c.session, &format!("DROP TABLE `{t}`")).await;
 }
 
 fn export_options(format: ExportFormat, path: &std::path::Path) -> ExportOptions {
@@ -116,7 +116,8 @@ const PEOPLE_ROWS: &str = "(1, 'Ada Lovelace', 1200.50, 1, '{\"tags\": [\"math\"
 async fn exports_csv_json_and_sql() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
-    let people = create_table(&c.session, "it_people", PEOPLE_COLUMNS, PEOPLE_ROWS).await;
+    let cleanup = Cleanup::new(&db);
+    let people = cleanup.create_table(&c.session, "it_people", PEOPLE_COLUMNS, PEOPLE_ROWS).await;
     let dir = tempfile::tempdir().unwrap();
     let sql = format!("SELECT id, name, balance, is_active, profile FROM `{people}` ORDER BY id");
 
@@ -154,6 +155,7 @@ async fn exports_csv_json_and_sql() {
     assert_eq!(std::fs::read_to_string(&ko_path).unwrap(), "이름,q,n\n세종대왕,\"a\"\"b\",\n");
 
     let copy = unique("it_copy");
+    cleanup.table(&copy);
     let sql_path = dir.path().join("c.sql");
     let options = ExportOptions {
         table_name: Some(copy.clone()),
@@ -176,21 +178,21 @@ async fn exports_csv_json_and_sql() {
     )
     .await;
     assert_eq!(rows(&diff[0]).rows[0][0], Cell::Int("5".into()));
-    drop_table(&c.session, &copy).await;
-    drop_table(&c.session, &people).await;
 }
 
 #[tokio::test]
 async fn exports_binary_collation_text_as_text() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
-    let t = create_table(
-        &c.session,
-        "it_binexp",
-        "id INT PRIMARY KEY, v VARCHAR(10) COLLATE utf8mb4_bin, vb VARBINARY(10), j JSON",
-        "(1, 'abc', 'AB', '{\"lang\": \"ko\"}')",
-    )
-    .await;
+    let cleanup = Cleanup::new(&db);
+    let t = cleanup
+        .create_table(
+            &c.session,
+            "it_binexp",
+            "id INT PRIMARY KEY, v VARCHAR(10) COLLATE utf8mb4_bin, vb VARBINARY(10), j JSON",
+            "(1, 'abc', 'AB', '{\"lang\": \"ko\"}')",
+        )
+        .await;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bin.csv");
     let sql = format!("SELECT v, vb, j->>'$.lang' AS lang FROM `{t}`");
@@ -207,13 +209,13 @@ async fn exports_binary_collation_text_as_text() {
     let parsed: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&dup).unwrap()).unwrap();
     assert_eq!(parsed, serde_json::json!([{ "id": 1, "id_2": 1 }]));
-    drop_table(&c.session, &t).await;
 }
 
 #[tokio::test]
 async fn export_streams_past_max_rows_and_validates_input() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
+    let cleanup = Cleanup::new(&db);
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("big.csv");
     let sql = "WITH RECURSIVE s(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 900) \
@@ -224,7 +226,9 @@ async fn export_streams_past_max_rows_and_validates_input() {
     assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2701);
 
     let empty_path = dir.path().join("empty.csv");
-    let t = create_table(&c.session, "it_empty", "id INT PRIMARY KEY, name VARCHAR(5)", "").await;
+    let t = cleanup
+        .create_table(&c.session, "it_empty", "id INT PRIMARY KEY, name VARCHAR(5)", "")
+        .await;
     run_export(
         &c.session,
         &format!("SELECT id, name FROM `{t}` WHERE 1 = 0"),
@@ -265,7 +269,6 @@ async fn export_streams_past_max_rows_and_validates_input() {
     let missing_db = run_export(&c.session, "SELECT 1", &options).await;
     assert_eq!(missing_db.unwrap_err().kind(), "invalid_input");
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "no temp files left");
-    drop_table(&c.session, &t).await;
 }
 
 /// Rows are written in blocking batches of 1024; exact multiples and order must survive.
@@ -290,4 +293,38 @@ async fn export_batches_keep_every_row_in_order() {
         assert_eq!(numbers, (1..=total).collect::<Vec<_>>());
     }
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3, "no temp files left");
+}
+
+/// A `CALL` whose first result set is empty must not pick up the rows of a later set.
+#[tokio::test]
+async fn call_with_an_empty_first_set_keeps_later_sets_out() {
+    let Some(db) = test_db() else { return };
+    let c = connect(&db).await;
+    let cleanup = Cleanup::new(&db);
+    let procedure = unique("it_proc");
+    cleanup.procedure(&procedure);
+    // Created directly: the statement splitter would cut the body at its `;`.
+    sqlx::raw_sql(&format!(
+        "CREATE PROCEDURE `{procedure}`() BEGIN \
+         SELECT 1 AS a FROM DUAL WHERE 1 = 0; SELECT 2 AS b; END"
+    ))
+    .execute(c.session.pool())
+    .await
+    .expect("create procedure");
+    let call = format!("CALL `{procedure}`()");
+
+    let results = query(&c.session, &call).await;
+    assert_eq!(results.len(), 1);
+    if let QueryResult::Rows(r) = &results[0] {
+        assert!(r.rows.is_empty(), "{:?}", r.rows);
+        assert!(r.columns.iter().all(|col| col.name != "b"), "{:?}", r.columns);
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("call.csv");
+    let exported =
+        run_export(&c.session, &call, &export_options(ExportFormat::Csv, &path)).await.unwrap();
+    assert_eq!(exported.rows, 0);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.lines().any(|l| l == "2" || l == "b"), "{text:?}");
 }

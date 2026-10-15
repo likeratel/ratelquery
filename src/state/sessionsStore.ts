@@ -64,7 +64,6 @@ interface SessionsState {
   applyStateEvent: (event: MysqlStateEvent) => void
   /** Called when a query result reports `reconnected`; counted once per recovery. */
   markReconnected: (id: ConnectionId) => void
-  disconnect: (id: ConnectionId) => Promise<void>
   /** Drops local state for a deleted connection; the backend already closed its session. */
   forget: (id: ConnectionId) => void
 }
@@ -271,12 +270,6 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     applyStateEvent: (event) => patch(event.connectionId, (s) => reduceStateEvent(s, event)),
 
     markReconnected: (id) => patch(id, (s) => noteRecovery(s, "result", Date.now())),
-
-    disconnect: async (id) => {
-      const epoch = epochOf(id)
-      await mysqlApi.disconnect(id)
-      patch(id, () => emptySession(), epoch)
-    },
 
     forget: (id) => {
       forgotten.add(id)

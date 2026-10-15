@@ -34,6 +34,13 @@ export class WidthMemory {
     }
   }
 
+  /** Drops every grid whose key starts with `prefix`, such as all grids of a closed tab. */
+  forgetPrefix(prefix: string): void {
+    for (const key of [...this.entries.keys()]) {
+      if (key.startsWith(prefix)) this.entries.delete(key)
+    }
+  }
+
   get size(): number {
     return this.entries.size
   }

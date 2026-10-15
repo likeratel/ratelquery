@@ -67,6 +67,7 @@ export function TreeNode({
 }: TreeNodeProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const itemRef = useRef<HTMLLIElement>(null)
+  const moreRef = useRef<HTMLButtonElement>(null)
   const tabIndex = useTreeTabIndex(nodeKey)
   const closeMenu = useCallback(() => {
     setMenuOpen(false)
@@ -113,6 +114,7 @@ export function TreeNode({
           <span className="tree-row__name">{label}</span>
           {hasMenu && (
             <button
+              ref={moreRef}
               type="button"
               className="ui-icon-button tree-row__more"
               tabIndex={-1}
@@ -133,6 +135,7 @@ export function TreeNode({
           <Menu
             label={`Actions for ${label}`}
             className="tree-menu"
+            triggerRef={moreRef}
             onClose={closeMenu}
             items={menuItems}
           />

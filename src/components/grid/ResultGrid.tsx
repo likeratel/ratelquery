@@ -1,5 +1,13 @@
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react"
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type PointerEvent,
+} from "react"
 import { cellToEditText } from "../../lib/cellEdit"
 import { cellTone, formatCell } from "../../lib/cellFormat"
 import { copyText } from "../../lib/gridCopy"
@@ -56,7 +64,11 @@ function copyToClipboard(text: string): void {
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
-export function ResultGrid(props: ResultGridProps) {
+/**
+ * Virtualized result grid. Memoized, so parents should pass stable callbacks; rows re-render
+ * only when their own props change.
+ */
+export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
   const { columns, sourceRows, rows, editable, selection, onSelect, onCommit } = props
   const scrollRef = useRef<HTMLDivElement>(null)
   const { widths, resize } = useColumnWidths(columns, sourceRows, props.widthKey)
@@ -76,11 +88,17 @@ export function ResultGrid(props: ResultGridProps) {
   const template = `${GUTTER_WIDTH}px ${widths.map((w) => `${w}px`).join(" ")}`
   const totalWidth = GUTTER_WIDTH + widths.reduce((sum, w) => sum + w, 0)
 
-  const startEdit = (target: GridSelection) => {
-    const row = rows[target.row]
-    if (!editable || !onCommit || !row || row.deleted) return
+  // Rows receive a stable callback that reads the latest props, so GridRow's memo holds.
+  const latest = useRef({ rows, editable, onCommit })
+  useEffect(() => {
+    latest.current = { rows, editable, onCommit }
+  })
+  const startEdit = useCallback((target: GridSelection) => {
+    const current = latest.current
+    const row = current.rows[target.row]
+    if (!current.editable || !current.onCommit || !row || row.deleted) return
     setEditing(target)
-  }
+  }, [])
 
   const move = (dRow: number, dCol: number) => {
     const current = selection ?? { row: 0, col: 0 }
@@ -171,6 +189,8 @@ export function ResultGrid(props: ResultGridProps) {
                     }}
                   >
                     <CellEditor
+                      // Tab moves to the next cell; a fresh editor starts from that cell's value.
+                      key={editCol}
                       initial={editInitial(row.cells[editCol])}
                       onCommit={(text) => {
                         const error = onCommit(row, editCol, text)
@@ -193,7 +213,7 @@ export function ResultGrid(props: ResultGridProps) {
       </div>
     </div>
   )
-}
+})
 
 function editInitial(cell: Cell | undefined): string {
   return cell ? cellToEditText(cell) : ""
@@ -262,7 +282,7 @@ interface GridRowProps {
   onStartEdit: (selection: GridSelection) => void
 }
 
-function GridRow(props: GridRowProps) {
+const GridRow = memo(function GridRow(props: GridRowProps) {
   const { row, index, template, selectedCol, editable, onSelect, onStartEdit } = props
   const inserted = row.ref.kind === "insert"
   return (
@@ -297,4 +317,4 @@ function GridRow(props: GridRowProps) {
       ))}
     </div>
   )
-}
+})

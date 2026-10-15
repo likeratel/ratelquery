@@ -12,17 +12,17 @@ export interface FriendlyError {
 const SUMMARY_BY_KIND: Record<AppErrorKind, string> = {
   invalid_input: "Some fields are not valid.",
   not_found: "This connection no longer exists.",
-  connection: "Could not reach the server. Check the host, port and network.",
+  connection: "Couldn't reach the server. Check the host, port and network.",
   query: "The server rejected the request.",
-  credential: "Credentials were rejected or could not be read from the keychain.",
-  io: "Could not read or write the connection settings file.",
+  credential: "Credentials were rejected or couldn't be read from the keychain.",
+  io: "Couldn't read or write the connection settings file.",
   unknown: "Something went wrong.",
 }
 
 const ACTION_PREFIX: Record<ConnectionAction, string> = {
-  load: "Could not load connections.",
-  save: "Could not save the connection.",
-  delete: "Could not delete the connection.",
+  load: "Couldn't load connections.",
+  save: "Couldn't save the connection.",
+  delete: "Couldn't delete the connection.",
   test: "Connection test failed.",
 }
 

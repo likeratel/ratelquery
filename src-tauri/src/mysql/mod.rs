@@ -23,7 +23,7 @@ pub use bind::{BindValue, to_bind_value};
 pub use cell::Cell;
 pub use changes::{BuiltStatement, apply_changes, build_statement};
 pub use classify::{infer_base_table, is_read_statement};
-pub use errors::{UNKNOWN_OUTCOME, describe_sqlx_error, is_connection_error};
+pub use errors::{POOL_BUSY, UNKNOWN_OUTCOME, describe_sqlx_error, is_connection_error};
 pub use events::{RecordingSink, STATE_EVENT, StateSink};
 pub use export::run_export;
 pub use model::{
@@ -31,7 +31,7 @@ pub use model::{
     MysqlStateEvent, QueryOptions, QueryResult, RowChange, RowsResult, SchemaColumn,
     SchemaSnapshot, SchemaTable, SessionState, TableDetails, TableKind,
 };
-pub use options::{connect_options, fetch_server_version, quote_ident};
+pub use options::{MAX_CONNECTIONS, connect_options, fetch_server_version, quote_ident};
 pub use query::run_query;
 pub use registry::{MysqlSessions, PING_INTERVAL};
 pub use session::MysqlSession;

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { Item, PutExpectation, ScanRequest, TableDescription } from "../../lib/dynamo"
 import { setTransport } from "../../lib/ipc"
+import { selectedItem } from "../../lib/dynamoTabs"
 import { INITIAL_TABS } from "../../lib/queryTabs"
 import { useTabsStore } from "../../state/tabsStore"
 import {
@@ -57,6 +58,8 @@ class FakeDynamo {
       }
       case "dynamo_put_item":
         return this.put(args?.item as Item, args?.expect as PutExpectation)
+      case "dynamo_get_item":
+        return this.items.get(String((args?.key as Item).pk.S)) ?? null
       case "dynamo_delete_item":
         this.items.delete(String((args?.key as Item).pk.S))
         return undefined
@@ -301,5 +304,27 @@ describe("editing", () => {
       pk: { S: "a" },
     })
     expect(tab(id).page?.items.map((i) => i.pk.S)).toEqual(["b", "c"])
+  })
+
+  it("shows a new item created before any request ran, without running the form", async () => {
+    const id = openDynamoTabFor("c1")
+    // Query mode doesn't run on table switch, and its empty form isn't a valid request.
+    setDynamoMode(id, "query")
+    await chooseTable(id, "users")
+    expect(tab(id).request).toBeNull()
+    openItemEditor(id, null)
+    setEditorText(id, '{ "pk": "z", "n": 3 }')
+    reviewEdit(id)
+    await confirmSave(id)
+    expect(tab(id)).toMatchObject({ editor: null, error: null, page: null })
+    expect(selectedItem(tab(id))).toEqual({ pk: { S: "z" }, n: { N: "3" } })
+    expect(fake.calls.find((c) => c.command === "dynamo_get_item")?.args?.key).toEqual({
+      pk: { S: "z" },
+    })
+    expect(fake.calls.some((c) => c.command === "dynamo_query")).toBe(false)
+
+    await expect(deleteItem(id, { pk: { S: "z" } })).resolves.toBe(true)
+    expect(tab(id)).toMatchObject({ error: null, detail: null })
+    expect(fake.items.has("z")).toBe(false)
   })
 })

@@ -3,7 +3,7 @@
 
 mod common;
 
-use common::{connect, create_table, drop_table, query, rows, test_db};
+use common::{Cleanup, connect, query, rows, test_db};
 use dbclient_lib::mysql::{self, Cell, QueryOptions, QueryResult, TableKind, run_query};
 
 fn cell_text(cell: &Cell) -> &str {
@@ -33,14 +33,16 @@ const CUSTOMER_COLUMNS: &str = "id INT UNSIGNED PRIMARY KEY AUTO_INCREMENT, \
 async fn maps_table_column_types() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
-    let t = create_table(
-        &c.session,
-        "it_types",
-        CUSTOMER_COLUMNS,
-        "(4, 'mh@example.com', 'Margaret Hamilton', 'pro', 42.42, 1, '2024-01-02 03:04:05', \
+    let cleanup = Cleanup::new(&db);
+    let t = cleanup
+        .create_table(
+            &c.session,
+            "it_types",
+            CUSTOMER_COLUMNS,
+            "(4, 'mh@example.com', 'Margaret Hamilton', 'pro', 42.42, 1, '2024-01-02 03:04:05', \
           '{\"tags\": [\"apollo\"]}', '2024-01-02 03:04:05.120', 18446744073709551615)",
-    )
-    .await;
+        )
+        .await;
     let results = query(&c.session, &format!("SELECT * FROM `{t}` WHERE id = 4")).await;
     assert_eq!(
         type_names(&results[0]),
@@ -70,7 +72,6 @@ async fn maps_table_column_types() {
     assert_eq!(profile["tags"][0], "apollo");
     assert_eq!(row[8], Cell::Datetime("2024-01-02 03:04:05.120".into()), "DATETIME(3) keeps 3");
     assert_eq!(row[9], Cell::Int("18446744073709551615".into()));
-    drop_table(&c.session, &t).await;
 }
 
 #[tokio::test]
@@ -118,14 +119,16 @@ async fn maps_other_types_and_literals() {
 async fn binary_collation_text_is_text_and_binary_columns_stay_bytes() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
-    let t = create_table(
-        &c.session,
-        "it_bin",
-        "id INT PRIMARY KEY, v VARCHAR(10) COLLATE utf8mb4_bin, tx TEXT COLLATE utf8mb4_bin, \
+    let cleanup = Cleanup::new(&db);
+    let t = cleanup
+        .create_table(
+            &c.session,
+            "it_bin",
+            "id INT PRIMARY KEY, v VARCHAR(10) COLLATE utf8mb4_bin, tx TEXT COLLATE utf8mb4_bin, \
          vb VARBINARY(10), bl BLOB, profile JSON",
-        "(1, 'abc', '한글 텍스트', 'AB', x'00ff', '{\"lang\": \"ko\"}')",
-    )
-    .await;
+            "(1, 'abc', '한글 텍스트', 'AB', x'00ff', '{\"lang\": \"ko\"}')",
+        )
+        .await;
     let results = query(
         &c.session,
         &format!("SELECT v, tx, vb, bl, profile->>'$.lang' AS lang, profile FROM `{t}`"),
@@ -150,20 +153,21 @@ async fn binary_collation_text_is_text_and_binary_columns_stay_bytes() {
     assert_eq!(rows(&joined[0]).rows[0], vec![Cell::Str("abc".into()), Cell::Bytes("AP8=".into())]);
     let unquoted = query(&c.session, "SELECT JSON_UNQUOTE('\"x\"') AS u, x'00ff' AS raw").await;
     assert_eq!(rows(&unquoted[0]).rows[0], vec![Cell::Str("x".into()), Cell::Bytes("AP8=".into())]);
-    drop_table(&c.session, &t).await;
 }
 
 #[tokio::test]
 async fn tinyint1_only_maps_zero_and_one_to_bool() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
-    let t = create_table(
-        &c.session,
-        "it_tiny",
-        "id INT PRIMARY KEY, flag TINYINT(1), uflag TINYINT(1) UNSIGNED",
-        "(1, 0, 1), (2, 1, 0)",
-    )
-    .await;
+    let cleanup = Cleanup::new(&db);
+    let t = cleanup
+        .create_table(
+            &c.session,
+            "it_tiny",
+            "id INT PRIMARY KEY, flag TINYINT(1), uflag TINYINT(1) UNSIGNED",
+            "(1, 0, 1), (2, 1, 0)",
+        )
+        .await;
     let bools = query(&c.session, &format!("SELECT flag, uflag FROM `{t}` ORDER BY id")).await;
     assert_eq!(type_names(&bools[0]), ["TINYINT", "TINYINT UNSIGNED"]);
     assert_eq!(rows(&bools[0]).rows[0], vec![Cell::Bool(false), Cell::Bool(true)]);
@@ -174,20 +178,21 @@ async fn tinyint1_only_maps_zero_and_one_to_bool() {
     assert_eq!(values[0], vec![Cell::Int("0".into()), Cell::Int("1".into())]);
     assert_eq!(values[2], vec![Cell::Int("2".into()), Cell::Int("255".into())]);
     assert_eq!(values[3], vec![Cell::Int("-1".into()), Cell::Null]);
-    drop_table(&c.session, &t).await;
 }
 
 #[tokio::test]
 async fn splits_scripts_and_reports_exec_rows_truncation_and_errors() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
-    let t = create_table(
-        &c.session,
-        "it_script",
-        "id INT PRIMARY KEY, a VARCHAR(5), b INT",
-        "(1, 'x', 1), (2, 'y', 2), (3, 'z', 3)",
-    )
-    .await;
+    let cleanup = Cleanup::new(&db);
+    let t = cleanup
+        .create_table(
+            &c.session,
+            "it_script",
+            "id INT PRIMARY KEY, a VARCHAR(5), b INT",
+            "(1, 'x', 1), (2, 'y', 2), (3, 'z', 3)",
+        )
+        .await;
     let options = QueryOptions { database: Some(db.database().into()), max_rows: Some(2) };
     let first_sql = format!("SELECT * FROM `{t}` ORDER BY id");
     let results = run_query(
@@ -223,7 +228,6 @@ async fn splits_scripts_and_reports_exec_rows_truncation_and_errors() {
         run_query(&c.session, " -- nothing ", &QueryOptions::default()).await.unwrap_err().kind(),
         "invalid_input"
     );
-    drop_table(&c.session, &t).await;
 }
 
 #[tokio::test]
@@ -240,7 +244,8 @@ async fn unknown_options_database_is_invalid_input() {
 async fn connection_words_in_a_query_error_are_not_a_lost_connection() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
-    let t = create_table(&c.session, "it_words", "id INT PRIMARY KEY", "(1)").await;
+    let cleanup = Cleanup::new(&db);
+    let t = cleanup.create_table(&c.session, "it_words", "id INT PRIMARY KEY", "(1)").await;
     let err = run_query(
         &c.session,
         &format!("SELECT `connection reset` FROM `{t}`"),
@@ -251,19 +256,19 @@ async fn connection_words_in_a_query_error_are_not_a_lost_connection() {
     assert_eq!(err.kind(), "query", "{err}");
     let next = query(&c.session, "SELECT 1").await;
     assert!(!next[0].reconnected());
-    drop_table(&c.session, &t).await;
 }
 
 #[tokio::test]
 async fn lists_databases_and_schema() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
+    let cleanup = Cleanup::new(&db);
     let names = mysql::databases(&c.session).await.unwrap();
     assert!(names.contains(&db.database().to_string()));
     assert!(!names.iter().any(|n| n == "mysql" || n == "information_schema"));
 
-    let with_pk = create_table(&c.session, "it_schema", CUSTOMER_COLUMNS, "").await;
-    let no_pk = create_table(&c.session, "it_nopk", "a INT, b VARCHAR(5)", "").await;
+    let with_pk = cleanup.create_table(&c.session, "it_schema", CUSTOMER_COLUMNS, "").await;
+    let no_pk = cleanup.create_table(&c.session, "it_nopk", "a INT, b VARCHAR(5)", "").await;
     let snapshot = mysql::schema(&c.session, db.database()).await.unwrap();
     assert_eq!(snapshot.database, db.database());
     let table = snapshot.tables.iter().find(|t| t.name == with_pk).unwrap();
@@ -276,21 +281,21 @@ async fn lists_databases_and_schema() {
     let plain = snapshot.tables.iter().find(|t| t.name == no_pk).unwrap();
     assert!(plain.columns.iter().all(|c| !c.is_primary));
     assert_eq!(mysql::schema(&c.session, "no_such_db").await.unwrap_err().kind(), "not_found");
-    drop_table(&c.session, &with_pk).await;
-    drop_table(&c.session, &no_pk).await;
 }
 
 #[tokio::test]
 async fn reads_table_details_with_indexes_foreign_keys_and_ddl() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
-    let parent = create_table(
-        &c.session,
-        "it_parent",
-        "id INT PRIMARY KEY, code VARCHAR(10) NOT NULL, UNIQUE KEY uq_code (code)",
-        "(1, 'a')",
-    )
-    .await;
+    let cleanup = Cleanup::new(&db);
+    let parent = cleanup
+        .create_table(
+            &c.session,
+            "it_parent",
+            "id INT PRIMARY KEY, code VARCHAR(10) NOT NULL, UNIQUE KEY uq_code (code)",
+            "(1, 'a')",
+        )
+        .await;
     let child_columns = format!(
         "id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, \
          parent_id INT NOT NULL COMMENT 'owning parent', \
@@ -299,9 +304,10 @@ async fn reads_table_details_with_indexes_foreign_keys_and_ddl() {
          CONSTRAINT fk_parent FOREIGN KEY (parent_id) REFERENCES `{parent}` (id) \
            ON DELETE CASCADE ON UPDATE RESTRICT"
     );
-    let child = create_table(&c.session, "it_child", &child_columns, "").await;
+    let child = cleanup.create_table(&c.session, "it_child", &child_columns, "").await;
     query(&c.session, &format!("ALTER TABLE `{child}` COMMENT = 'children'")).await;
     let view = common::unique("it_view");
+    cleanup.view(&view);
     query(&c.session, &format!("CREATE VIEW `{view}` AS SELECT id, email FROM `{child}`")).await;
 
     let d = mysql::table_details(&c.session, db.database(), &child).await.unwrap();
@@ -350,8 +356,4 @@ async fn reads_table_details_with_indexes_foreign_keys_and_ddl() {
     assert_eq!(missing.unwrap_err().kind(), "not_found");
     let missing_db = mysql::table_details(&c.session, "no_such_db", &child).await;
     assert_eq!(missing_db.unwrap_err().kind(), "not_found");
-
-    query(&c.session, &format!("DROP VIEW IF EXISTS `{view}`")).await;
-    drop_table(&c.session, &child).await;
-    drop_table(&c.session, &parent).await;
 }

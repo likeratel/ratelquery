@@ -1,12 +1,14 @@
 //! Shared helpers for tests that need a live MySQL (`DBCLIENT_TEST_MYSQL_URL`).
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use dbclient_lib::connections::MysqlConnectionConfig;
 use dbclient_lib::mysql::{
     MysqlSession, MysqlSessions, QueryOptions, QueryResult, RecordingSink, RowsResult,
+    connect_options,
 };
+use sqlx::{Connection, Executor};
 
 pub const URL_VAR: &str = "DBCLIENT_TEST_MYSQL_URL";
 const URL_EXAMPLE: &str = "mysql://dev:dev@127.0.0.1:3307/sample";
@@ -92,24 +94,94 @@ impl TestDb {
     }
 }
 
-/// Creates a uniquely named table from `columns` and `rows` (SQL fragments) and returns its
-/// name. Tests own their tables so they never depend on (or change) the seed data.
-pub async fn create_table(
-    session: &MysqlSession,
-    prefix: &str,
-    columns: &str,
-    rows: &str,
-) -> String {
-    let table = unique(prefix);
-    let insert = if rows.is_empty() {
-        String::new()
-    } else {
-        format!("; INSERT INTO `{table}` VALUES {rows}")
-    };
-    query(session, &format!("CREATE TABLE `{table}` ({columns}){insert}")).await;
-    table
+/// Drops the tables and routines a test created when it goes out of scope, including when an
+/// assertion panics. Cleanup runs on its own connection and runtime (a `Drop` cannot await),
+/// with foreign key checks off so the order does not matter.
+pub struct Cleanup {
+    config: MysqlConnectionConfig,
+    password: Option<String>,
+    statements: Mutex<Vec<String>>,
 }
 
-pub async fn drop_table(session: &MysqlSession, table: &str) {
-    query(session, &format!("DROP TABLE IF EXISTS `{table}`")).await;
+impl Cleanup {
+    pub fn new(db: &TestDb) -> Self {
+        Self {
+            config: db.config.clone(),
+            password: db.password.clone(),
+            statements: Mutex::default(),
+        }
+    }
+
+    fn push(&self, statement: String) {
+        self.statements.lock().unwrap_or_else(|e| e.into_inner()).push(statement);
+    }
+
+    pub fn table(&self, name: &str) {
+        self.push(format!("DROP TABLE IF EXISTS `{name}`"));
+    }
+
+    pub fn view(&self, name: &str) {
+        self.push(format!("DROP VIEW IF EXISTS `{name}`"));
+    }
+
+    pub fn procedure(&self, name: &str) {
+        self.push(format!("DROP PROCEDURE IF EXISTS `{name}`"));
+    }
+
+    /// Creates a uniquely named table from `columns` and `rows` (SQL fragments), registers it
+    /// for cleanup and returns its name. Tests own their tables so they never depend on (or
+    /// change) the seed data.
+    pub async fn create_table(
+        &self,
+        session: &MysqlSession,
+        prefix: &str,
+        columns: &str,
+        rows: &str,
+    ) -> String {
+        let table = unique(prefix);
+        self.table(&table);
+        let insert = if rows.is_empty() {
+            String::new()
+        } else {
+            format!("; INSERT INTO `{table}` VALUES {rows}")
+        };
+        query(session, &format!("CREATE TABLE `{table}` ({columns}){insert}")).await;
+        table
+    }
+}
+
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        let statements =
+            std::mem::take(&mut *self.statements.lock().unwrap_or_else(|e| e.into_inner()));
+        if statements.is_empty() {
+            return;
+        }
+        let (config, password) = (self.config.clone(), self.password.clone());
+        let sql = std::iter::once("SET FOREIGN_KEY_CHECKS = 0".to_string())
+            .chain(statements.into_iter().rev())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let outcome = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            runtime.block_on(async {
+                let options =
+                    connect_options(&config, password.as_deref()).map_err(|e| e.to_string())?;
+                let mut conn = sqlx::MySqlConnection::connect_with(&options)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                conn.execute(sqlx::raw_sql(&sql)).await.map_err(|e| e.to_string())?;
+                conn.close().await.map_err(|e| e.to_string())
+            })
+        })
+        .join();
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => eprintln!("test cleanup failed: {err}"),
+            Err(_) => eprintln!("test cleanup panicked"),
+        }
+    }
 }

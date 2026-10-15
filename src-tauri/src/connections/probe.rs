@@ -2,24 +2,16 @@
 
 use std::time::{Duration, Instant};
 
-use aws_config::BehaviorVersion;
-use aws_sdk_dynamodb::config::{Credentials, Region};
 use aws_sdk_dynamodb::error::DisplayErrorContext;
 use sqlx::Connection;
 
-use super::model::{
-    ConnectionTestResult, DynamoAuth, DynamoConnectionConfig, MysqlConnectionConfig,
-};
-use crate::dynamo::profile_credentials;
+use super::model::{ConnectionTestResult, DynamoConnectionConfig, MysqlConnectionConfig};
+use crate::dynamo::sdk_config;
 use crate::error::{AppError, AppResult};
 use crate::mysql::{connect_options, describe_sqlx_error, fetch_server_version};
+use crate::util::elapsed_ms;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-const CREDENTIALS_PROVIDER_NAME: &str = "dbclient";
-
-fn elapsed_ms(start: Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
 
 fn timed_out(what: &str) -> AppError {
     AppError::Connection(format!("{what} timed out after {}s", PROBE_TIMEOUT.as_secs()))
@@ -49,30 +41,12 @@ pub async fn probe_mysql(
     })
 }
 
-async fn dynamo_sdk_config(
-    config: &DynamoConnectionConfig,
-    secret: Option<&str>,
-) -> AppResult<aws_types::SdkConfig> {
-    let loader =
-        aws_config::defaults(BehaviorVersion::latest()).region(Region::new(config.region.clone()));
-    let loader = match &config.endpoint {
-        Some(endpoint) => loader.endpoint_url(endpoint),
-        None => loader,
-    };
-    let loader = match &config.auth {
-        DynamoAuth::Profile { profile } => loader
-            .profile_name(profile)
-            .credentials_provider(profile_credentials(profile, &config.region)),
-        DynamoAuth::Keys { access_key_id } => {
-            let secret = secret.filter(|s| !s.is_empty()).ok_or_else(|| {
-                AppError::Connection("the AWS secret access key is not set".into())
-            })?;
-            let credentials =
-                Credentials::new(access_key_id, secret, None, None, CREDENTIALS_PROVIDER_NAME);
-            loader.credentials_provider(credentials)
-        }
-    };
-    Ok(loader.load().await)
+/// `connections_test` reports every failure, credentials included, as `connection`.
+fn as_connection_error(err: AppError) -> AppError {
+    match err {
+        AppError::Credential(message) => AppError::Connection(message),
+        other => other,
+    }
 }
 
 /// Loads credentials and calls `ListTables(limit 1)`.
@@ -82,7 +56,7 @@ pub async fn probe_dynamodb(
 ) -> AppResult<ConnectionTestResult> {
     let start = Instant::now();
     let work = async {
-        let sdk_config = dynamo_sdk_config(config, secret).await?;
+        let sdk_config = sdk_config(config, secret).await.map_err(as_connection_error)?;
         let client = aws_sdk_dynamodb::Client::new(&sdk_config);
         client
             .list_tables()
@@ -95,4 +69,25 @@ pub async fn probe_dynamodb(
         .await
         .map_err(|_| timed_out("DynamoDB request"))??;
     Ok(ConnectionTestResult { ok: true, server_version: None, latency_ms: elapsed_ms(start) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connections::DynamoAuth;
+
+    #[tokio::test]
+    async fn missing_key_secret_is_a_connection_error() {
+        let config = DynamoConnectionConfig {
+            id: "x".into(),
+            name: "x".into(),
+            region: "ap-northeast-2".into(),
+            endpoint: Some("http://127.0.0.1:1".into()),
+            auth: DynamoAuth::Keys { access_key_id: "AKIA".into() },
+            color: None,
+        };
+        let err = probe_dynamodb(&config, None).await.unwrap_err();
+        assert_eq!(err.kind(), "connection");
+        assert!(err.to_string().contains("secret access key is not set"), "{err}");
+    }
 }

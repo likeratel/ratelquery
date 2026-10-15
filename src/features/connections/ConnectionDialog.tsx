@@ -7,6 +7,7 @@ import { DynamoFields } from "./DynamoFields"
 import {
   emptyForm,
   formFromConfig,
+  isFormChanged,
   parseForm,
   type ConnectionForm,
   type ConnectionKind,
@@ -55,9 +56,10 @@ function kindOptions(editing: ConnectionConfig | null) {
 
 function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null }) {
   const formId = useId()
-  const [form, setForm] = useState<ConnectionForm>(() =>
+  const [initialForm] = useState<ConnectionForm>(() =>
     editing ? formFromConfig(editing) : emptyForm(),
   )
+  const [form, setForm] = useState<ConnectionForm>(initialForm)
   const [errors, setErrors] = useState<FieldErrors>({})
   const hasStoredSecret = useConnectionsStore((s) => s.dialog.hasStoredSecret)
   const test = useConnectionsStore((s) => s.test)
@@ -110,6 +112,8 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
     <Dialog
       title={editing ? "Edit connection" : "New connection"}
       onClose={closeDialog}
+      // A stray click next to the dialog must not throw away what was typed.
+      closeOnBackdrop={!isFormChanged(initialForm, form)}
       footer={
         <>
           <Button onClick={onTest} disabled={test.status === "testing"}>

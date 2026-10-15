@@ -12,6 +12,7 @@ use crate::dynamo::{
 use crate::error::{AppError, AppResult};
 use crate::export::ExportResult;
 use crate::state::AppState;
+use crate::util::run_blocking;
 
 const MISSING_KEY_MESSAGE: &str = "No secret access key is stored for this connection in the \
                                    active secret store; edit the connection to enter it";
@@ -30,17 +31,22 @@ async fn handle(state: &AppState, connection_id: &str) -> AppResult<Arc<DynamoHa
     if let Some(handle) = state.dynamo.get(connection_id).await {
         return Ok(handle);
     }
-    let ConnectionConfig::Dynamodb(config) = state.connections.get(connection_id)? else {
-        return Err(AppError::InvalidInput(format!(
-            "{connection_id} is not a DynamoDB connection"
-        )));
-    };
-    let secret = match &config.auth {
-        DynamoAuth::Keys { .. } => {
-            Some(require_stored_key(state.connections.resolve_secret(connection_id, None)?)?)
-        }
-        DynamoAuth::Profile { .. } => None,
-    };
+    let connections = Arc::clone(&state.connections);
+    let id = connection_id.to_string();
+    // Config file and secret store reads run on the blocking pool.
+    let (config, secret) = run_blocking(move || {
+        let ConnectionConfig::Dynamodb(config) = connections.get(&id)? else {
+            return Err(AppError::InvalidInput(format!("{id} is not a DynamoDB connection")));
+        };
+        let secret = match &config.auth {
+            DynamoAuth::Keys { .. } => {
+                Some(require_stored_key(connections.resolve_secret(&id, None)?)?)
+            }
+            DynamoAuth::Profile { .. } => None,
+        };
+        Ok((config, secret))
+    })
+    .await?;
     state.dynamo.connect(&config, secret.as_deref()).await
 }
 

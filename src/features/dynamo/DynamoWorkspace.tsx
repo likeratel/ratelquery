@@ -50,7 +50,7 @@ export function DynamoWorkspace() {
             </div>
           </>
         ) : (
-          <div className="results__empty">Choose a table to browse its items.</div>
+          <div className="results__empty">Choose a table to browse its items</div>
         )}
       </div>
     </div>

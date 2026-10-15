@@ -1,7 +1,7 @@
 import { X } from "lucide-react"
 import { useEffect, useMemo, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react"
 import { isFromEditorPanel } from "../../components/editor/editorPanel"
-import { JsonEditor } from "../../components/editor/JsonEditor"
+import { JsonEditor } from "../../components/editor/lazyEditors"
 import { SegmentedControl } from "../../components/ui"
 import type { KeySchema } from "../../lib/dynamo"
 import { diffItems, keyChanged, putExpectation, type AttributeChange } from "../../lib/dynamoDiff"
@@ -200,7 +200,8 @@ export function ItemEditor({ tab, editor, schema }: ItemEditorProps) {
         </div>
         <button
           type="button"
-          className="icon-button"
+          className="ui-icon-button"
+          data-size="md"
           aria-label="Close editor"
           title={`Close (${formatShortcut(DYNAMO_SHORTCUTS.closeEditor)})`}
           disabled={editor.saving}

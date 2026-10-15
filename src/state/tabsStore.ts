@@ -175,11 +175,12 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       patchTab(id, startRun)
       const runId = tab.runId
       const isCurrent = (t: QueryTab) => t.runId === runId
-      // Without a tab database the statement runs in the session's current one; record which.
+      // Without a tab database the statement runs in the session's current one. Send it
+      // explicitly, so the backend can't run in another database than the one recorded here.
       const session = useSessionsStore.getState().sessions[tab.connectionId]
       const ranDatabase = tab.database ?? session?.currentDatabase ?? null
       try {
-        const options = { maxRows: maxRows(), ...(tab.database ? { database: tab.database } : {}) }
+        const options = { maxRows: maxRows(), ...(ranDatabase ? { database: ranDatabase } : {}) }
         const results = await mysqlApi.query(tab.connectionId, text, options)
         patchTab(id, (t) => (isCurrent(t) ? finishRun(t, text, results, ranDatabase) : t))
         noteReconnects(tab.connectionId, results)

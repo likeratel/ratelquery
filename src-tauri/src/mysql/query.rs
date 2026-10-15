@@ -22,10 +22,7 @@ use super::session::{MysqlConn, MysqlSession};
 use super::splitter::split_statements;
 use super::type_meta::TypeMeta;
 use crate::error::{AppError, AppResult};
-
-pub fn elapsed_ms(start: Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
+use crate::util::elapsed_ms;
 
 pub fn resolve_max_rows(requested: Option<i64>) -> AppResult<usize> {
     match requested {
@@ -49,8 +46,9 @@ struct Collected {
     last_insert_id: u64,
 }
 
-/// Streams one statement over the text protocol. Only the first result set is kept; rows past
-/// `max_rows` are not decoded (the driver drains them before the next command).
+/// Streams one statement over the text protocol. Only the first result set is kept (it ends at
+/// the first `Left`, even when it had no rows, so a `CALL`'s later sets never mix in); rows
+/// past `max_rows` are not decoded (the driver drains them before the next command).
 async fn collect(
     conn: &mut MySqlConnection,
     statement: &str,
@@ -72,7 +70,7 @@ async fn collect(
                 if done.last_insert_id() > 0 {
                     out.last_insert_id = done.last_insert_id();
                 }
-                first_set_done = out.shape.is_some();
+                first_set_done = true;
             }
             Either::Right(_) if first_set_done => {}
             Either::Right(row) => {

@@ -25,6 +25,7 @@ import {
   selectItem,
   selectTable,
   setForm,
+  showDetail,
   startDynamoRun,
   updateEditor,
   type DynamoTab,
@@ -35,7 +36,7 @@ import {
 import { isAppError, normalizeError } from "../../lib/ipc"
 import { currentSettings } from "../../state/settingsStore"
 import { selectActiveDynamoTab, useTabsStore } from "../../state/tabsStore"
-import { toast } from "../query/toastStore"
+import { showToast } from "../../components/ui"
 import { descriptionFor, useDynamoCatalog } from "./catalogStore"
 
 const tabs = () => useTabsStore.getState()
@@ -114,7 +115,7 @@ export async function runDynamo(tabId: string, move: PageMove = "first"): Promis
   const tab = findTab(tabId)
   if (!tab || tab.running) return null
   if (!tab.table) {
-    toast("Choose a table first")
+    showToast({ tone: "info", message: "Choose a table first" })
     return null
   }
   let request = tab.request
@@ -295,14 +296,40 @@ export function escapeEditor(tabId: string): void {
   else closeItemEditor(tabId)
 }
 
-/** Re-reads the current page and selects the item with `key`, when given. */
+/**
+ * Re-reads the current page and selects the item with `key`, when given. Before any request
+ * ran there is no page to re-read (and the form may not even be valid yet, as in Query mode),
+ * so the item is fetched on its own and shown in the side panel instead.
+ */
 async function refreshAndSelect(tabId: string, key: Item | null, schema: KeySchema) {
   const tab = findTab(tabId)
   if (!tab) return
-  const page = await runDynamo(tabId, tab.request ? "current" : "first")
+  if (!tab.request) {
+    if (key) await showFetchedItem(tabId, key)
+    return
+  }
+  const page = await runDynamo(tabId, "current")
   if (!page || !key) return
   const index = page.items.findIndex((item) => sameKey(item, key, schema))
   if (index !== -1) selectRow(tabId, index)
+}
+
+/** Reads one item by key and shows it in the side panel, unless the tab moved on meanwhile. */
+async function showFetchedItem(tabId: string, key: Item): Promise<void> {
+  const tab = findTab(tabId)
+  if (!tab?.table) return
+  const { table, runId } = tab
+  try {
+    const item = await dynamoApi.getItem(tab.connectionId, table, key)
+    if (item)
+      patch(tabId, (t) => (t.table === table && t.runId === runId ? showDetail(t, item) : t))
+  } catch (raw) {
+    showToast({
+      tone: "warning",
+      message: "Couldn't load the saved item",
+      detail: messageOf(raw, "unknown error"),
+    })
+  }
 }
 
 /** Writes the confirmed item with a safe-write condition, then refreshes the page. */
@@ -326,7 +353,10 @@ export async function confirmSave(tabId: string): Promise<void> {
     return
   }
   patch(tabId, closeEditor)
-  toast(editor.original && expect === "exists" ? "Saved item" : "Created item", "success")
+  showToast({
+    tone: "success",
+    message: editor.original && expect === "exists" ? "Saved item" : "Created item",
+  })
   await refreshAndSelect(tabId, itemKey(item, schema), schema)
 }
 
@@ -337,16 +367,17 @@ export async function deleteItem(tabId: string, item: Item): Promise<boolean> {
   const key = schema ? itemKey(item, schema) : null
   if (!tab?.table || !schema) return false
   if (!key) {
-    toast("This item has no complete key, so it can't be deleted", "danger")
+    showToast({ tone: "error", message: "This item has no complete key, so it can't be deleted" })
     return false
   }
   try {
     await dynamoApi.deleteItem(tab.connectionId, tab.table, key)
   } catch (raw) {
-    toast(`Delete failed: ${messageOf(raw, "unknown error")}`, "danger")
+    showToast({ tone: "error", message: "Delete failed", detail: messageOf(raw, "unknown error") })
     return false
   }
-  toast("Deleted item", "success")
+  showToast({ tone: "success", message: "Deleted item" })
+  patch(tabId, (t) => (t.detail && sameKey(t.detail, key, schema) ? { ...t, detail: null } : t))
   await refreshAndSelect(tabId, null, schema)
   return true
 }

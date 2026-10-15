@@ -2,7 +2,8 @@
 //! retry-once policy for connection-level errors.
 
 use std::future::Future;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,18 +12,55 @@ use sqlx::pool::PoolConnection;
 use sqlx::{Connection, MySql, MySqlPool};
 use tokio::task::AbortHandle;
 
-use super::errors::{OpError, describe_sqlx_error};
+use super::errors::{OpError, POOL_BUSY, describe_sqlx_error};
 use super::events::StateSink;
 use super::model::{MysqlStateEvent, SessionState};
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
 
 const PING_TIMEOUT: Duration = Duration::from_secs(10);
 
-pub type MysqlConn = PoolConnection<MySql>;
+/// Counts connections the session handed out; dropping the lease gives the slot back.
+struct Lease(Arc<AtomicU32>);
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// A pooled connection checked out by a query. Derefs to the sqlx connection.
+pub struct MysqlConn {
+    conn: PoolConnection<MySql>,
+    _lease: Lease,
+}
+
+impl Deref for MysqlConn {
+    type Target = PoolConnection<MySql>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.conn
+    }
+}
+
+impl DerefMut for MysqlConn {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.conn
+    }
+}
+
+/// Outcome of one background health check.
+enum PingOutcome {
+    Alive,
+    Failed(String),
+    /// Every pooled connection is checked out; nothing was checked.
+    Busy,
+}
 
 pub struct MysqlSession {
     id: String,
     pool: MySqlPool,
+    /// Connections currently checked out through [`MysqlSession::acquire`].
+    in_use: Arc<AtomicU32>,
     default_database: Option<String>,
     /// Set when the session observed a lost connection; the next successful result reports
     /// `reconnected: true` and clears it.
@@ -44,6 +82,7 @@ impl MysqlSession {
         Self {
             id: id.to_string(),
             pool,
+            in_use: Arc::new(AtomicU32::new(0)),
             default_database,
             lost: AtomicBool::new(false),
             closed: AtomicBool::new(false),
@@ -51,10 +90,6 @@ impl MysqlSession {
             sink,
             ping_task: Mutex::new(None),
         }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
     }
 
     pub fn pool(&self) -> &MySqlPool {
@@ -105,8 +140,32 @@ impl MysqlSession {
         }
     }
 
-    pub async fn acquire(&self) -> Result<MysqlConn, sqlx::Error> {
-        self.pool.acquire().await
+    fn max_connections(&self) -> u32 {
+        self.pool.options().get_max_connections()
+    }
+
+    /// Checks out a connection. An acquire timeout while every connection is held by this
+    /// session's own work is [`POOL_BUSY`] (`connection`, never retried, no state change);
+    /// otherwise the pool could not open a connection in time, which is a lost connection.
+    pub async fn acquire(&self) -> Result<MysqlConn, OpError> {
+        match self.pool.acquire().await {
+            Ok(conn) => {
+                self.in_use.fetch_add(1, Ordering::SeqCst);
+                Ok(MysqlConn { conn, _lease: Lease(Arc::clone(&self.in_use)) })
+            }
+            Err(sqlx::Error::PoolTimedOut)
+                if self.in_use.load(Ordering::SeqCst) >= self.max_connections() =>
+            {
+                Err(OpError::App(AppError::Connection(POOL_BUSY.into())))
+            }
+            Err(sqlx::Error::PoolTimedOut) => {
+                Err(OpError::Sql(sqlx::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "could not open a connection to the server in time",
+                ))))
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// After a non-connection error, checks whether the connection survived (for example a
@@ -176,21 +235,40 @@ impl MysqlSession {
         }
     }
 
-    /// Background health check: acquires a connection (the pool pings it) and pings again.
-    pub async fn ping(&self) {
-        let check = async {
-            let mut conn = self.acquire().await?;
-            conn.ping().await
+    /// Pings an idle connection without the pool's own test, so a dead one is noticed rather
+    /// than silently replaced. When every open connection is checked out (running queries) the
+    /// check is skipped: waiting would only measure the queries, and opening another
+    /// connection would grow the pool. Only an empty pool opens a new connection to check.
+    async fn check_once(&self) -> PingOutcome {
+        let mut conn = match self.pool.try_acquire() {
+            Some(conn) => conn,
+            None if self.pool.size() > 0 => return PingOutcome::Busy,
+            None => match self.pool.acquire().await {
+                Ok(conn) => conn,
+                Err(err) => return PingOutcome::Failed(describe_sqlx_error(&err)),
+            },
         };
-        match tokio::time::timeout(PING_TIMEOUT, check).await {
-            Ok(Ok(())) => self.set_state(SessionState::Connected, None),
-            Ok(Err(err)) => {
-                self.mark_lost();
-                self.set_state(SessionState::Error, Some(describe_sqlx_error(&err)));
+        match conn.ping().await {
+            Ok(()) => PingOutcome::Alive,
+            Err(err) => {
+                // Do not hand the dead connection to the next query.
+                conn.close_on_drop();
+                PingOutcome::Failed(describe_sqlx_error(&err))
             }
-            Err(_) => {
+        }
+    }
+
+    /// Background health check; a busy pool leaves the state unchanged.
+    pub async fn ping(&self) {
+        let outcome = tokio::time::timeout(PING_TIMEOUT, self.check_once())
+            .await
+            .unwrap_or_else(|_| PingOutcome::Failed("ping timed out".into()));
+        match outcome {
+            PingOutcome::Busy => {}
+            PingOutcome::Alive => self.set_state(SessionState::Connected, None),
+            PingOutcome::Failed(message) => {
                 self.mark_lost();
-                self.set_state(SessionState::Error, Some("ping timed out".into()));
+                self.set_state(SessionState::Error, Some(message));
             }
         }
     }

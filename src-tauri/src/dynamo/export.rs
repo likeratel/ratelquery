@@ -25,12 +25,16 @@ use super::expr::MAX_LIMIT;
 use super::model::{
     DynamoExportFormat, DynamoExportOptions, DynamoExportRequest, Page, QueryRequest, ScanRequest,
 };
-use super::ops::{elapsed_ms, query, scan};
+use super::ops::{query, scan};
 use super::registry::DynamoHandle;
 use super::schema::table_info;
 use super::wire::WireItem;
 use crate::error::{AppError, AppResult};
-use crate::export::{AtomicFile, CountingWriter, ExportResult, run_blocking, validate_target};
+use crate::export::{
+    AtomicFile, CountingWriter, ExportResult, csv_error, csv_writer, finish_csv, json_error,
+    run_blocking, validate_target,
+};
+use crate::util::elapsed_ms;
 
 const BUFFER_SIZE: usize = 64 * 1024;
 
@@ -46,10 +50,6 @@ fn commit(atomic: AtomicFile, out: Out) -> AppResult<u64> {
     let file = buffered.into_inner().map_err(|e| AppError::Io(e.error().to_string()))?;
     atomic.commit(file)?;
     Ok(bytes)
-}
-
-fn csv_error(err: csv::Error) -> AppError {
-    AppError::Io(format!("could not write CSV: {err}"))
 }
 
 fn plain_number(text: &str) -> Value {
@@ -129,7 +129,7 @@ impl Sink {
     }
 
     fn write(&mut self, item: &WireItem, index: u64) -> AppResult<()> {
-        let text = serde_json::to_string(item)?;
+        let text = serde_json::to_string(item).map_err(json_error)?;
         match self {
             Sink::Json { out, .. } => {
                 let lead = if index == 0 { "[\n  " } else { ",\n  " };
@@ -137,11 +137,7 @@ impl Sink {
             }
             Sink::Jsonl { out, .. } => writeln!(out, "{text}")?,
             Sink::Csv { out, names, .. } => {
-                for name in item.keys() {
-                    if !names.contains(name) {
-                        names.insert(name.clone());
-                    }
-                }
+                names.extend(item.keys().cloned());
                 writeln!(out, "{text}")?;
             }
         }
@@ -170,19 +166,13 @@ impl Sink {
 fn spool_to_csv(spool: &AtomicFile, target: &std::path::Path, header: &[String]) -> AppResult<u64> {
     let reader = BufReader::with_capacity(BUFFER_SIZE, File::open(spool.temp_path())?);
     let (atomic, out) = open(target)?;
-    let mut writer = csv::WriterBuilder::new()
-        .terminator(csv::Terminator::Any(b'\n'))
-        .quote_style(csv::QuoteStyle::Necessary)
-        .from_writer(out);
+    let mut writer = csv_writer(out);
     writer.write_record(header).map_err(csv_error)?;
     for line in reader.lines() {
-        let item: Map<String, Value> = serde_json::from_str(&line?)?;
+        let item: Map<String, Value> = serde_json::from_str(&line?).map_err(json_error)?;
         writer.write_record(header.iter().map(|h| csv_cell(item.get(h)))).map_err(csv_error)?;
     }
-    let out = writer
-        .into_inner()
-        .map_err(|e| AppError::Io(format!("could not write CSV: {}", e.error())))?;
-    commit(atomic, out)
+    commit(atomic, finish_csv(writer)?)
 }
 
 fn table_of(request: &DynamoExportRequest) -> &str {
@@ -345,6 +335,19 @@ mod tests {
         let text = std::fs::read_to_string(&target).unwrap();
         assert_eq!(text.lines().count(), 3);
         assert_eq!(bytes, text.len() as u64);
+    }
+
+    #[test]
+    fn unreadable_spool_is_an_io_error_and_leaves_no_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.csv");
+        let (spool, mut file) = AtomicFile::create(&target).unwrap();
+        file.write_all(b"{not json\n").unwrap();
+        drop(file);
+        let err = spool_to_csv(&spool, &target, &["pk".to_string()]).unwrap_err();
+        assert_eq!(err.kind(), "io", "{err}");
+        drop(spool);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

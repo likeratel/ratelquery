@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react"
+import { SeenKeys } from "../../lib/seenKeys"
 
 const COUNT_UP_MS = 200
 
 /** Runs that already animated, so remounting (tab or result switch) shows the final value. */
-const animated = new Set<string>()
+const animated = new SeenKeys()
+
+/** Drops the runs of a closed tab; run keys start with `${tabId}:`. */
+export function forgetTabCountUps(tabId: string): void {
+  animated.forgetPrefix(`${tabId}:`)
+}
 
 function prefersReducedMotion(): boolean {
   return (

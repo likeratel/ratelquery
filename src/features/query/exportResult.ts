@@ -4,7 +4,7 @@ import { formatBytes } from "../../lib/cellFormat"
 import type { ConnectionId } from "../../lib/connections"
 import { isAppError } from "../../lib/ipc"
 import { mysqlApi, type ExportFormat, type ExportOptions, type RowsResult } from "../../lib/mysql"
-import { toast } from "./toastStore"
+import { showToast } from "../../components/ui"
 
 export type ExportScope = "visible" | "full"
 
@@ -47,7 +47,7 @@ export async function exportResult({
       filters: [{ name: format.toUpperCase(), extensions: [format] }],
     })
   } catch {
-    toast("The save dialog isn't available here", "danger")
+    showToast({ tone: "error", message: "The save dialog isn't available here" })
     return
   }
   if (!path) return
@@ -64,11 +64,15 @@ export async function exportResult({
         ? await mysqlApi.export(connectionId, result.statement, options)
         : await mysqlApi.exportRows(result.columns, result.rows, options)
     const rows = written.rows === 1 ? "row" : "rows"
-    toast(
-      `Exported ${written.rows.toLocaleString()} ${rows} · ${formatBytes(written.bytes)}`,
-      "success",
-    )
+    showToast({
+      tone: "success",
+      message: `Exported ${written.rows.toLocaleString()} ${rows} · ${formatBytes(written.bytes)}`,
+    })
   } catch (raw) {
-    toast(`Export failed: ${isAppError(raw) ? raw.message : "unknown error"}`, "danger")
+    showToast({
+      tone: "error",
+      message: "Export failed",
+      detail: isAppError(raw) ? raw.message : undefined,
+    })
   }
 }

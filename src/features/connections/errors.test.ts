@@ -17,7 +17,7 @@ describe("describeError", () => {
     const summaries = KINDS.map((kind) => describeError({ kind, message: "raw" }, "save"))
     expect(new Set(summaries.map((s) => s.summary)).size).toBe(KINDS.length)
     summaries.forEach((s) => {
-      expect(s.summary.startsWith("Could not save the connection.")).toBe(true)
+      expect(s.summary.startsWith("Couldn't save the connection.")).toBe(true)
       expect(s.detail).toBe("raw")
     })
   })
@@ -29,11 +29,11 @@ describe("describeError", () => {
 
   it("uses a direct sentence for failed connection tests", () => {
     expect(describeError({ kind: "connection", message: "timeout" }, "test")).toEqual({
-      summary: "Could not reach the server. Check the host, port and network.",
+      summary: "Couldn't reach the server. Check the host, port and network.",
       detail: "timeout",
     })
     expect(describeError({ kind: "credential", message: "denied" }, "test").summary).toBe(
-      "Connection test failed. Credentials were rejected or could not be read from the keychain.",
+      "Connection test failed. Credentials were rejected or couldn't be read from the keychain.",
     )
   })
 })
@@ -44,7 +44,7 @@ describe("errorDetail", () => {
     expect(errorDetail(denied)).toBe(`User canceled the operation. ${KEYCHAIN_DENIED_TIP}`)
     expect(describeError(denied, "save")).toEqual({
       summary:
-        "Could not save the connection. Credentials were rejected or could not be read from the keychain.",
+        "Couldn't save the connection. Credentials were rejected or couldn't be read from the keychain.",
       detail: `User canceled the operation. ${KEYCHAIN_DENIED_TIP}`,
     })
   })

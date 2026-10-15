@@ -1,12 +1,15 @@
 import { Cloud, Database, PanelLeft, Plus, Table2, X, type LucideIcon } from "lucide-react"
-import type { MouseEvent } from "react"
+import { useRef, type KeyboardEvent, type MouseEvent } from "react"
+import { useShallow } from "zustand/react/shallow"
 import {
   cancelCloseTab,
   closeQueryTab,
   confirmCloseTab,
   newTabFromActive,
 } from "../../features/query"
-import { isWorkspaceTabDirty, type WorkspaceTab } from "../../lib/queryTabs"
+import type { WorkspaceTab } from "../../lib/queryTabs"
+import { selectTabSummary } from "../../lib/tabViews"
+import { tabKeyTarget } from "./tabKeyboard"
 import { Button, Dialog } from "../ui"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useTabsStore } from "../../state/tabsStore"
@@ -26,16 +29,17 @@ const KIND_ICON: Record<WorkspaceTab["kind"], LucideIcon> = {
   table: Table2,
 }
 
-/** Tooltip name: a table tab shows where its table lives. */
-const tabLongName = (tab: WorkspaceTab) =>
-  tab.kind === "table" ? `${tab.database}.${tab.table}` : tab.title
-
-function TabItem({ tab, active }: { tab: WorkspaceTab; active: boolean }) {
+function TabItem({ id, active }: { id: string; active: boolean }) {
   const activate = useTabsStore((s) => s.activate)
-  const connection = useConnectionsStore((s) =>
-    s.connections.find((c) => c.id === tab.connectionId),
+  const tab = useTabsStore(useShallow((s) => selectTabSummary(s, id)))
+  const connection = useConnectionsStore(
+    useShallow((s) => {
+      const found = s.connections.find((c) => c.id === tab?.connectionId)
+      return { name: found?.name, color: found?.color }
+    }),
   )
-  const dirty = isWorkspaceTabDirty(tab)
+  if (!tab) return null
+  const dirty = tab.dirty
   const KindIcon = KIND_ICON[tab.kind]
 
   const onAuxClick = (event: MouseEvent) => {
@@ -51,7 +55,8 @@ function TabItem({ tab, active }: { tab: WorkspaceTab; active: boolean }) {
       role="tab"
       aria-selected={active}
       tabIndex={active ? 0 : -1}
-      title={[tabLongName(tab), KIND_LABEL[tab.kind], connection?.name].filter(Boolean).join(" · ")}
+      data-tab-id={tab.id}
+      title={[tab.longName, KIND_LABEL[tab.kind], connection.name].filter(Boolean).join(" · ")}
       onMouseDown={(event) => {
         if (event.button === MIDDLE_BUTTON) event.preventDefault()
         else if (event.button === 0) activate(tab.id)
@@ -60,7 +65,7 @@ function TabItem({ tab, active }: { tab: WorkspaceTab; active: boolean }) {
     >
       <span
         className="tab__color"
-        style={connection?.color ? { background: connection.color } : undefined}
+        style={connection.color ? { background: connection.color } : undefined}
       />
       <KindIcon
         size={12}
@@ -119,18 +124,41 @@ function CloseTabDialog() {
 export function TabBar() {
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
-  const tabs = useTabsStore((s) => s.tabs)
+  const ids = useTabsStore(useShallow((s) => s.tabs.map((t) => t.id)))
   const activeId = useTabsStore((s) => s.activeId)
+  const listRef = useRef<HTMLDivElement>(null)
+
+  /** Roving focus: arrows and Home/End move between tabs, Enter or Space activates. */
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const from = (event.target as HTMLElement).closest<HTMLElement>("[role=tab]")
+    if (!from || event.target !== from) return
+    const target = tabKeyTarget(ids, from.dataset.tabId ?? null, event.code)
+    if (!target) return
+    event.preventDefault()
+    if (target.activate) useTabsStore.getState().activate(target.id)
+    else {
+      const selector = `[data-tab-id="${CSS.escape(target.id)}"]`
+      listRef.current?.querySelector<HTMLElement>(selector)?.focus()
+    }
+  }
+
   return (
     <div className="tabbar" data-tauri-drag-region>
-      <div className="tabbar__tabs" role="tablist" aria-label="Tabs">
-        {tabs.map((tab) => (
-          <TabItem key={tab.id} tab={tab} active={tab.id === activeId} />
+      <div
+        className="tabbar__tabs"
+        role="tablist"
+        aria-label="Tabs"
+        ref={listRef}
+        onKeyDown={onKeyDown}
+      >
+        {ids.map((id) => (
+          <TabItem key={id} id={id} active={id === activeId} />
         ))}
-        {tabs.length > 0 && (
+        {ids.length > 0 && (
           <button
             type="button"
-            className="icon-button tabbar__new"
+            className="ui-icon-button tabbar__new"
+            data-size="md"
             onClick={newTabFromActive}
             aria-label="New tab"
             title="New tab on the same connection"
@@ -143,7 +171,8 @@ export function TabBar() {
       <div className="tabbar__actions">
         <button
           type="button"
-          className="icon-button"
+          className="ui-icon-button"
+          data-size="md"
           onClick={toggleSidebar}
           aria-pressed={!collapsed}
           aria-label={collapsed ? "Show sidebar" : "Hide sidebar"}

@@ -48,7 +48,8 @@ export function DatabaseSwitcher({ tab }: { tab: QueryTab }) {
       {database && (
         <button
           type="button"
-          className="icon-button"
+          className="ui-icon-button"
+          data-size="md"
           disabled={schemaLoading}
           onClick={() => void refreshSchema(tab.connectionId, database)}
           aria-label={schemaLoading ? "Loading schema" : "Refresh schema"}

@@ -11,10 +11,7 @@ use super::registry::DynamoHandle;
 use super::schema::key_schema_for;
 use super::wire::{SdkItem, WireItem, from_wire_item, to_wire_item};
 use crate::error::{AppError, AppResult};
-
-pub fn elapsed_ms(start: Instant) -> u64 {
-    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
+use crate::util::elapsed_ms;
 
 fn require_table(table: &str) -> AppResult<()> {
     if table.trim().is_empty() {

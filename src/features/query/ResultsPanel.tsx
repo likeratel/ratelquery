@@ -1,5 +1,6 @@
+import { useMemo } from "react"
 import type { QueryResult } from "../../lib/mysql"
-import type { QueryTab } from "../../lib/queryTabs"
+import type { ResultsView } from "../../lib/tabViews"
 import { useTabsStore } from "../../state/tabsStore"
 import type { MysqlSession } from "../../state/sessionsStore"
 import { editTargetFor } from "./editing"
@@ -8,7 +9,7 @@ import { ResultMeta } from "./ResultMeta"
 import { RowsView } from "./RowsView"
 
 interface ResultsPanelProps {
-  tab: QueryTab
+  tab: ResultsView
   session: MysqlSession | undefined
 }
 
@@ -21,6 +22,11 @@ function resultLabel(result: QueryResult, index: number): string {
 export function ResultsPanel({ tab, session }: ResultsPanelProps) {
   const setActiveResult = useTabsStore((s) => s.setActiveResult)
   const result = tab.results[tab.activeResult]
+  const ranDatabase = tab.ranDatabase
+  const edit = useMemo(
+    () => editTargetFor({ ranDatabase }, result, session),
+    [ranDatabase, result, session],
+  )
 
   if (tab.error) {
     return (
@@ -33,7 +39,7 @@ export function ResultsPanel({ tab, session }: ResultsPanelProps) {
     return (
       <section className="results">
         <div className="results__empty">
-          {tab.running ? "Running…" : "Run a query to see results here."}
+          {tab.running ? "Running…" : "Run a query to see results here"}
         </div>
       </section>
     )
@@ -60,11 +66,18 @@ export function ResultsPanel({ tab, session }: ResultsPanelProps) {
       )}
       {result.kind === "rows" ? (
         <RowsView
-          key={tab.activeResult}
-          tab={tab}
+          // A new run starts with no selection; switching result tabs does too.
+          key={`${tab.runId}-${tab.activeResult}`}
+          tabId={tab.id}
+          connectionId={tab.connectionId}
+          runId={tab.runId}
           index={tab.activeResult}
           result={result}
-          edit={editTargetFor(tab, result, session)}
+          edit={edit}
+          edits={tab.edits[tab.activeResult]}
+          applying={tab.applying}
+          allowFull={tab.results.length === 1}
+          database={tab.ranDatabase}
         />
       ) : (
         <div className="rows-view">

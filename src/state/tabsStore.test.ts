@@ -83,6 +83,25 @@ describe("run", () => {
     expect(useSessionsStore.getState().sessions.c1.reconnects).toBe(1)
   })
 
+  it("sends the session database for a tab without one, and nothing when there is none", async () => {
+    queryResults = [usersResult("a@x")]
+    useSessionsStore.setState({
+      sessions: { c1: { ...emptySession(), state: "connected", currentDatabase: "app" } },
+    })
+    const store = useTabsStore.getState()
+    const id = store.open("c1", null)
+    store.setSql(id, "select 1")
+    await useTabsStore.getState().run(id)
+    expect(calls[0].args?.options).toEqual({ maxRows: 1000, database: "app" })
+    expect(useTabsStore.getState().tabs.find((t) => t.id === id)).toMatchObject({
+      ranDatabase: "app",
+    })
+
+    useSessionsStore.setState({ sessions: {} })
+    await useTabsStore.getState().run(id)
+    expect(calls[1].args?.options).toEqual({ maxRows: 1000 })
+  })
+
   it("runs an explicit statement and records failures", async () => {
     const id = useTabsStore.getState().open("c1", null)
     await expect(useTabsStore.getState().run(id, "bad sql")).resolves.toBe("failed")

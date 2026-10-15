@@ -11,13 +11,14 @@ use super::cell::Cell;
 use super::classify::is_read_statement;
 use super::decode::{column_metas, column_names, decode_row};
 use super::errors::{OpError, UNKNOWN_OUTCOME, describe_sqlx_error, is_connection_error};
-use super::query::{elapsed_ms, use_database};
+use super::query::use_database;
 use super::session::{MysqlSession, boxed};
 use super::splitter::split_statements;
 use crate::error::{AppError, AppResult};
 use crate::export::{
     ExportOptions, ExportResult, FileRowWriter, open_file_writer, run_blocking, validate_target,
 };
+use crate::util::elapsed_ms;
 
 async fn columns_without_rows(conn: &mut MySqlConnection, statement: &str) -> Vec<String> {
     match conn.prepare(statement).await {
@@ -65,7 +66,8 @@ async fn stream_to_file(
         let mut stream = conn.fetch_many(sqlx::raw_sql(statement));
         while let Some(item) = stream.try_next().await? {
             match item {
-                Either::Left(_) => first_set_done = output.is_some(),
+                // The first result set ends here even when it was empty.
+                Either::Left(_) => first_set_done = true,
                 Either::Right(_) if first_set_done => {}
                 Either::Right(row) => {
                     if output.is_none() {

@@ -10,10 +10,10 @@ export function tabDatabase(tab: QueryTab, session: MysqlSession | undefined): s
 
 /**
  * Whether a result can be edited, judged against the database it was read from (recorded when
- * the run started), not the one currently picked in the status bar.
+ * the run started), not the one currently picked next to the Run button.
  */
 export function editTargetFor(
-  tab: QueryTab,
+  tab: Pick<QueryTab, "ranDatabase">,
   result: QueryResult | undefined,
   session: MysqlSession | undefined,
 ): EditTargetResult {
@@ -23,7 +23,7 @@ export function editTargetFor(
   if (database && !schema) {
     const reason = isSchemaLoading(session, database)
       ? "Loading the schema…"
-      : "Schema not loaded. Use Refresh schema in the status bar."
+      : "Schema not loaded. Use Refresh schema next to the Run button."
     return { editable: false, reason }
   }
   return resolveEditTarget(result.columns, schema, database, result.statement)

@@ -42,18 +42,6 @@ pub fn validate_target(path: &str) -> AppResult<PathBuf> {
     }
 }
 
-/// Runs synchronous file I/O on the blocking thread pool so export writes never occupy an
-/// async worker thread. A panic or cancellation of the task is reported as `io`.
-pub async fn run_blocking<T, F>(work: F) -> AppResult<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> AppResult<T> + Send + 'static,
-{
-    tauri::async_runtime::spawn_blocking(work)
-        .await
-        .map_err(|e| AppError::Io(format!("export task failed: {e}")))?
-}
-
 /// Writes to a temp file next to the target and renames it into place on commit, so a failed
 /// export never leaves a truncated file behind. Dropping without commit removes the temp file.
 pub struct AtomicFile {
@@ -102,18 +90,6 @@ impl Drop for AtomicFile {
 mod tests {
     use super::*;
     use std::io::Write;
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn run_blocking_leaves_the_async_thread_and_maps_failures() {
-        let caller = std::thread::current().id();
-        let worker = run_blocking(|| Ok(std::thread::current().id())).await.unwrap();
-        assert_ne!(caller, worker);
-        let failed = run_blocking(|| Err::<(), _>(AppError::Io("disk full".into()))).await;
-        assert_eq!(failed.unwrap_err().to_string(), "disk full");
-        let panicked = run_blocking::<(), _>(|| panic!("boom")).await.unwrap_err();
-        assert_eq!(panicked.kind(), "io");
-        assert!(panicked.to_string().starts_with("export task failed"), "{panicked}");
-    }
 
     #[test]
     fn validates_paths() {

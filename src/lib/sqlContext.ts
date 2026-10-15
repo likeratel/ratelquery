@@ -27,6 +27,20 @@ function isWhitespace(ch: string | undefined): boolean {
 }
 
 /**
+ * What may follow `--` for it to start a comment: ASCII whitespace or the end of the text,
+ * exactly like the backend splitter (Rust `is_ascii_whitespace`: space, tab, LF, FF, CR).
+ * Unicode spaces such as U+3000 don't count, so `--\u3000; DROP ...` splits at the `;` here
+ * just as it does in the backend, and the editor never shows fewer statements than will run.
+ */
+const LINE_COMMENT_GAP = /^[ \t\n\f\r]$/
+
+function startsLineComment(sql: string, i: number): boolean {
+  if (sql[i] !== "-" || sql[i + 1] !== "-") return false
+  const after = sql[i + 2]
+  return after === undefined || LINE_COMMENT_GAP.test(after)
+}
+
+/**
  * Replaces comments with spaces and the inside of string literals with nothing, in one pass so
  * a quote inside a comment or a comment marker inside a string can't confuse the other.
  * Backtick identifiers are kept as they are.
@@ -109,7 +123,7 @@ export function executableComment(sql: string, i: number): ExecutableComment | n
 export function skipComment(sql: string, i: number): number {
   const ch = sql[i]
   const next = sql[i + 1]
-  const lineComment = ch === "#" || (ch === "-" && next === "-" && isWhitespace(sql[i + 2]))
+  const lineComment = ch === "#" || startsLineComment(sql, i)
   if (lineComment) {
     const newline = sql.indexOf("\n", i)
     return newline === -1 ? sql.length : newline

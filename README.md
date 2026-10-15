@@ -53,6 +53,8 @@ Most desktop database tools get four everyday things wrong. This one is built ar
 | `⌘S` | Apply pending grid edits, or review a DynamoDB item |
 | `⌘C` / `⇧⌘C` | Copy the selected cell or row |
 | `⌘B` | Toggle the sidebar |
+| `⌘,` | Settings |
+| `Esc` | Close the item or cell editor, or a prompt |
 
 `⌘` is `Ctrl` on Windows and Linux.
 
@@ -78,13 +80,13 @@ On macOS, `tauri dev` re-signs the debug binary (see `scripts/cargo.sh`) so the 
 
 A DynamoDB connection that uses an AWS profile runs whatever that profile configures, including a `credential_process` command from your AWS config, exactly as the AWS CLI would.
 
-To avoid keychain prompts altogether, choose the file secret store in Settings: secrets are then kept in `<app config dir>/secrets.json` (mode 0600), protected by file permissions only. Secrets are not migrated when switching stores.
+To avoid keychain prompts altogether, choose the file secret store in Settings: secrets are then kept in `<app config dir>/secrets.json` (mode 0600), protected by file permissions only. Secrets are moved when possible; ones the old store refuses to hand over stay there.
 
 See [docs/architecture.md](docs/architecture.md) for the module layout and security model, and [docs/ipc-contract.md](docs/ipc-contract.md) for the commands between the webview and Rust.
 
 ## Renaming
 
-The product name lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` and `src/appMeta.ts`.
+The product name lives in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`.
 
 ## License
 

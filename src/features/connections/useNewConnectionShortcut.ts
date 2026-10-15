@@ -1,20 +1,36 @@
 import { useEffect } from "react"
 import { isModalOpen } from "../../components/ui"
-import { matchesShortcut, parseShortcut } from "../../lib/shortcuts"
+import { isMac, matchesShortcut, parseShortcut, type KeyLike } from "../../lib/shortcuts"
 import { useConnectionsStore } from "../../state/connectionsStore"
 
 export const NEW_CONNECTION_SHORTCUT = parseShortcut("Mod+N")
+
+type NewConnectionEvent = KeyLike & { isComposing: boolean; defaultPrevented: boolean }
+
+/**
+ * What Mod+N does: `ignore` keys that aren't the shortcut, belong to an IME composition, were
+ * already handled (an editor claimed them) or repeat; `swallow` the shortcut while a modal is
+ * open, since the page behind it is inert; otherwise `open` the dialog.
+ */
+export function newConnectionAction(
+  event: NewConnectionEvent,
+  modalOpen: boolean,
+  mac = isMac(),
+): "ignore" | "swallow" | "open" {
+  if (event.isComposing || event.defaultPrevented || event.repeat) return "ignore"
+  if (!matchesShortcut(event, NEW_CONNECTION_SHORTCUT, mac)) return "ignore"
+  return modalOpen ? "swallow" : "open"
+}
 
 /** Registers Mod+N (physical key) to open the new connection dialog. */
 export function useNewConnectionShortcut(): void {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat || !matchesShortcut(event, NEW_CONNECTION_SHORTCUT)) return
+      const action = newConnectionAction(event, isModalOpen())
+      if (action === "ignore") return
       event.preventDefault()
-      // Another modal (or this one) is open; the page behind it is inert.
-      if (isModalOpen()) return
       const { dialog, openDialog } = useConnectionsStore.getState()
-      if (!dialog.open) openDialog()
+      if (action === "open" && !dialog.open) openDialog()
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)

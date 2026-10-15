@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { SegmentedControl } from "../../components/ui"
 import type { KeySchema } from "../../lib/dynamo"
 import { findLossyAttributes, formatItem } from "../../lib/dynamoJson"
@@ -13,6 +13,7 @@ import {
 } from "../../lib/dynamoTabs"
 import { deleteItem, openItemEditor, runDynamo, selectRow, setItemView } from "./actions"
 import { DynamoExportMenu } from "./DynamoExportMenu"
+import { editorReturnTarget } from "./editorFocus"
 import { DynamoErrorPanel } from "./errors"
 import { ItemsGrid } from "./ItemsGrid"
 import { JsonPreview } from "./JsonPreview"
@@ -76,7 +77,7 @@ function DeleteControl({ tab, onDone }: { tab: DynamoTab; onDone: () => void }) 
 
 function JsonView({ tab }: { tab: DynamoTab }) {
   const item = selectedItem(tab)
-  if (!item) return <div className="results__empty">Select an item to preview it as JSON.</div>
+  if (!item) return <div className="results__empty">Select an item to preview it as JSON</div>
   const lossy = findLossyAttributes(item)
   return (
     <div className="dyn-json-view">
@@ -125,12 +126,12 @@ function Body({ tab, schema }: { tab: DynamoTab; schema: KeySchema | null }) {
   if (!tab.page) {
     return (
       <div className="results__empty">
-        {tab.running ? "Running…" : "Run a scan or query to see items here."}
+        {tab.running ? "Running…" : "Run a scan or query to see items here"}
       </div>
     )
   }
   if (tab.page.items.length === 0) {
-    return <div className="results__empty">No items on this page.</div>
+    return <div className="results__empty">No items on this page</div>
   }
   if (tab.view === "json") return <JsonView tab={tab} />
   return (
@@ -147,6 +148,19 @@ function Body({ tab, schema }: { tab: DynamoTab; schema: KeySchema | null }) {
 /** Toolbar, item grid or JSON view, and the pager for the current page. */
 export function ItemsPanel({ tab, schema }: { tab: DynamoTab; schema: KeySchema | null }) {
   const item = selectedItem(tab)
+  const editRef = useRef<HTMLButtonElement>(null)
+  const newRef = useRef<HTMLButtonElement>(null)
+  const editorOpen = tab.editor !== null
+  const wasOpen = useRef(editorOpen)
+  const canEdit = Boolean(item && schema)
+
+  useEffect(() => {
+    const active = document.activeElement
+    const focusLost = active === null || active === document.body
+    const target = editorReturnTarget(wasOpen.current, editorOpen, focusLost, canEdit)
+    wasOpen.current = editorOpen
+    if (target) (target === "edit" ? editRef : newRef).current?.focus()
+  }, [editorOpen, canEdit])
   return (
     <section className="results dyn-results">
       <div className="result-toolbar">
@@ -162,6 +176,7 @@ export function ItemsPanel({ tab, schema }: { tab: DynamoTab; schema: KeySchema 
         </div>
         <div className="result-toolbar__group" aria-label="Edit items">
           <button
+            ref={newRef}
             type="button"
             className="q-button q-button--ghost"
             disabled={!schema}
@@ -176,16 +191,17 @@ export function ItemsPanel({ tab, schema }: { tab: DynamoTab; schema: KeySchema 
             onDone={() => selectRow(tab.id, null)}
           />
           <button
+            ref={editRef}
             type="button"
             className="q-button q-button--ghost"
-            disabled={!item || !schema}
+            disabled={!canEdit}
             onClick={() => item && openItemEditor(tab.id, item)}
           >
             <Pencil size={12} strokeWidth={2.2} />
             Edit item
           </button>
         </div>
-        <DynamoExportMenu tab={tab} />
+        <DynamoExportMenu connectionId={tab.connectionId} table={tab.table} request={tab.request} />
       </div>
       <Body tab={tab} schema={schema} />
       <Pager tab={tab} />

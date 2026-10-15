@@ -1,7 +1,7 @@
 import { Cloud, Database, Ellipsis, Pencil, Trash } from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { Button, Menu, showToast } from "../../components/ui"
-import type { ConnectionConfig } from "../../lib/connections"
+import type { ConnectionConfig, ConnectionId } from "../../lib/connections"
 import { normalizeError } from "../../lib/ipc"
 import { openQueryTabFor } from "../query"
 import {
@@ -12,9 +12,11 @@ import {
   useTreeTabIndex,
 } from "../schema"
 import { useConnectionsStore } from "../../state/connectionsStore"
+import { useSessionsStore } from "../../state/sessionsStore"
 import { isPasswordCancelled } from "./connectSession"
 import { errorDetail } from "./errors"
 import { connectionSubtitle } from "./filter"
+import { hasNewRecovery, sessionStatus } from "./sessionStatus"
 
 type RowMode = "idle" | "menu" | "confirm" | "deleting"
 
@@ -24,7 +26,7 @@ function openTab(config: ConnectionConfig): void {
     if (isPasswordCancelled(raw)) return
     showToast({
       tone: "error",
-      message: `Could not open ${config.name}.`,
+      message: `Couldn't open ${config.name}`,
       detail: errorDetail(normalizeError(raw)),
     })
   })
@@ -66,6 +68,27 @@ function DeleteConfirm({
   )
 }
 
+/** MySQL session state on the row icon; ripples once each time the session recovers. */
+function SessionDot({ connectionId }: { connectionId: ConnectionId }) {
+  const session = useSessionsStore((s) => s.sessions[connectionId])
+  const [seenReconnects] = useState(() => session?.reconnects ?? 0)
+  const status = sessionStatus(session)
+  if (!status) return null
+  return (
+    <span
+      className="dot conn-row__status"
+      data-state={status.state}
+      role="img"
+      aria-label={status.label}
+      title={status.label}
+    >
+      {hasNewRecovery(session, seenReconnects) && (
+        <span key={session?.reconnects} className="dot__ripple" aria-hidden />
+      )}
+    </span>
+  )
+}
+
 interface ConnectionRowProps {
   config: ConnectionConfig
   /** Holds the tree's tab stop while no other node does. */
@@ -75,6 +98,7 @@ interface ConnectionRowProps {
 export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
   const [mode, setMode] = useState<RowMode>("idle")
   const closeMenu = useCallback(() => setMode((m) => (m === "menu" ? "idle" : m)), [])
+  const moreRef = useRef<HTMLButtonElement>(null)
   const Icon = config.kind === "mysql" ? Database : Cloud
   const key = connectionKey(config.id)
   const expanded = useSchemaTree((s) => Boolean(s.expanded[key]))
@@ -140,12 +164,15 @@ export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
           }}
           title={`${config.name} · ${connectionSubtitle(config)}`}
         >
-          <Icon
-            size={14}
-            strokeWidth={1.75}
-            className="conn-row__icon"
-            aria-label={config.kind === "mysql" ? "MySQL" : "DynamoDB"}
-          />
+          <span className="conn-row__icon-wrap">
+            <Icon
+              size={14}
+              strokeWidth={1.75}
+              className="conn-row__icon"
+              aria-label={config.kind === "mysql" ? "MySQL" : "DynamoDB"}
+            />
+            {config.kind === "mysql" && <SessionDot connectionId={config.id} />}
+          </span>
           <span className="conn-row__text">
             <span className="conn-row__name">{config.name}</span>
             <span className="conn-row__sub mono">{connectionSubtitle(config)}</span>
@@ -155,6 +182,7 @@ export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
           )}
         </button>
         <button
+          ref={moreRef}
           type="button"
           className="ui-icon-button conn-row__more"
           tabIndex={-1}
@@ -170,6 +198,7 @@ export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
           <Menu
             label={`Actions for ${config.name}`}
             className="conn-row__menu"
+            triggerRef={moreRef}
             onClose={closeMenu}
             items={[
               {

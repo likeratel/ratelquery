@@ -3,7 +3,7 @@ import { formatBytes } from "../../lib/cellFormat"
 import type { ConnectionId } from "../../lib/connections"
 import { dynamoApi, type DynamoExportOptions, type DynamoExportRequest } from "../../lib/dynamo"
 import { isAppError } from "../../lib/ipc"
-import { toast } from "../query/toastStore"
+import { showToast } from "../../components/ui"
 
 export type DynamoExportFormat = DynamoExportOptions["format"]
 
@@ -31,18 +31,22 @@ export async function exportDynamo({ connectionId, table, request, format }: Dyn
       filters: [{ name: format.toUpperCase(), extensions: [format] }],
     })
   } catch {
-    toast("The save dialog isn't available here", "danger")
+    showToast({ tone: "error", message: "The save dialog isn't available here" })
     return
   }
   if (!path) return
   try {
     const written = await dynamoApi.export(connectionId, request, { format, path })
     const items = written.rows === 1 ? "item" : "items"
-    toast(
-      `Exported ${written.rows.toLocaleString()} ${items} · ${formatBytes(written.bytes)}`,
-      "success",
-    )
+    showToast({
+      tone: "success",
+      message: `Exported ${written.rows.toLocaleString()} ${items} · ${formatBytes(written.bytes)}`,
+    })
   } catch (raw) {
-    toast(`Export failed: ${isAppError(raw) ? raw.message : "unknown error"}`, "danger")
+    showToast({
+      tone: "error",
+      message: "Export failed",
+      detail: isAppError(raw) ? raw.message : undefined,
+    })
   }
 }

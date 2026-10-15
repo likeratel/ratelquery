@@ -87,22 +87,41 @@ const portField = z
   .transform(Number)
   .pipe(z.number().int().min(1, "Port must be 1 to 65535").max(65535, "Port must be 1 to 65535"))
 
-function isHttpUrl(value: string): boolean {
+export const ENDPOINT_FULL_URL = "Use a full URL such as http://localhost:8000"
+export const ENDPOINT_NO_USERINFO = "Leave user names and passwords out of the endpoint URL"
+export const ENDPOINT_NO_FRAGMENT = "Remove the # part from the endpoint URL"
+
+/** An `@` before the path: `user:pass@host` style credentials, even empty ones. */
+const USERINFO = /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*@/i
+
+/**
+ * Why an endpoint URL is refused, or null when it is fine (or empty). Only http(s) URLs are
+ * accepted. Credentials in the URL would travel next to the AWS signature and a fragment is
+ * never sent, so both are refused rather than passed on.
+ */
+export function endpointProblem(value: string): string | null {
+  if (value === "") return null
+  let url: URL
   try {
-    const url = new URL(value)
-    return url.protocol === "http:" || url.protocol === "https:"
+    url = new URL(value)
   } catch {
-    return false
+    return ENDPOINT_FULL_URL
   }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return ENDPOINT_FULL_URL
+  if (url.username !== "" || url.password !== "" || USERINFO.test(value)) {
+    return ENDPOINT_NO_USERINFO
+  }
+  if (value.includes("#")) return ENDPOINT_NO_FRAGMENT
+  return null
 }
 
 const endpointField = z
   .string()
   .trim()
-  .refine(
-    (value) => value === "" || isHttpUrl(value),
-    "Use a full URL such as http://localhost:8000",
-  )
+  .superRefine((value, ctx) => {
+    const problem = endpointProblem(value)
+    if (problem) ctx.addIssue({ code: "custom", message: problem })
+  })
   .transform((value) => (value === "" ? undefined : value))
 
 export const mysqlFormSchema = z.object({
@@ -206,6 +225,17 @@ function collectErrors(error: z.ZodError): FieldErrors {
 
 function idFor(context: FormContext, kind: ConnectionKind): ConnectionId {
   return context.original?.kind === kind ? context.original.id : ""
+}
+
+/**
+ * Whether the form differs from how it opened, looking at the kind and the visible draft only
+ * (the other kind's draft is hidden and never saved).
+ */
+export function isFormChanged(initial: ConnectionForm, current: ConnectionForm): boolean {
+  if (initial.kind !== current.kind) return true
+  const before: Readonly<Record<string, string>> = { ...initial[current.kind] }
+  const after: Readonly<Record<string, string>> = { ...current[current.kind] }
+  return Object.keys(after).some((key) => before[key] !== after[key])
 }
 
 export const MYSQL_SECRET_AGAIN = "Enter the password again for the new server"

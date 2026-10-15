@@ -1,15 +1,19 @@
 import { NULL_INPUT } from "../../lib/cellEdit"
-import { pendingCount } from "../../lib/gridEdits"
-import type { QueryTab } from "../../lib/queryTabs"
+import { pendingCount, type GridEdits } from "../../lib/gridEdits"
 import { formatShortcut } from "../../lib/shortcuts"
 import { useTabsStore } from "../../state/tabsStore"
 import { applyActiveEdits } from "./actions"
 import { APP_SHORTCUTS } from "./appShortcuts"
 
-export function PendingBar({ tab, index }: { tab: QueryTab; index: number }) {
+interface PendingBarProps {
+  tabId: string
+  index: number
+  edits: GridEdits | undefined
+  applying: boolean
+}
+
+export function PendingBar({ tabId, index, edits, applying }: PendingBarProps) {
   const discardEdits = useTabsStore((s) => s.discardEdits)
-  const applying = tab.applying
-  const edits = tab.edits[index]
   const count = edits ? pendingCount(edits) : 0
   if (count === 0) return null
 
@@ -33,7 +37,7 @@ export function PendingBar({ tab, index }: { tab: QueryTab; index: number }) {
         type="button"
         className="q-button q-button--ghost"
         disabled={applying}
-        onClick={() => discardEdits(tab.id, index)}
+        onClick={() => discardEdits(tabId, index)}
       >
         Discard
       </button>

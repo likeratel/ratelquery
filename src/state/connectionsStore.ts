@@ -98,14 +98,15 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
     if (!existing) return
     connectionsApi
       .hasSecret(existing.id)
+      // Unknown keyring state counts as a stored secret (the safe side): moving the connection
+      // to another server then asks for the password again instead of reusing whatever is
+      // stored. A blank secret for the same server still means "keep".
+      .catch(() => true)
       .then((hasStoredSecret) => {
         const { dialog } = get()
         if (dialog.open && dialog.session === session) {
           set({ dialog: { ...dialog, hasStoredSecret } })
         }
-      })
-      .catch(() => {
-        // Unknown keyring state: treat as no stored secret, so the user is asked for one.
       })
   },
 

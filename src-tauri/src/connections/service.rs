@@ -14,12 +14,26 @@ pub struct ConnectionsService {
     lock: Mutex<()>,
 }
 
+/// Ids are compared trimmed everywhere, like `validate_config` stores them.
+fn normalize_id(id: &str) -> &str {
+    id.trim()
+}
+
 fn require_id(id: &str) -> AppResult<&str> {
-    let trimmed = id.trim();
+    let trimmed = normalize_id(id);
     if trimmed.is_empty() {
         return Err(AppError::InvalidInput("connection id must not be empty".into()));
     }
     Ok(trimmed)
+}
+
+fn retarget_message(config: &ConnectionConfig) -> &'static str {
+    match config {
+        ConnectionConfig::Mysql(_) => "Enter the password again for the new server",
+        ConnectionConfig::Dynamodb(_) => {
+            "Enter the secret access key again for the new endpoint or key"
+        }
+    }
 }
 
 fn retype_message(config: &ConnectionConfig) -> &'static str {
@@ -70,6 +84,7 @@ impl ConnectionsService {
     }
 
     pub fn get(&self, id: &str) -> AppResult<ConnectionConfig> {
+        let id = normalize_id(id);
         let _guard = self.guard()?;
         self.store
             .load()?
@@ -78,8 +93,37 @@ impl ConnectionsService {
             .ok_or_else(|| AppError::NotFound(format!("connection {id} does not exist")))
     }
 
+    /// Runs `work` while no config is saved or deleted. `work` gets a loader for the saved
+    /// connection ids (read only when called).
+    pub fn while_locked<T>(
+        &self,
+        work: impl FnOnce(&dyn Fn() -> AppResult<Vec<String>>) -> AppResult<T>,
+    ) -> AppResult<T> {
+        let _guard = self.guard()?;
+        let ids = || Ok(self.store.load()?.iter().map(|c| c.id().to_string()).collect());
+        work(&ids)
+    }
+
+    /// A kept secret (`secret == None`) must not follow the config to another server: when the
+    /// saved config had a stored secret and the destination changed, the secret is asked for
+    /// again.
+    fn check_kept_secret(
+        &self,
+        previous: Option<&ConnectionConfig>,
+        saved: &ConnectionConfig,
+        secret: Option<&str>,
+    ) -> AppResult<()> {
+        let Some(previous) = previous.filter(|_| secret.is_none()) else { return Ok(()) };
+        let previous = validate_config(previous).unwrap_or_else(|_| previous.clone());
+        if same_target(&previous, saved) || self.secrets.get(saved.id())?.is_none() {
+            return Ok(());
+        }
+        Err(AppError::InvalidInput(retarget_message(saved).into()))
+    }
+
     /// Validates and stores `config`, generating an id when it is empty.
     /// `secret`: `None` keeps the stored secret, `Some("")` clears it, otherwise replaces it.
+    /// Keeping a stored secret while pointing the config at another server is rejected.
     pub fn save(
         &self,
         config: &ConnectionConfig,
@@ -93,7 +137,9 @@ impl ConnectionsService {
         };
         let _guard = self.guard()?;
         let existing = self.store.load()?;
-        let is_new = !existing.iter().any(|c| c.id() == saved.id());
+        let previous = existing.iter().find(|c| c.id() == saved.id());
+        self.check_kept_secret(previous, &saved, secret)?;
+        let is_new = previous.is_none();
         self.store.save(&upsert(&existing, &saved))?;
         if let Err(err) = self.apply_secret(saved.id(), secret) {
             if is_new {
@@ -113,23 +159,26 @@ impl ConnectionsService {
         }
     }
 
-    /// Removes the secret, then the config. Deleting an unknown id is a no-op.
+    /// Removes the secret (from every secret store), then the config. Deleting an unknown id
+    /// is a no-op.
     ///
-    /// The keyring is tried first so a failure is known before the config disappears; the
-    /// config is removed either way, and a secret left behind is reported as `credential`.
+    /// The secret is removed first so a failure is known before the config disappears; the
+    /// config is removed either way, and a secret left in the active store is reported as
+    /// `credential`.
     pub fn delete(&self, id: &str) -> AppResult<()> {
         let id = require_id(id)?;
         let _guard = self.guard()?;
-        let secret_removed = self.secrets.delete(id);
+        let secret_removed = self.secrets.delete_everywhere(id);
         let existing = self.store.load()?;
         if existing.iter().any(|c| c.id() == id) {
             let remaining: Vec<ConnectionConfig> =
                 existing.into_iter().filter(|c| c.id() != id).collect();
             self.store.save(&remaining)?;
         }
-        secret_removed.map_err(|err| {
+        secret_removed.map_err(|stuck| {
             AppError::Credential(format!(
-                "The connection was removed, but its saved secret is still in the keychain: {err}"
+                "The connection was removed, but its saved secret is still in {}: {}",
+                stuck.location, stuck.error
             ))
         })
     }
@@ -166,6 +215,7 @@ impl ConnectionsService {
 
     /// The explicitly passed secret, or the stored one for `id` when `secret` is `None`.
     pub fn resolve_secret(&self, id: &str, secret: Option<&str>) -> AppResult<Option<String>> {
+        let id = normalize_id(id);
         match secret {
             Some(value) => Ok(Some(value.to_string())),
             None if id.is_empty() => Ok(None),
@@ -272,6 +322,76 @@ mod tests {
         assert_eq!(err.kind(), "credential");
         assert!(err.to_string().contains("still in the keychain"), "{err}");
         assert!(svc.list().unwrap().is_empty(), "config removed despite the keyring error");
+    }
+
+    #[test]
+    fn delete_names_the_file_store_when_it_keeps_the_secret() {
+        #[derive(Default)]
+        struct StuckFile(MemorySecretStore);
+        impl SecretStore for StuckFile {
+            fn get(&self, id: &str) -> AppResult<Option<String>> {
+                self.0.get(id)
+            }
+            fn set(&self, id: &str, secret: &str) -> AppResult<()> {
+                self.0.set(id, secret)
+            }
+            fn delete(&self, _id: &str) -> AppResult<()> {
+                Err(AppError::Io("disk full".into()))
+            }
+            fn location(&self) -> &'static str {
+                "secrets.json"
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let svc = ConnectionsService::new(
+            ConnectionStore::new(dir.path()),
+            Arc::new(StuckFile::default()),
+        );
+        let saved = svc.save(&config("", "a"), Some("pw")).unwrap();
+        let err = svc.delete(saved.id()).unwrap_err();
+        assert_eq!(err.kind(), "credential");
+        assert!(err.to_string().contains("still in secrets.json"), "{err}");
+    }
+
+    #[test]
+    fn keeping_the_secret_for_a_new_server_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path());
+        let saved = svc.save(&config("", "a"), Some("stored")).unwrap();
+        let ConnectionConfig::Mysql(m) = &saved else { panic!() };
+        let moved = ConnectionConfig::Mysql(MysqlConnectionConfig {
+            host: "attacker.example".into(),
+            ..m.clone()
+        });
+        let err = svc.save(&moved, None).unwrap_err();
+        assert_eq!(err.kind(), "invalid_input");
+        assert_eq!(err.to_string(), "Enter the password again for the new server");
+        assert_eq!(svc.get(saved.id()).unwrap(), saved, "nothing was saved");
+
+        // Same server with other cosmetic changes, a new secret or a cleared one are fine.
+        let renamed =
+            ConnectionConfig::Mysql(MysqlConnectionConfig { name: "b".into(), ..m.clone() });
+        svc.save(&renamed, None).unwrap();
+        svc.save(&moved, Some("typed")).unwrap();
+        assert_eq!(svc.resolve_secret(saved.id(), None).unwrap().as_deref(), Some("typed"));
+        let back = svc.save(&saved, Some("")).unwrap();
+        // No stored secret: moving needs nothing.
+        svc.save(&moved, None).unwrap();
+        assert!(!svc.has_secret(back.id()).unwrap());
+    }
+
+    #[test]
+    fn ids_are_trimmed_consistently() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path());
+        let saved = svc.save(&config("", "a"), Some("pw")).unwrap();
+        let padded = format!(" {} ", saved.id());
+        assert_eq!(svc.get(&padded).unwrap(), saved);
+        assert_eq!(svc.resolve_secret(&padded, None).unwrap().as_deref(), Some("pw"));
+        assert!(svc.has_secret(&padded).unwrap());
+        assert_eq!(svc.resolve_secret("  ", None).unwrap(), None);
+        svc.delete(&padded).unwrap();
+        assert!(svc.list().unwrap().is_empty());
     }
 
     fn validated(config: &ConnectionConfig) -> ConnectionConfig {

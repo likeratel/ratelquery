@@ -18,6 +18,6 @@ pub use model::{
     RangeCondition, RangeOp, ScanRequest, TableDescription,
 };
 pub use ops::{delete_item, get_item, put_item, query, scan};
-pub use registry::{DynamoClients, DynamoHandle, profile_credentials};
+pub use registry::{DynamoClients, DynamoHandle, profile_credentials, sdk_config};
 pub use schema::{describe_table, list_tables};
 pub use wire::{SdkItem, WireItem, from_wire, from_wire_item, to_wire, to_wire_item};

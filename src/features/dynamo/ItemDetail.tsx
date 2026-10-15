@@ -24,7 +24,13 @@ export function ItemDetail({ item, schema, onEdit, onClose }: ItemDetailProps) {
           <Pencil size={12} strokeWidth={2.2} />
           Edit
         </button>
-        <button type="button" className="icon-button" aria-label="Close item" onClick={onClose}>
+        <button
+          type="button"
+          className="ui-icon-button"
+          data-size="md"
+          aria-label="Close item"
+          onClick={onClose}
+        >
           <X size={13} strokeWidth={2.2} />
         </button>
       </header>

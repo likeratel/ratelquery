@@ -3,6 +3,7 @@ import type { ConnectionConfig } from "../../lib/connections"
 import { onAppEvent } from "../../lib/events"
 import { setTransport, type AppError } from "../../lib/ipc"
 import { useConnectionsStore } from "../../state/connectionsStore"
+import { formFromConfig, MYSQL_SECRET_AGAIN, parseForm } from "./form"
 
 /** In-memory stand-in for the Tauri backend's connections commands. */
 class FakeBackend {
@@ -95,7 +96,7 @@ describe("load", () => {
     const state = useConnectionsStore.getState()
     expect(state.status).toBe("error")
     expect(state.loadError).toEqual({
-      summary: "Could not load connections. Could not read or write the connection settings file.",
+      summary: "Couldn't load connections. Couldn't read or write the connection settings file.",
       detail: "EACCES",
     })
   })
@@ -119,6 +120,21 @@ describe("dialog", () => {
       open: true,
       editing: existing,
       hasStoredSecret: true,
+    })
+  })
+
+  it("assumes a stored secret when the lookup fails, so a new server asks for it", async () => {
+    const existing = mysql({ id: "m1" })
+    backend.failures.set("connections_has_secret", { kind: "credential", message: "locked" })
+    useConnectionsStore.getState().openDialog(existing)
+    await flush()
+    const { hasStoredSecret } = useConnectionsStore.getState().dialog
+    expect(hasStoredSecret).toBe(true)
+    const context = { original: existing, hasStoredSecret }
+    const moved = formFromConfig({ ...existing, host: "other.example" } as ConnectionConfig)
+    expect(parseForm(moved, context)).toEqual({
+      ok: false,
+      errors: { password: MYSQL_SECRET_AGAIN },
     })
   })
 })
@@ -154,7 +170,7 @@ describe("save", () => {
     expect(state.dialog.open).toBe(true)
     expect(state.saving).toBe(false)
     expect(state.saveError?.summary).toBe(
-      "Could not save the connection. Some fields are not valid.",
+      "Couldn't save the connection. Some fields are not valid.",
     )
   })
 })
@@ -174,7 +190,7 @@ describe("remove", () => {
     expect(result).toEqual({
       ok: false,
       error: {
-        summary: "Could not delete the connection. This connection no longer exists.",
+        summary: "Couldn't delete the connection. This connection no longer exists.",
         detail: "gone",
       },
     })
@@ -193,7 +209,7 @@ describe("remove", () => {
       value: undefined,
       warning: {
         summary:
-          "Could not delete the connection. Credentials were rejected or could not be read from the keychain.",
+          "Couldn't delete the connection. Credentials were rejected or couldn't be read from the keychain.",
         detail: "keychain locked",
       },
     })
@@ -221,7 +237,7 @@ describe("testConnection", () => {
     expect(useConnectionsStore.getState().test).toEqual({
       status: "fail",
       error: {
-        summary: "Could not reach the server. Check the host, port and network.",
+        summary: "Couldn't reach the server. Check the host, port and network.",
         detail: "ECONNREFUSED",
       },
     })

@@ -1,14 +1,8 @@
 import { Search } from "lucide-react"
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { Button } from "../../components/ui"
 import { useConnectionsStore } from "../../state/connectionsStore"
-import {
-  handleTreeFocus,
-  handleTreeKeyDown,
-  isDescendant,
-  subscribeTreeCleanup,
-  useSchemaTree,
-} from "../schema"
+import { handleTreeFocus, handleTreeKeyDown, isDescendant, useSchemaTree } from "../schema"
 import { ConnectionRow } from "./ConnectionRow"
 import { filterConnections, SEARCH_THRESHOLD } from "./filter"
 
@@ -18,8 +12,6 @@ export function ConnectionList() {
   const loadError = useConnectionsStore((s) => s.loadError)
   const [query, setQuery] = useState("")
   const focused = useSchemaTree((s) => s.focused)
-
-  useEffect(() => subscribeTreeCleanup(), [])
 
   if (status === "error" && loadError && connections.length === 0) {
     return (
@@ -38,7 +30,7 @@ export function ConnectionList() {
     return (
       <div className="sidebar__empty">
         <strong>No connections yet</strong>
-        Add a MySQL server or a DynamoDB profile to start browsing.
+        Add a MySQL server or a DynamoDB profile to start browsing
       </div>
     )
   }
@@ -66,7 +58,7 @@ export function ConnectionList() {
         </label>
       )}
       {visible.length === 0 ? (
-        <p className="conn-list__none">No connections match “{query.trim()}”.</p>
+        <p className="conn-list__none">No connections match “{query.trim()}”</p>
       ) : (
         <ul
           className="conn-list"

@@ -25,6 +25,15 @@ describe("splitStatements", () => {
     expect(texts("select 1--1; select 2")).toEqual(["select 1--1;", "select 2"])
   })
 
+  it("starts a -- comment only before ASCII whitespace, like the backend splitter", () => {
+    // U+3000 (ideographic space) and NBSP are not comment gaps: the `;` still splits.
+    expect(texts("select 1 --\u3000; DROP TABLE t")).toEqual(["select 1 --\u3000;", "DROP TABLE t"])
+    expect(texts("select 1 --\u00a0; DROP TABLE t")).toEqual(["select 1 --\u00a0;", "DROP TABLE t"])
+    expect(texts("select 1 --\t; DROP TABLE t")).toEqual(["select 1"])
+    expect(texts("select 1 --\f; x\nselect 2")).toEqual(["select 1 --\f; x\nselect 2"])
+    expect(texts("select 1 --")).toEqual(["select 1"])
+  })
+
   it("drops empty and comment-only segments", () => {
     expect(texts(";; -- nothing\n  ;")).toEqual([])
     expect(texts("")).toEqual([])

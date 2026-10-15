@@ -7,6 +7,11 @@ export const MIN_COLUMN_WIDTH = 48
 
 const memory = new WidthMemory()
 
+/** Drops remembered widths of every grid of a closed tab (grid keys start with `${tabId}:`). */
+export function forgetTabColumnWidths(tabId: string): void {
+  memory.forgetPrefix(`${tabId}:`)
+}
+
 /**
  * Column widths seeded from the data, with an immutable resize action. With a `memoryKey`,
  * resized widths survive a remount that shows the same column names.

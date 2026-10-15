@@ -10,6 +10,16 @@ use crate::error::{AppError, AppResult};
 use crate::fsutil::write_private_atomic;
 
 const FILE_NAME: &str = "settings.json";
+const BACKUP_NAME: &str = "settings.json.bak";
+
+/// What the settings file held.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Loaded {
+    /// Missing (defaults) or readable.
+    Valid(Settings),
+    /// Not a JSON object; the reason is for the log.
+    Corrupt(String),
+}
 
 #[derive(Debug, Clone)]
 pub struct SettingsStore {
@@ -25,21 +35,36 @@ impl SettingsStore {
         &self.path
     }
 
+    pub fn backup_path(&self) -> PathBuf {
+        self.path.with_file_name(BACKUP_NAME)
+    }
+
     /// Settings from the file merged over the defaults. A missing file means defaults; a file
-    /// that is not a JSON object is an error so a later save never overwrites it silently.
+    /// that is not a JSON object is [`Loaded::Corrupt`] (see [`SettingsStore::set_aside`]).
     /// Individual known values that are invalid for this build fall back to their defaults.
-    pub fn load(&self) -> AppResult<Settings> {
+    /// A file that cannot be read at all is an `io` error.
+    pub fn load(&self) -> AppResult<Loaded> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Settings::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Loaded::Valid(Settings::default()));
+            }
             Err(e) => return Err(AppError::Io(format!("could not read {FILE_NAME}: {e}"))),
         };
-        let value: Value = serde_json::from_str(&text)
-            .map_err(|e| AppError::Io(format!("{FILE_NAME} is not valid: {e}")))?;
-        if !value.is_object() {
-            return Err(AppError::Io(format!("{FILE_NAME} is not a JSON object")));
-        }
-        Ok(sanitize(&value))
+        Ok(match serde_json::from_str::<Value>(&text) {
+            Ok(value) if value.is_object() => Loaded::Valid(sanitize(&value)),
+            Ok(_) => Loaded::Corrupt(format!("{FILE_NAME} is not a JSON object")),
+            Err(e) => Loaded::Corrupt(format!("{FILE_NAME} is not valid: {e}")),
+        })
+    }
+
+    /// Moves a corrupt file to `settings.json.bak` (replacing an older backup) so the next
+    /// save does not destroy what the user had.
+    pub fn set_aside(&self) -> AppResult<PathBuf> {
+        let backup = self.backup_path();
+        fs::rename(&self.path, &backup)
+            .map_err(|e| AppError::Io(format!("could not move {FILE_NAME} aside: {e}")))?;
+        Ok(backup)
     }
 
     pub fn save(&self, settings: &Settings) -> AppResult<()> {

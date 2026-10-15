@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react"
-import { ResultGrid } from "../../components/grid/ResultGrid"
+import { useCallback, useMemo, useState } from "react"
+import { ResultGrid, type GridSelection } from "../../components/grid/ResultGrid"
 import type { KeySchema, Page } from "../../lib/dynamo"
 import { columnInfos, itemCells, itemColumns } from "../../lib/dynamoView"
 import type { DisplayRow } from "../../lib/gridEdits"
 import type { Cell } from "../../lib/mysql"
 
 const MISSING: Cell = { t: "str", v: "" }
+const EMPTY_PLACEHOLDER = () => ""
 
 interface ItemsGridProps {
   page: Page
@@ -32,6 +33,13 @@ export function ItemsGrid({ page, schema, selected, runKey, onSelect }: ItemsGri
     [page.items, columns],
   )
   const sourceRows = useMemo(() => rows.map((r) => r.cells.map((c) => c ?? MISSING)), [rows])
+  const select = useCallback(
+    (next: GridSelection) => {
+      setCol(next.col)
+      onSelect(next.row)
+    },
+    [onSelect],
+  )
 
   return (
     <ResultGrid
@@ -41,11 +49,8 @@ export function ItemsGrid({ page, schema, selected, runKey, onSelect }: ItemsGri
       rows={rows}
       editable={false}
       selection={selected !== null ? { row: selected, col: Math.min(col, infos.length - 1) } : null}
-      onSelect={(next) => {
-        setCol(next.col)
-        onSelect(next.row)
-      }}
-      insertPlaceholder={() => ""}
+      onSelect={select}
+      insertPlaceholder={EMPTY_PLACEHOLDER}
     />
   )
 }

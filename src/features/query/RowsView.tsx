@@ -1,5 +1,5 @@
 import { CircleSlash, Plus, Trash2 } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 import { ResultGrid, type GridSelection } from "../../components/grid/ResultGrid"
 import { NULL_INPUT, parseCellInput } from "../../lib/cellEdit"
 import {
@@ -12,28 +12,39 @@ import {
   toggleRowDelete,
   type DisplayRow,
   type EditTargetResult,
+  type GridEdits,
   type RowRef,
 } from "../../lib/gridEdits"
 import type { RowsResult } from "../../lib/mysql"
-import type { QueryTab } from "../../lib/queryTabs"
 import { useTabsStore } from "../../state/tabsStore"
-import { ExportMenu } from "./ExportMenu"
+import { ResultExportMenu } from "./ExportMenu"
 import { PendingBar } from "./PendingBar"
 import { ResultMeta } from "./ResultMeta"
 import { addedLimitFor, useRunGuardStore } from "./runGuard"
-import { toast } from "./toastStore"
+import { showToast } from "../../components/ui"
 
 interface RowsViewProps {
-  tab: QueryTab
+  tabId: string
+  connectionId: string
+  /** The tab's run counter; a new run remounts the grid. */
+  runId: number
   index: number
   result: RowsResult
   edit: EditTargetResult
+  /** Pending edits of this result. */
+  edits: GridEdits | undefined
+  applying: boolean
+  /** Full export re-runs the statement, so it is only offered for single-statement runs. */
+  allowFull: boolean
+  /** Database the result was read from. */
+  database: string | null
 }
 
-export function RowsView({ tab, index, result, edit }: RowsViewProps) {
+export function RowsView(props: RowsViewProps) {
+  const { tabId, connectionId, runId, index, result, edit, applying } = props
   const updateEdits = useTabsStore((s) => s.updateEdits)
-  const addedLimit = useRunGuardStore((s) => addedLimitFor(s.limitedByTab[tab.id], index))
-  const edits = tab.edits[index] ?? EMPTY_EDITS
+  const addedLimit = useRunGuardStore((s) => addedLimitFor(s.limitedByTab[tabId], index))
+  const edits = props.edits ?? EMPTY_EDITS
   const rows = useMemo(
     () => displayRows(result.rows, result.columns.length, edits),
     [result, edits],
@@ -42,47 +53,49 @@ export function RowsView({ tab, index, result, edit }: RowsViewProps) {
   const target = edit.editable ? edit.target : null
   const selectedRow = selection ? rows[selection.row] : undefined
 
-  const commit = (row: DisplayRow, col: number, text: string): string | null => {
-    if (!target) return "This result is read only"
-    const schemaColumn = target.schemaColumns[col]
-    const column = {
-      name: schemaColumn.name,
-      typeName: schemaColumn.typeName,
-      nullable: schemaColumn.nullable,
-    }
-    const original = row.ref.kind === "existing" ? result.rows[row.ref.index][col] : undefined
-    const parsed = parseCellInput(text, column, original)
-    if (!parsed.ok) return parsed.error
-    const ref = row.ref
-    updateEdits(tab.id, index, (current) =>
-      ref.kind === "existing"
-        ? setCellEdit(current, result.rows, ref.index, col, parsed.cell)
-        : setInsertValue(current, ref.id, col, parsed.cell),
-    )
-    return null
-  }
+  const commit = useCallback(
+    (row: DisplayRow, col: number, text: string): string | null => {
+      if (!target) return "This result is read only"
+      const schemaColumn = target.schemaColumns[col]
+      const column = {
+        name: schemaColumn.name,
+        typeName: schemaColumn.typeName,
+        nullable: schemaColumn.nullable,
+      }
+      const original = row.ref.kind === "existing" ? result.rows[row.ref.index][col] : undefined
+      const parsed = parseCellInput(text, column, original)
+      if (!parsed.ok) return parsed.error
+      const ref = row.ref
+      updateEdits(tabId, index, (current) =>
+        ref.kind === "existing"
+          ? setCellEdit(current, result.rows, ref.index, col, parsed.cell)
+          : setInsertValue(current, ref.id, col, parsed.cell),
+      )
+      return null
+    },
+    [target, result.rows, updateEdits, tabId, index],
+  )
 
   const toggleDelete = (ref: RowRef) =>
-    updateEdits(tab.id, index, (current) =>
+    updateEdits(tabId, index, (current) =>
       ref.kind === "existing" ? toggleRowDelete(current, ref.index) : removeInsert(current, ref.id),
     )
 
   const addRow = () => {
-    updateEdits(tab.id, index, (current) => addInsert(current, crypto.randomUUID()))
+    updateEdits(tabId, index, (current) => addInsert(current, crypto.randomUUID()))
     setSelection({ row: rows.length, col: 0 })
   }
 
   const setNull = () => {
     if (!selection || !selectedRow || selectedRow.deleted) return
     const error = commit(selectedRow, selection.col, NULL_INPUT)
-    if (error) toast(error, "danger")
+    if (error) showToast({ tone: "error", message: error })
   }
 
-  const placeholder = (col: number) => {
-    const column = target?.schemaColumns[col]
-    if (column?.isAutoIncrement) return "auto"
-    return "default"
-  }
+  const placeholder = useCallback(
+    (col: number) => (target?.schemaColumns[col]?.isAutoIncrement ? "auto" : "default"),
+    [target],
+  )
 
   const selectedNullable = selection
     ? (target?.schemaColumns[selection.col]?.nullable ?? false)
@@ -91,7 +104,7 @@ export function RowsView({ tab, index, result, edit }: RowsViewProps) {
   return (
     <div className="rows-view">
       <div className="result-toolbar">
-        <ResultMeta result={result} runKey={`${tab.id}:${tab.runId}`} />
+        <ResultMeta result={result} runKey={`${tabId}:${runId}`} />
         {addedLimit !== null && (
           <span
             className="badge"
@@ -134,16 +147,16 @@ export function RowsView({ tab, index, result, edit }: RowsViewProps) {
             </span>
           )
         )}
-        <ExportMenu
-          connectionId={tab.connectionId}
+        <ResultExportMenu
+          connectionId={connectionId}
           result={result}
-          allowFull={tab.results.length === 1}
-          database={tab.ranDatabase}
+          allowFull={props.allowFull}
+          database={props.database}
         />
       </div>
       <ResultGrid
-        key={`${tab.runId}-${index}`}
-        widthKey={`${tab.id}:${index}`}
+        key={`${runId}-${index}`}
+        widthKey={`${tabId}:${index}`}
         columns={result.columns}
         sourceRows={result.rows}
         rows={rows}
@@ -153,7 +166,7 @@ export function RowsView({ tab, index, result, edit }: RowsViewProps) {
         onCommit={target ? commit : undefined}
         insertPlaceholder={placeholder}
       />
-      <PendingBar tab={tab} index={index} />
+      <PendingBar tabId={tabId} index={index} edits={props.edits} applying={applying} />
     </div>
   )
 }
