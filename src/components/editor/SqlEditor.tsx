@@ -3,9 +3,10 @@ import {
   closeBrackets,
   closeBracketsKeymap,
   completionKeymap,
+  type CompletionSource,
 } from "@codemirror/autocomplete"
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
-import { MySQL, sql, type SQLNamespace } from "@codemirror/lang-sql"
+import { MySQL, sql } from "@codemirror/lang-sql"
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language"
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search"
 import { Compartment, EditorState, type Extension } from "@codemirror/state"
@@ -29,8 +30,11 @@ export interface SqlEditorProps {
   stateKey: string
   value: string
   onChange: (value: string) => void
-  /** Table name to column names, for completion. */
-  schema?: SQLNamespace
+  /**
+   * Completion sources replacing the language's own (lang-sql keywords). Keep the array
+   * identity stable; a new array reconfigures completion.
+   */
+  completionSources?: readonly CompletionSource[]
   placeholderText?: string
   /**
    * Runs in the keydown capture phase, before CodeMirror's `key`-based keymap. Return true to
@@ -43,11 +47,11 @@ export interface SqlEditorProps {
 
 export { forgetEditorState } from "./editorStateCache"
 
-const languageSlot = new Compartment()
+const completionSlot = new Compartment()
 const changeHandlers = new Map<string, (update: ViewUpdate) => void>()
 
-function languageFor(schema: SQLNamespace | undefined): Extension {
-  return sql({ dialect: MySQL, schema, upperCaseKeywords: true })
+function completionFor(sources: readonly CompletionSource[] | undefined): Extension {
+  return autocompletion({ icons: false, ...(sources ? { override: [...sources] } : {}) })
 }
 
 function baseExtensions(stateKey: string, placeholderText: string): Extension[] {
@@ -60,7 +64,7 @@ function baseExtensions(stateKey: string, placeholderText: string): Extension[] 
     indentOnInput(),
     bracketMatching(),
     closeBrackets(),
-    autocompletion({ icons: false }),
+    sql({ dialect: MySQL, upperCaseKeywords: true }),
     highlightSelectionMatches(),
     // Completion must come before the default keymap so Enter accepts a suggestion
     // instead of inserting a newline while the list is open.
@@ -83,7 +87,7 @@ export function SqlEditor({
   stateKey,
   value,
   onChange,
-  schema,
+  completionSources,
   placeholderText = "",
   onKeyDownCapture,
   onViewChange,
@@ -117,7 +121,7 @@ export function SqlEditor({
             doc: value,
             extensions: [
               ...baseExtensions(stateKey, placeholderText),
-              languageSlot.of(languageFor(schema)),
+              completionSlot.of(completionFor(completionSources)),
             ],
           })
     const view = new EditorView({ state, parent: host })
@@ -143,12 +147,14 @@ export function SqlEditor({
       view.destroy()
       viewRef.current = null
     }
-    // The view is created once per document; value and schema changes are synced below.
+    // The view is created once per document; value and completion changes are synced below.
   }, [stateKey])
 
   useEffect(() => {
-    viewRef.current?.dispatch({ effects: languageSlot.reconfigure(languageFor(schema)) })
-  }, [schema])
+    viewRef.current?.dispatch({
+      effects: completionSlot.reconfigure(completionFor(completionSources)),
+    })
+  }, [completionSources])
 
   useEffect(() => {
     const view = viewRef.current

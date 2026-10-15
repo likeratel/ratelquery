@@ -1,32 +1,34 @@
-import type { SQLNamespace } from "@codemirror/lang-sql"
 import type { EditorView } from "@codemirror/view"
 import { Play } from "lucide-react"
-import { useCallback, useMemo } from "react"
+import { useCallback } from "react"
 import { SqlEditor } from "../../components/editor/lazyEditors"
 import type { SchemaSnapshot } from "../../lib/mysql"
 import type { QueryTab } from "../../lib/queryTabs"
 import { formatShortcut } from "../../lib/shortcuts"
+import { useSessionsStore } from "../../state/sessionsStore"
 import { useTabsStore } from "../../state/tabsStore"
 import { runActiveTab } from "./actions"
 import { APP_SHORTCUTS, handleAppShortcut } from "./appShortcuts"
+import { useCompletionSources } from "./completion"
 import { DatabaseSwitcher } from "./DatabaseSwitcher"
+import { tabDatabase } from "./editing"
 import { registerEditor } from "./editorRegistry"
-
-/** Completion namespace: table name to column names for the tab's database. */
-export function schemaNamespace(schema: SchemaSnapshot | null): SQLNamespace | undefined {
-  if (!schema) return undefined
-  return Object.fromEntries(schema.tables.map((t) => [t.name, t.columns.map((c) => c.name)]))
-}
 
 interface EditorPaneProps {
   tab: QueryTab
+  /**
+   * The tab database's schema. Not read here: completion reads the session's schema cache on
+   * each request because it also needs other databases' schemas.
+   */
   schema: SchemaSnapshot | null
 }
 
-export function EditorPane({ tab, schema }: EditorPaneProps) {
+export function EditorPane({ tab }: EditorPaneProps) {
   const setSql = useTabsStore((s) => s.setSql)
-  const namespace = useMemo(() => schemaNamespace(schema), [schema])
   const tabId = tab.id
+  const connectionId = tab.connectionId
+  const database = useSessionsStore((s) => tabDatabase(tab, s.sessions[connectionId]))
+  const completionSources = useCompletionSources(connectionId, database)
 
   const onChange = useCallback((sql: string) => setSql(tabId, sql), [setSql, tabId])
   const onViewChange = useCallback(
@@ -46,7 +48,7 @@ export function EditorPane({ tab, schema }: EditorPaneProps) {
           stateKey={tab.id}
           value={tab.sql}
           onChange={onChange}
-          schema={namespace}
+          completionSources={completionSources}
           placeholderText={`Write SQL. ${formatShortcut(APP_SHORTCUTS.run)} runs everything, ${formatShortcut(APP_SHORTCUTS.runStatement)} runs the statement at the cursor.`}
           onKeyDownCapture={onKeyDownCapture}
           onViewChange={onViewChange}
