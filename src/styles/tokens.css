@@ -1,0 +1,114 @@
+/* Design tokens. Dark is the default; light follows the system unless data-theme overrides. */
+:root {
+  color-scheme: dark;
+
+  --bg: #0f1115;
+  --bg-sunken: #0b0d11;
+  --surface: #161a21;
+  --surface-raised: #1c212a;
+  --surface-hover: #222835;
+  --line: #262c38;
+  --line-strong: #343c4b;
+
+  --text: #e6e9ef;
+  --text-muted: #8c95a6;
+  --text-faint: #5b6473;
+
+  --accent: #7c9cff;
+  --accent-soft: rgba(124, 156, 255, 0.14);
+  --accent-ring: rgba(124, 156, 255, 0.45);
+
+  --ok: #4fd1a1;
+  --warn: #f2c14e;
+  --danger: #ff6b6b;
+  --danger-soft: rgba(255, 107, 107, 0.14);
+
+  /* Data type colours used only inside result grids and JSON views. */
+  --data-number: #c7a6ff;
+  --data-string: #e6e9ef;
+  --data-bool: #4fd1a1;
+  --data-null: #5b6473;
+  --data-date: #7cc4ff;
+  --data-json: #f2c14e;
+
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Pretendard", "Noto Sans KR",
+    system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "SF Mono", Menlo, ui-monospace, monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12.5px;
+  --text-md: 13.5px;
+  --text-lg: 16px;
+  --text-xl: 22px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --sidebar-width: 264px;
+  --tabbar-height: 38px;
+  --statusbar-height: 26px;
+  --titlebar-inset: 28px;
+
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--line-strong);
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f5f6f8;
+    --bg-sunken: #eceef2;
+    --surface: #ffffff;
+    --surface-raised: #ffffff;
+    --surface-hover: #eef1f6;
+    --line: #e2e5eb;
+    --line-strong: #cbd1db;
+    --text: #1b1f27;
+    --text-muted: #5d6676;
+    --text-faint: #9aa3b2;
+    --accent: #3d63e6;
+    --accent-soft: rgba(61, 99, 230, 0.1);
+    --accent-ring: rgba(61, 99, 230, 0.35);
+    --ok: #1f9d6c;
+    --warn: #b7850a;
+    --danger: #d64545;
+    --danger-soft: rgba(214, 69, 69, 0.1);
+    --data-number: #6d3fd6;
+    --data-string: #1b1f27;
+    --data-bool: #1f9d6c;
+    --data-date: #1c6fb8;
+    --data-json: #9a6c00;
+    --data-null: #9aa3b2;
+    --shadow-pop: 0 12px 32px rgba(20, 30, 50, 0.14), 0 0 0 1px var(--line);
+  }
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f5f6f8;
+  --bg-sunken: #eceef2;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-hover: #eef1f6;
+  --line: #e2e5eb;
+  --line-strong: #cbd1db;
+  --text: #1b1f27;
+  --text-muted: #5d6676;
+  --text-faint: #9aa3b2;
+  --accent: #3d63e6;
+  --accent-soft: rgba(61, 99, 230, 0.1);
+  --accent-ring: rgba(61, 99, 230, 0.35);
+  --ok: #1f9d6c;
+  --warn: #b7850a;
+  --danger: #d64545;
+  --danger-soft: rgba(214, 69, 69, 0.1);
+  --data-number: #6d3fd6;
+  --data-string: #1b1f27;
+  --data-bool: #1f9d6c;
+  --data-date: #1c6fb8;
+  --data-json: #9a6c00;
+  --data-null: #9aa3b2;
+  --shadow-pop: 0 12px 32px rgba(20, 30, 50, 0.14), 0 0 0 1px var(--line);
+}
