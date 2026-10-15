@@ -194,3 +194,83 @@ base64. JSON writes an array of objects keyed by column name, numbers for `int` 
 - `src/state/connectionsStore.ts` – configs, dialog open state, test status. Owned by the connections feature.
 - `src/state/sessionsStore.ts` – per connection: `state`, `serverVersion`, `currentDatabase`, `schema` cache. Owned by the query feature.
 - `src/state/tabsStore.ts` – open tabs, active tab, per-tab sql text and last result. Owned by the query feature.
+
+## DynamoDB
+
+Items cross IPC in the **DynamoDB JSON wire format** (`{"S": "..."}`, `{"N": "12"}`, `{"M": {...}}`,
+`{"L": [...]}`, `{"SS": [...]}` ...) so no type is lost. The frontend converts to a plain JSON view
+for reading and infers types back when the user edits in plain mode; set types (`SS`, `NS`, `BS`)
+can only be edited in wire mode.
+
+```ts
+type AttributeValue = Record<string, unknown>           // one wire-format attribute
+type Item = Record<string, AttributeValue>
+
+interface KeyAttribute { name: string; type: "S" | "N" | "B" }
+interface KeySchema { hash: KeyAttribute; range: KeyAttribute | null }
+interface IndexDescription {
+  name: string
+  kind: "gsi" | "lsi"
+  keySchema: KeySchema
+  projection: "all" | "keys_only" | "include"
+}
+interface TableDescription {
+  name: string
+  status: string                      // "ACTIVE" ...
+  keySchema: KeySchema
+  indexes: IndexDescription[]
+  itemCount: number | null            // approximate, from DescribeTable
+  sizeBytes: number | null
+  billingMode: string | null
+}
+
+type RangeCondition =
+  | { op: "eq" | "lt" | "le" | "gt" | "ge" | "begins_with"; value: AttributeValue }
+  | { op: "between"; from: AttributeValue; to: AttributeValue }
+
+interface QueryRequest {
+  table: string
+  index?: string
+  hash: AttributeValue
+  range?: RangeCondition
+  filter?: string                     // FilterExpression using #n / :v placeholders
+  names?: Record<string, string>      // ExpressionAttributeNames
+  values?: Record<string, AttributeValue>
+  limit?: number                      // page size, default 100, max 1000
+  startKey?: Item
+  scanForward?: boolean               // default true
+}
+
+interface ScanRequest {
+  table: string
+  index?: string
+  filter?: string
+  names?: Record<string, string>
+  values?: Record<string, AttributeValue>
+  limit?: number
+  startKey?: Item
+}
+
+interface Page {
+  items: Item[]
+  lastKey: Item | null                // pass back as startKey for the next page
+  count: number
+  scannedCount: number
+  elapsedMs: number
+}
+```
+
+| command | args | returns |
+| --- | --- | --- |
+| `dynamo_list_tables` | `connectionId` | `string[]` (all pages of ListTables) |
+| `dynamo_describe_table` | `connectionId`, `table` | `TableDescription` |
+| `dynamo_query` | `connectionId`, `request: QueryRequest` | `Page` |
+| `dynamo_scan` | `connectionId`, `request: ScanRequest` | `Page` |
+| `dynamo_get_item` | `connectionId`, `table`, `key: Item` | `Item \| null` |
+| `dynamo_put_item` | `connectionId`, `table`, `item: Item`, `expect: "exists" \| "not_exists" \| "any"` | `void`. `exists` adds `attribute_exists(hashKey)` (safe update), `not_exists` adds `attribute_not_exists(hashKey)` (safe create). Condition failures reject with `kind: "query"`. |
+| `dynamo_delete_item` | `connectionId`, `table`, `key: Item` | `void` |
+| `dynamo_export` | `connectionId`, `request: { scan: ScanRequest } \| { query: QueryRequest }`, `options: { format: "json" \| "jsonl" \| "csv"; path: string }` | `ExportResult` – follows `lastKey` until exhausted. CSV flattens top-level attributes; nested values are written as JSON text. |
+
+Credentials are resolved per connection through `aws-config` (profile or stored keys) once on
+first use and cached. A `credential` error kind means the profile is missing, expired (SSO) or
+rejected; the message tells the user what to run (e.g. `aws sso login --profile <name>`).
