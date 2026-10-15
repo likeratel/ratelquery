@@ -33,6 +33,9 @@
     "targets": "all",
     "category": "DeveloperTool",
     "shortDescription": "A minimal, modern client for MySQL and DynamoDB",
+    "longDescription": "A minimal, modern desktop client for MySQL and DynamoDB with schema-aware SQL autocomplete, physical-key shortcuts that work under any input source, self-healing MySQL sessions and JSON item editing with a diff before every DynamoDB write.",
+    "publisher": "harry",
+    "copyright": "Copyright © 2026 harry",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

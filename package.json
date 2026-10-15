@@ -16,7 +16,10 @@
     "format": "prettier --write src *.ts *.json index.html",
     "format:check": "prettier --check src *.ts *.json index.html",
     "db:up": "docker compose -f docker/compose.yaml up -d",
-    "db:down": "docker compose -f docker/compose.yaml down -v"
+    "db:down": "docker compose -f docker/compose.yaml down -v",
+    "lint:rust": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "verify": "pnpm format:check && pnpm check && pnpm test && cargo fmt --manifest-path src-tauri/Cargo.toml --check && pnpm lint:rust && pnpm test:rust"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

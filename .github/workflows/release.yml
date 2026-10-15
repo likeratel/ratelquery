@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Check tag matches app version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compare tag with tauri.conf.json version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          if [[ "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match tauri.conf.json version v${version}."
+            exit 1
+          fi
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: preflight
+    permissions:
+      contents: write
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS aarch64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - name: macOS x86_64
+            runner: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+          - name: Windows x86_64
+            runner: windows-latest
+            target: ""
+            args: ""
+          - name: Linux x86_64
+            runner: ubuntu-24.04
+            target: ""
+            args: ""
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf libdbus-1-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.2
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.target || runner.os }}
+
+      - run: pnpm install --frozen-lockfile
+
+      # Signing and notarization are optional. Each group is exported only when every secret
+      # in it is set, so a fork or a repository without Apple secrets builds unsigned bundles.
+      - name: Configure optional macOS signing
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          export_var() {
+            local delimiter="EOF_$(openssl rand -hex 16)"
+            { echo "$1<<${delimiter}"; printf '%s\n' "${!1}"; echo "${delimiter}"; } >> "$GITHUB_ENV"
+          }
+          if [[ -n "$APPLE_CERTIFICATE" && -n "$APPLE_CERTIFICATE_PASSWORD" ]]; then
+            export_var APPLE_CERTIFICATE
+            export_var APPLE_CERTIFICATE_PASSWORD
+            if [[ -n "$APPLE_SIGNING_IDENTITY" ]]; then export_var APPLE_SIGNING_IDENTITY; fi
+            echo "Code signing enabled."
+            if [[ -n "$APPLE_ID" && -n "$APPLE_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
+              export_var APPLE_ID
+              export_var APPLE_PASSWORD
+              export_var APPLE_TEAM_ID
+              echo "Notarization enabled."
+            else
+              echo "::notice::Notarization skipped: APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID are not all set."
+            fi
+          else
+            echo "::notice::Building unsigned macOS bundles: APPLE_CERTIFICATE and APPLE_CERTIFICATE_PASSWORD are not both set."
+          fi
+
+      - name: Build and upload to draft release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.event.repository.name }} ${{ github.ref_name }}
+          releaseBody: >-
+            Desktop builds for macOS (Apple silicon and Intel), Windows and Linux.
+            See the commit history for changes. Unsigned builds may need to be allowed
+            in the operating system's security settings on first launch.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

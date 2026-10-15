@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -29,8 +33,20 @@ jobs:
   backend:
     name: Rust check and test
     runs-on: ubuntu-24.04
+    env:
+      DBCLIENT_TEST_MYSQL_URL: mysql://dev:dev@127.0.0.1:3307/sample
+      DBCLIENT_TEST_DYNAMODB_ENDPOINT: http://localhost:8000
     steps:
       - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      # Started first so the containers initialise while Rust compiles.
+      - name: Start MySQL and DynamoDB Local
+        run: pnpm db:up
       - name: Install Tauri system dependencies
         run: |
           sudo apt-get update
@@ -43,4 +59,27 @@ jobs:
           workspaces: src-tauri
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      - name: Wait for databases
+        shell: bash
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 60); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' dbclient-mysql)"
+            [[ "$status" == "healthy" ]] && break
+            sleep 2
+          done
+          if [[ "$status" != "healthy" ]]; then
+            echo "::error::MySQL did not become healthy (status: $status)."
+            exit 1
+          fi
+          docker exec dbclient-mysql mysql -h127.0.0.1 -udev -pdev sample -e 'SELECT 1' > /dev/null
+          for _ in $(seq 1 30); do
+            curl -s -o /dev/null http://localhost:8000 && exit 0
+            sleep 2
+          done
+          echo "::error::DynamoDB Local is not reachable on :8000."
+          exit 1
       - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Database logs on failure
+        if: failure()
+        run: docker compose -f docker/compose.yaml logs --no-color
