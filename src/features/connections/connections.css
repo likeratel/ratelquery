@@ -444,3 +444,51 @@
   flex-direction: column;
   gap: 5px;
 }
+
+/* DynamoDB profile picker */
+
+.conn-profile {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.conn-profile > .ui-field {
+  align-self: stretch;
+}
+
+.conn-profile__select {
+  cursor: pointer;
+}
+
+.conn-profile__select:disabled {
+  cursor: default;
+  color: var(--text-faint);
+}
+
+.conn-profile__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.conn-profile__badge {
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  font-weight: 500;
+}
+
+.conn-profile__toggle {
+  padding: 0;
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  font-size: var(--text-xs);
+}
+
+.conn-profile__toggle:hover {
+  text-decoration: underline;
+}

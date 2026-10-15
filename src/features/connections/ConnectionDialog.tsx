@@ -17,6 +17,7 @@ import {
 } from "./form"
 import { MysqlFields } from "./MysqlFields"
 import { TestResult } from "./TestResult"
+import { useAwsProfiles } from "./useAwsProfiles"
 
 /** Mounts the connection dialog while the store says it is open. */
 export function ConnectionDialog() {
@@ -61,6 +62,7 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
   )
   const [form, setForm] = useState<ConnectionForm>(initialForm)
   const [errors, setErrors] = useState<FieldErrors>({})
+  const awsProfiles = useAwsProfiles()
   const hasStoredSecret = useConnectionsStore((s) => s.dialog.hasStoredSecret)
   const hasStoredSshSecret = useConnectionsStore((s) => s.dialog.hasStoredSshSecret)
   const test = useConnectionsStore((s) => s.test)
@@ -152,6 +154,8 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
             draft={form.dynamodb}
             errors={errors}
             secretOptional={secretOptional}
+            profiles={awsProfiles}
+            creating={editing === null}
             onChange={updateDynamo}
           />
         )}

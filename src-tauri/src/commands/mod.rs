@@ -1,3 +1,4 @@
+pub mod aws;
 pub mod connections;
 pub mod dynamo;
 pub mod export;

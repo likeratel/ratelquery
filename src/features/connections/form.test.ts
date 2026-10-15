@@ -28,7 +28,7 @@ function mysqlForm(patch: Partial<ConnectionForm["mysql"]> = {}): ConnectionForm
 
 function dynamoForm(patch: Partial<ConnectionForm["dynamodb"]> = {}): ConnectionForm {
   const base = emptyForm("dynamodb")
-  return { ...base, dynamodb: { ...base.dynamodb, name: "Dynamo", ...patch } }
+  return { ...base, dynamodb: { ...base.dynamodb, name: "Dynamo", profile: "default", ...patch } }
 }
 
 describe("mysqlFormSchema", () => {

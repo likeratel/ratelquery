@@ -1,4 +1,5 @@
 import { SegmentedControl, TextField } from "../../components/ui"
+import type { AwsProfilesState } from "./awsProfiles"
 import { ColorSwatches } from "./ColorSwatches"
 import {
   insecureEndpointWarning,
@@ -6,12 +7,17 @@ import {
   type DynamoDraft,
   type FieldErrors,
 } from "./form"
+import { ProfileField } from "./ProfileField"
 
 interface DynamoFieldsProps {
   draft: DynamoDraft
   errors: FieldErrors
   /** True when a secret access key is already stored and may be left blank. */
   secretOptional: boolean
+  /** AWS profiles offered for the "AWS profile" authentication. */
+  profiles: AwsProfilesState
+  /** Whether the dialog creates a connection rather than editing one. */
+  creating: boolean
   onChange: (patch: Partial<DynamoDraft>) => void
 }
 
@@ -20,7 +26,14 @@ const AUTH_OPTIONS = [
   { value: "keys", label: "Access keys" },
 ] as const
 
-export function DynamoFields({ draft, errors, secretOptional, onChange }: DynamoFieldsProps) {
+export function DynamoFields({
+  draft,
+  errors,
+  secretOptional,
+  profiles,
+  creating,
+  onChange,
+}: DynamoFieldsProps) {
   const endpointWarning = insecureEndpointWarning(draft.endpoint)
   return (
     <div className="conn-form__grid">
@@ -69,15 +82,12 @@ export function DynamoFields({ draft, errors, secretOptional, onChange }: Dynamo
         />
       </div>
       {draft.authType === "profile" ? (
-        <TextField
-          className="conn-form__wide"
-          label="Profile"
-          value={draft.profile}
-          onValueChange={(profile) => onChange({ profile })}
+        <ProfileField
+          draft={draft}
+          profiles={profiles}
           error={errors.profile}
-          placeholder="default"
-          hint="A profile from your AWS config. SSO profiles work too."
-          mono
+          creating={creating}
+          onChange={onChange}
         />
       ) : (
         <>

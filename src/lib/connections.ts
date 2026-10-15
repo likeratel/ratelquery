@@ -51,6 +51,16 @@ export interface ConnectionTestResult {
   latencyMs: number
 }
 
+/** A profile from the shared AWS config / credentials files. Never carries secret values. */
+export interface AwsProfile {
+  name: string
+  /** `region` of the config section; null when unset (an SSO session's region is not used). */
+  region: string | null
+  source: "config" | "credentials" | "both"
+  /** Uses AWS IAM Identity Center (`sso_start_url` or `sso_session`). */
+  sso: boolean
+}
+
 /** Which stored secret of a connection: the database password or the SSH password/passphrase. */
 export type SecretSlot = "db" | "ssh"
 
@@ -71,4 +81,6 @@ export const connectionsApi = {
     ipc<boolean>("connections_has_secret", which === undefined ? { id } : { id, which }),
   test: (config: ConnectionConfig, secret: string | null, sshSecret?: string | null) =>
     ipc<ConnectionTestResult>("connections_test", { config, ...secretArgs(secret, sshSecret) }),
+  /** Profiles in `~/.aws/config` and `~/.aws/credentials` (or the files the AWS env vars name). */
+  awsProfiles: () => ipc<AwsProfile[]>("aws_profiles"),
 }

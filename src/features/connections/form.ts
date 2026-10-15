@@ -237,7 +237,8 @@ export function emptyForm(kind: ConnectionKind = "mysql"): ConnectionForm {
       region: DEFAULT_REGION,
       endpoint: "",
       authType: "profile",
-      profile: "default",
+      // Chosen explicitly from the AWS profile list (or typed); never preselected.
+      profile: "",
       accessKeyId: "",
       secretAccessKey: "",
       color: "",

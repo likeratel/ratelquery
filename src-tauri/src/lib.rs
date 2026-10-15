@@ -1,3 +1,4 @@
+mod aws_profiles;
 mod commands;
 pub mod connections;
 pub mod dynamo;
@@ -53,6 +54,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::system::app_info,
+            commands::aws::aws_profiles,
             commands::connections::connections_list,
             commands::connections::connections_save,
             commands::connections::connections_delete,
