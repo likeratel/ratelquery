@@ -46,9 +46,17 @@ export const tokenTheme = EditorView.theme({
   },
   ".cm-content": { caretColor: "var(--accent)", padding: "8px 0" },
   ".cm-cursor, .cm-dropCursor": { borderLeftColor: "var(--accent)", borderLeftWidth: "2px" },
-  "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, .cm-selectionBackground, ::selection":
-    { backgroundColor: "var(--accent-soft)" },
-  ".cm-activeLine": { backgroundColor: "var(--surface-hover)" },
+  // The selection layer sits behind the content, so the active line must stay translucent or it
+  // hides the selection on that line (which is every line of a one-line query).
+  ".cm-selectionBackground, ::selection": {
+    backgroundColor: "color-mix(in srgb, var(--accent) 18%, transparent)",
+  },
+  "&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground": {
+    backgroundColor: "color-mix(in srgb, var(--accent) 30%, transparent)",
+  },
+  ".cm-activeLine": {
+    backgroundColor: "color-mix(in srgb, var(--surface-hover) 55%, transparent)",
+  },
   ".cm-gutters": {
     backgroundColor: "var(--bg)",
     color: "var(--text-faint)",
