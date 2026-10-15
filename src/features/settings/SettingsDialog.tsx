@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import { Button, Dialog, SegmentedControl, type SegmentOption } from "../../components/ui"
-import type { SettingsPatch, ThemePreference } from "../../lib/settings"
+import type { SecretStore, SettingsPatch, ThemePreference } from "../../lib/settings"
 import { useSettingsStore } from "../../state/settingsStore"
 import { useUiStore } from "../../state/uiStore"
 import { NumberSetting } from "./NumberSetting"
@@ -12,6 +12,17 @@ const THEME_OPTIONS: readonly SegmentOption<ThemePreference>[] = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
 ]
+
+const SECRET_STORE_OPTIONS: readonly SegmentOption<SecretStore>[] = [
+  { value: "keychain", label: "Keychain" },
+  { value: "file", label: "App file" },
+]
+
+const SECRET_STORE_HINTS: Record<SecretStore, string> = {
+  keychain:
+    "Uses the system keychain. On macOS a development build asks for approval after each rebuild.",
+  file: "Stores passwords in a file only your user account can read, like ~/.aws/credentials. Nothing is moved when you switch; you'll be asked for passwords again.",
+}
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -50,7 +61,7 @@ function SettingsForm() {
   const settings = useSettingsStore((s) => s.settings)
   const update = useSettingsStore((s) => s.update)
   const save = (patch: SettingsPatch) => void update(patch)
-  const { query, dynamo } = settings
+  const { query, dynamo, secretStore } = settings
   return (
     <div className="settings">
       <Section title="Appearance">
@@ -106,6 +117,18 @@ function SettingsForm() {
           value={dynamo.pageSize}
           onCommit={(pageSize) => save({ dynamo: { pageSize } })}
         />
+      </Section>
+      <Section title="Security">
+        <div className="ui-field">
+          <span className="ui-field__label">Password storage</span>
+          <SegmentedControl
+            label="Password storage"
+            value={secretStore}
+            options={SECRET_STORE_OPTIONS}
+            onChange={(next) => save({ secretStore: next })}
+          />
+          <p className="ui-field__hint">{SECRET_STORE_HINTS[secretStore]}</p>
+        </div>
       </Section>
     </div>
   )

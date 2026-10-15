@@ -1,4 +1,6 @@
+import type { ConnectionId, DynamoAuth } from "../../lib/connections"
 import type { AppError, AppErrorKind } from "../../lib/ipc"
+import { useConnectionsStore } from "../../state/connectionsStore"
 
 const HINTS: Record<AppErrorKind, string> = {
   query: "DynamoDB rejected the request. Check the expression, placeholders and key values.",
@@ -11,16 +13,36 @@ const HINTS: Record<AppErrorKind, string> = {
   unknown: "Something unexpected happened.",
 }
 
-/** Guidance under a DynamoDB error, chosen by `kind` only. */
-export function dynamoErrorHint(kind: AppErrorKind): string {
+/** A key connection without a stored secret access key fails with `credential`. */
+const KEYS_CREDENTIAL_HINT =
+  "AWS credentials are missing or rejected. Edit the connection to enter the secret key."
+
+/** Guidance under a DynamoDB error, chosen by `kind` and the connection's auth type only. */
+export function dynamoErrorHint(kind: AppErrorKind, authType?: DynamoAuth["type"]): string {
+  if (kind === "credential" && authType === "keys") return KEYS_CREDENTIAL_HINT
   return HINTS[kind]
 }
 
-export function DynamoErrorPanel({ error }: { error: AppError }) {
+/** Auth type of a DynamoDB connection, for choosing the error hint. */
+export function useDynamoAuthType(connectionId: ConnectionId): DynamoAuth["type"] | undefined {
+  return useConnectionsStore((s) => {
+    const config = s.connections.find((c) => c.id === connectionId)
+    return config?.kind === "dynamodb" ? config.auth.type : undefined
+  })
+}
+
+export function DynamoErrorPanel({
+  error,
+  connectionId,
+}: {
+  error: AppError
+  connectionId: ConnectionId
+}) {
+  const authType = useDynamoAuthType(connectionId)
   return (
     <div className="result-error" role="alert">
       <pre className="result-error__message">{error.message}</pre>
-      <p className="result-error__hint">{dynamoErrorHint(error.kind)}</p>
+      <p className="result-error__hint">{dynamoErrorHint(error.kind, authType)}</p>
     </div>
   )
 }

@@ -9,7 +9,7 @@ use super::events::StateSink;
 use super::model::{MysqlSessionInfo, MysqlStateEvent, SessionState};
 use super::options::{connect_options, fetch_current_database, fetch_server_version, pool_options};
 use super::session::MysqlSession;
-use crate::connections::MysqlConnectionConfig;
+use crate::connections::{ConnectionConfig, ConnectionsService, MysqlConnectionConfig};
 use crate::error::{AppError, AppResult};
 
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -72,6 +72,21 @@ impl MysqlSessions {
                 Err(err)
             }
         }
+    }
+
+    /// Opens the saved connection `id`. A given `secret` is used for this session only and is
+    /// never stored; without one the stored secret (if any) is used.
+    pub async fn connect_saved(
+        &self,
+        connections: &ConnectionsService,
+        id: &str,
+        secret: Option<&str>,
+    ) -> AppResult<MysqlSessionInfo> {
+        let ConnectionConfig::Mysql(config) = connections.get(id)? else {
+            return Err(AppError::InvalidInput(format!("{id} is not a MySQL connection")));
+        };
+        let password = connections.resolve_secret(id, secret)?;
+        self.connect(id, &config, password.as_deref()).await
     }
 
     async fn open(

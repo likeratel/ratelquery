@@ -26,6 +26,23 @@ const ACTION_PREFIX: Record<ConnectionAction, string> = {
   test: "Connection test failed.",
 }
 
+/** Appended to the detail when the user denied the keychain prompt. */
+export const KEYCHAIN_DENIED_TIP = "Tip: switch Password storage to App file in Settings (⌘,)"
+
+/** Phrases the OS keychain uses when the user denies access. */
+const KEYCHAIN_DENIED = /user (canceled|cancelled)|user interaction is not allowed/i
+
+/**
+ * Secondary text for an error: the raw message, plus a tip when the keychain refused access.
+ * Only the detail looks at the text; summaries and behavior still branch on `kind` alone.
+ */
+export function errorDetail(error: AppError): string {
+  if (error.kind === "credential" && KEYCHAIN_DENIED.test(error.message)) {
+    return `${error.message} ${KEYCHAIN_DENIED_TIP}`
+  }
+  return error.message
+}
+
 /** Maps an AppError to user-facing copy, branching only on `kind`. */
 export function describeError(error: AppError, action: ConnectionAction): FriendlyError {
   if (action === "test" && error.kind === "connection") {
@@ -33,6 +50,6 @@ export function describeError(error: AppError, action: ConnectionAction): Friend
   }
   return {
     summary: `${ACTION_PREFIX[action]} ${SUMMARY_BY_KIND[error.kind]}`,
-    detail: error.message,
+    detail: errorDetail(error),
   }
 }

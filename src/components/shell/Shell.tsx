@@ -1,5 +1,5 @@
 import { useEffect } from "react"
-import { ConnectionDialog } from "../../features/connections"
+import { ConnectionDialog, PasswordPromptDialog } from "../../features/connections"
 import { DynamoWorkspace } from "../../features/dynamo"
 import { TableWorkspace } from "../../features/schema"
 import {
@@ -76,6 +76,7 @@ export function Shell() {
       <ConnectionDialog />
       <SettingsDialog />
       <RunConfirmDialog />
+      <PasswordPromptDialog />
       <Toaster />
     </div>
   )

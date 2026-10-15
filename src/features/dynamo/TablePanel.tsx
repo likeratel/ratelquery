@@ -4,7 +4,7 @@ import type { IndexDescription, KeySchema, TableDescription } from "../../lib/dy
 import type { DynamoTab } from "../../lib/dynamoTabs"
 import { chooseTable } from "./actions"
 import { useDynamoCatalog } from "./catalogStore"
-import { dynamoErrorHint } from "./errors"
+import { dynamoErrorHint, useDynamoAuthType } from "./errors"
 
 function KeyLine({ role, name, type }: { role: string; name: string; type: string }) {
   return (
@@ -70,6 +70,7 @@ export function TablePanel({ tab }: { tab: DynamoTab }) {
   const loadTables = useDynamoCatalog((s) => s.loadTables)
   const describe = useDynamoCatalog((s) => s.describe)
   const [filter, setFilter] = useState("")
+  const authType = useDynamoAuthType(tab.connectionId)
 
   useEffect(() => {
     void loadTables(tab.connectionId)
@@ -115,7 +116,7 @@ export function TablePanel({ tab }: { tab: DynamoTab }) {
         {catalog?.error ? (
           <div className="dyn-tables__state dyn-tables__state--error" role="alert">
             <p>{catalog.error.message}</p>
-            <p className="dyn-tables__hint">{dynamoErrorHint(catalog.error.kind)}</p>
+            <p className="dyn-tables__hint">{dynamoErrorHint(catalog.error.kind, authType)}</p>
           </div>
         ) : !catalog?.tables ? (
           <p className="dyn-tables__state">Loading tables…</p>

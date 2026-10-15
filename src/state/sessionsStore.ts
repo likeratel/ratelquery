@@ -39,8 +39,15 @@ export const RECONNECT_DEDUPE_MS = 5000
 
 interface SessionsState {
   sessions: Readonly<Record<ConnectionId, MysqlSession>>
-  /** Connects once; concurrent callers share the same in-flight request. */
-  connect: (id: ConnectionId, fallbackDatabase?: string | null) => Promise<MysqlSessionInfo>
+  /**
+   * Connects once; concurrent callers share the same in-flight request. A `secret` is used for
+   * this session only (nothing is stored).
+   */
+  connect: (
+    id: ConnectionId,
+    fallbackDatabase?: string | null,
+    secret?: string,
+  ) => Promise<MysqlSessionInfo>
   /**
    * Lists the databases into the session; concurrent callers share the request in flight.
    * Resolves with the error (also kept in `lastError`) or null on success.
@@ -142,11 +149,15 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     }))
   }
 
-  const doConnect = async (id: ConnectionId, fallbackDatabase: string | null) => {
+  const doConnect = async (
+    id: ConnectionId,
+    fallbackDatabase: string | null,
+    secret: string | undefined,
+  ) => {
     const epoch = epochOf(id)
     patch(id, (s) => ({ ...s, state: "connecting", lastError: null }), epoch)
     try {
-      const info = await mysqlApi.connect(id)
+      const info = await mysqlApi.connect(id, secret)
       const currentDatabase = info.currentDatabase ?? fallbackDatabase
       if (epochOf(id) !== epoch) return { ...info, currentDatabase }
       patch(
@@ -173,7 +184,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
   return {
     sessions: {},
 
-    connect: (id, fallbackDatabase = null) => {
+    connect: (id, fallbackDatabase = null, secret) => {
       forgotten.delete(id)
       const session = get().sessions[id]
       if (session?.state === "connected" || session?.state === "reconnecting") {
@@ -184,9 +195,11 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       }
       const pending = inflight.get(id)
       if (pending) return pending
-      const request: Promise<MysqlSessionInfo> = doConnect(id, fallbackDatabase).finally(() => {
-        if (inflight.get(id) === request) inflight.delete(id)
-      })
+      const request: Promise<MysqlSessionInfo> = doConnect(id, fallbackDatabase, secret).finally(
+        () => {
+          if (inflight.get(id) === request) inflight.delete(id)
+        },
+      )
       inflight.set(id, request)
       return request
     },

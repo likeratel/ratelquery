@@ -76,6 +76,8 @@ Live database tests run only when `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0
 
 On macOS, `tauri dev` re-signs the debug binary with your first code-signing identity (see `scripts/cargo.sh`) so the keychain's "Always allow" on saved passwords survives rebuilds. Without an identity the build stays ad-hoc signed and the keychain asks again after every rebuild. Set `DBCLIENT_DEV_SIGN=0` to skip signing.
 
+To avoid keychain prompts altogether, choose the file secret store in Settings: secrets are then kept in `<app config dir>/secrets.json` (mode 0600), protected by file permissions only. Secrets are not migrated when switching stores.
+
 See [docs/architecture.md](docs/architecture.md) for the module layout and security model, and [docs/ipc-contract.md](docs/ipc-contract.md) for the commands between the webview and Rust.
 
 ## Renaming

@@ -4,6 +4,9 @@ import { ipc } from "./ipc"
 /** User preferences persisted by the backend (`settings_get` / `settings_set`). */
 export type ThemePreference = "system" | "light" | "dark"
 
+/** Where connection secrets are kept: the OS keychain, or an owner-only file in the app config dir. */
+export type SecretStore = "keychain" | "file"
+
 export interface QuerySettings {
   /** LIMIT appended to a SELECT that has none. */
   defaultLimit: number
@@ -24,6 +27,7 @@ export interface Settings {
   editorFontSize: number
   query: QuerySettings
   dynamo: DynamoSettings
+  secretStore: SecretStore
 }
 
 /** Partial update: top-level fields, or some fields of one group. */
@@ -32,6 +36,7 @@ export interface SettingsPatch {
   editorFontSize?: number
   query?: Partial<QuerySettings>
   dynamo?: Partial<DynamoSettings>
+  secretStore?: SecretStore
 }
 
 export interface Range {
@@ -59,9 +64,12 @@ export const DEFAULT_SETTINGS: Settings = {
     maxRows: 1000,
   },
   dynamo: { pageSize: 100 },
+  secretStore: "keychain",
 }
 
 export const THEME_PREFERENCES = ["system", "light", "dark"] as const
+
+export const SECRET_STORES = ["keychain", "file"] as const
 
 const intIn = ({ min, max }: Range) => z.number().int().min(min).max(max)
 
@@ -75,6 +83,7 @@ export const settingsSchema = z.object({
     maxRows: intIn(SETTING_RANGES.maxRows),
   }),
   dynamo: z.object({ pageSize: intIn(SETTING_RANGES.pageSize) }),
+  secretStore: z.enum(SECRET_STORES),
 })
 
 const D = DEFAULT_SETTINGS
@@ -94,6 +103,7 @@ const lenientSchema = z.object({
   dynamo: z
     .object({ pageSize: intIn(SETTING_RANGES.pageSize).catch(D.dynamo.pageSize) })
     .catch(D.dynamo),
+  secretStore: z.enum(SECRET_STORES).catch(D.secretStore),
 })
 
 /** Reads settings from untrusted data (the IPC response), defaulting whatever is unusable. */
@@ -108,6 +118,7 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     ...base,
     ...(patch.theme !== undefined ? { theme: patch.theme } : {}),
     ...(patch.editorFontSize !== undefined ? { editorFontSize: patch.editorFontSize } : {}),
+    ...(patch.secretStore !== undefined ? { secretStore: patch.secretStore } : {}),
     query: { ...base.query, ...patch.query },
     dynamo: { ...base.dynamo, ...patch.dynamo },
   }

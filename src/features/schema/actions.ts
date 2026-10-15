@@ -4,8 +4,9 @@ import { onAppEvent } from "../../lib/events"
 import { normalizeError } from "../../lib/ipc"
 import { mysqlApi } from "../../lib/mysql"
 import { failTableLoad, finishTableLoad, startTableLoad, type TableTab } from "../../lib/queryTabs"
-import { useConnectionsStore } from "../../state/connectionsStore"
 import { useSessionsStore } from "../../state/sessionsStore"
+import { connectMysql, isPasswordCancelled } from "../connections/connectSession"
+import { errorDetail } from "../connections/errors"
 import { useTabsStore } from "../../state/tabsStore"
 import { chooseTable, openDynamoTabFor } from "../dynamo"
 import { useDynamoCatalog } from "../dynamo/catalogStore"
@@ -17,11 +18,12 @@ import { useSchemaTree } from "./treeStore"
 const tree = () => useSchemaTree.getState()
 const tabs = () => useTabsStore.getState()
 
-/** Connects the MySQL session when needed; the connection's default database is the fallback. */
+/**
+ * Connects the MySQL session when needed (asking for the password when none is stored); the
+ * connection's default database is the fallback.
+ */
 function ensureSession(connectionId: ConnectionId) {
-  const config = useConnectionsStore.getState().byId(connectionId)
-  const fallback = config?.kind === "mysql" ? (config.database ?? null) : null
-  return useSessionsStore.getState().connect(connectionId, fallback)
+  return connectMysql(connectionId)
 }
 
 const session = (connectionId: ConnectionId) => useSessionsStore.getState().sessions[connectionId]
@@ -127,10 +129,11 @@ export async function selectRows(
   try {
     await ensureSession(connectionId)
   } catch (raw) {
+    if (isPasswordCancelled(raw)) return
     showToast({
       tone: "error",
       message: `Could not connect to select rows from ${table}.`,
-      detail: normalizeError(raw).message,
+      detail: errorDetail(normalizeError(raw)),
     })
     return
   }

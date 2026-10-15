@@ -171,7 +171,7 @@ and sqlx does not expose the collation. For such columns:
 
 | command | args | returns |
 | --- | --- | --- |
-| `mysql_connect` | `connectionId` | `MysqlSessionInfo` |
+| `mysql_connect` | `connectionId`, `secret?: string` (session-only password, see Secret storage) | `MysqlSessionInfo` |
 | `mysql_disconnect` | `connectionId` | `void` |
 | `mysql_query` | `connectionId`, `sql`, `options: QueryOptions` | `QueryResult[]` – one entry per statement in `sql` (split on `;` outside strings/comments by the backend; `/*! ... */` executable comments count as statements). Stops at the first failing statement and rejects with `kind: "query"`; the message starts with the MySQL error text. An `options.database` (or default database) that does not exist or is not accessible rejects with `kind: "invalid_input"`. |
 | `mysql_databases` | `connectionId` | `string[]` (excludes `information_schema`, `performance_schema`, `mysql`, `sys`) |
@@ -404,6 +404,7 @@ interface Settings {
   dynamo: {
     pageSize: number                            // 1..1000, default 100
   }
+  secretStore: "keychain" | "file"              // default "keychain", see Secret storage
 }
 ```
 
@@ -411,3 +412,29 @@ interface Settings {
 | --- | --- | --- |
 | `settings_get` | – | `Settings` (defaults merged over the file) |
 | `settings_set` | `settings: Partial<Settings>` (nested groups may be partial too) | saved `Settings`. The input is deep-merged over the stored settings (objects key by key, other values replaced), so a client sends only the fields it changes. A non-object input or an out-of-range merged value → `invalid_input`. |
+
+## Secret storage
+
+`Settings` gains `secretStore: "keychain" | "file"` (default `"keychain"`). The user chooses it in
+Settings; the trade-off is spelled out there.
+
+- `keychain`: the OS keyring, as before.
+- `file`: `<app config dir>/secrets.json`, a JSON object of connection id to secret, written
+  atomically with mode 0600. It is protected by file permissions only, like `~/.aws/credentials`.
+
+The active store is read from settings on every secret operation, so switching takes effect at
+once. Secrets are not migrated between stores: after a switch, a connection whose secret lives in
+the other store reports `connections_has_secret === false` and the app asks for the password when
+the connection is opened. Deleting a connection removes its secret from the active store only.
+
+### Session-only passwords
+
+| command | args | change |
+| --- | --- | --- |
+| `mysql_connect` | `connectionId`, `secret?: string` | when `secret` is given it is used for this session only and nothing is stored |
+| `connections_test` | unchanged | – |
+| `dynamo_*` | – | a DynamoDB key connection without a stored secret rejects with `credential`; the app asks the user to edit the connection |
+
+When a MySQL connection has no stored secret (`connections_has_secret` is false) the frontend
+shows a password prompt before `mysql_connect`, with a "Remember password" option that saves it
+through `connections_save(config, secret)`.

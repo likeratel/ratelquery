@@ -22,6 +22,7 @@ describe("settingsSchema", () => {
       mergeSettings(DEFAULT_SETTINGS, { query: { maxRows: 1.5 } }),
       mergeSettings(DEFAULT_SETTINGS, { dynamo: { pageSize: 1001 } }),
       { ...DEFAULT_SETTINGS, theme: "sepia" },
+      { ...DEFAULT_SETTINGS, secretStore: "vault" },
     ]
     for (const value of bad) expect(settingsSchema.safeParse(value).success).toBe(false)
   })
@@ -33,6 +34,22 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ dynamo: { pageSize: 25 }, extra: true })).toEqual(
       mergeSettings(DEFAULT_SETTINGS, { dynamo: { pageSize: 25 } }),
     )
+  })
+})
+
+describe("secretStore", () => {
+  it("defaults to the keychain and accepts the app file", () => {
+    expect(DEFAULT_SETTINGS.secretStore).toBe("keychain")
+    const file = mergeSettings(DEFAULT_SETTINGS, { secretStore: "file" })
+    expect(file.secretStore).toBe("file")
+    expect(settingsSchema.safeParse(file).success).toBe(true)
+    expect(DEFAULT_SETTINGS.secretStore).toBe("keychain")
+  })
+
+  it("falls back to the keychain when the stored value is missing or unknown", () => {
+    expect(normalizeSettings({ theme: "dark" }).secretStore).toBe("keychain")
+    expect(normalizeSettings({ secretStore: "vault" }).secretStore).toBe("keychain")
+    expect(normalizeSettings({ secretStore: "file" }).secretStore).toBe("file")
   })
 })
 

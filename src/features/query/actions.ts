@@ -13,6 +13,7 @@ import {
   useTabsStore,
   type RunOutcome,
 } from "../../state/tabsStore"
+import { connectMysql } from "../connections/connectSession"
 import { openDynamoTabFor } from "../dynamo/actions"
 import { useDynamoCatalog } from "../dynamo/catalogStore"
 import { editTargetFor } from "./editing"
@@ -43,12 +44,12 @@ export function openQueryTabFor(connectionId: ConnectionId): Promise<void> {
 
 /**
  * Connects (if needed) and opens a query tab for the given MySQL connection. A failed connect
- * rejects with the AppError and shows nothing, so the caller's report is the only one.
+ * rejects with the AppError (or `PASSWORD_CANCELLED`) and shows nothing, so the caller's report
+ * is the only one.
  */
 async function openMysqlTab(connectionId: ConnectionId): Promise<void> {
-  const config = useConnectionsStore.getState().byId(connectionId)
-  const fallback = config?.kind === "mysql" ? (config.database ?? null) : null
-  const info = await useSessionsStore.getState().connect(connectionId, fallback)
+  // Asks for the password first when none is stored.
+  const info = await connectMysql(connectionId)
   useTabsStore.getState().open(connectionId, info.currentDatabase)
 }
 

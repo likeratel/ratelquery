@@ -12,16 +12,20 @@ import {
   useTreeTabIndex,
 } from "../schema"
 import { useConnectionsStore } from "../../state/connectionsStore"
+import { isPasswordCancelled } from "./connectSession"
+import { errorDetail } from "./errors"
 import { connectionSubtitle } from "./filter"
 
 type RowMode = "idle" | "menu" | "confirm" | "deleting"
 
 function openTab(config: ConnectionConfig): void {
   openQueryTabFor(config.id).catch((raw: unknown) => {
+    // Closing the password prompt is the user's choice, not a failure.
+    if (isPasswordCancelled(raw)) return
     showToast({
       tone: "error",
       message: `Could not open ${config.name}.`,
-      detail: normalizeError(raw).message,
+      detail: errorDetail(normalizeError(raw)),
     })
   })
 }

@@ -21,6 +21,15 @@ pub enum Theme {
     Dark,
 }
 
+/// Where connection secrets are kept: the OS keyring or an owner-only file in the config dir.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretStoreKind {
+    #[default]
+    Keychain,
+    File,
+}
+
 /// Missing keys take their defaults; keys this build does not know are kept in `extra`
 /// so saving never drops settings written by a newer build.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -30,6 +39,7 @@ pub struct Settings {
     pub editor_font_size: u32,
     pub query: QuerySettings,
     pub dynamo: DynamoSettings,
+    pub secret_store: SecretStoreKind,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -60,6 +70,7 @@ impl Default for Settings {
             editor_font_size: 13,
             query: QuerySettings::default(),
             dynamo: DynamoSettings::default(),
+            secret_store: SecretStoreKind::Keychain,
             extra: Map::new(),
         }
     }
@@ -177,6 +188,16 @@ mod tests {
         assert_eq!(s.query.default_limit, 1000);
         assert!(s.query.add_limit_to_select && s.query.confirm_destructive);
         assert_eq!(s.dynamo.page_size, 100);
+        assert_eq!(s.secret_store, SecretStoreKind::Keychain);
+    }
+
+    #[test]
+    fn secret_store_accepts_keychain_and_file() {
+        let s = Settings::from_value(json!({ "secretStore": "file" })).unwrap();
+        assert_eq!(s.secret_store, SecretStoreKind::File);
+        assert_eq!(serde_json::to_value(&s).unwrap()["secretStore"], json!("file"));
+        let s = Settings::from_value(json!({ "secretStore": "keychain" })).unwrap();
+        assert_eq!(s.secret_store, SecretStoreKind::Keychain);
     }
 
     #[test]
@@ -203,6 +224,8 @@ mod tests {
             json!({ "dynamo": { "pageSize": -1 } }),
             json!({ "theme": "neon" }),
             json!({ "editorFontSize": 12.5 }),
+            json!({ "secretStore": "vault" }),
+            json!({ "secretStore": 1 }),
         ] {
             let err = Settings::from_value(bad.clone()).unwrap_err();
             assert_eq!(err.kind(), "invalid_input", "{bad}");

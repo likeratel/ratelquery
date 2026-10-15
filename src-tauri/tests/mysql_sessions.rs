@@ -7,8 +7,16 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{Connected, connect, create_table, drop_table, query, rows, test_db, unique};
-use dbclient_lib::connections::{MysqlConnectionConfig, MysqlTlsMode, probe_mysql};
-use dbclient_lib::mysql::{self, Cell, QueryOptions, SessionState, UNKNOWN_OUTCOME, run_query};
+use std::sync::Arc;
+
+use dbclient_lib::connections::{
+    ConnectionConfig, ConnectionStore, ConnectionsService, MemorySecretStore,
+    MysqlConnectionConfig, MysqlTlsMode, SecretStore, probe_mysql,
+};
+use dbclient_lib::mysql::{
+    self, Cell, MysqlSessions, QueryOptions, RecordingSink, SessionState, UNKNOWN_OUTCOME,
+    run_query,
+};
 
 const CA_VAR: &str = "DBCLIENT_TEST_MYSQL_CA";
 
@@ -234,4 +242,38 @@ async fn shutdown_all_closes_every_pool() {
     assert!(c.session.pool().is_closed() && second.pool().is_closed());
     assert!(!c.sessions.is_open(&c.id).await && !c.sessions.is_open(&other).await);
     assert_eq!(c.sink.events().len(), before, "no state events on exit");
+}
+
+#[tokio::test]
+async fn session_only_secret_is_used_but_never_stored() {
+    let Some(db) = test_db() else { return };
+    let dir = tempfile::tempdir().unwrap();
+    let secrets = Arc::new(MemorySecretStore::default());
+    let connections = ConnectionsService::new(ConnectionStore::new(dir.path()), secrets.clone());
+    let sessions = MysqlSessions::new(Arc::new(RecordingSink::default()));
+    let password = db.password.clone().unwrap_or_default();
+
+    // No stored secret: the typed password opens the session and is not saved.
+    let saved = connections.save(&ConnectionConfig::Mysql(db.config.clone()), None).unwrap();
+    let id = saved.id().to_string();
+    sessions.connect_saved(&connections, &id, Some(&password)).await.expect("connect");
+    assert!(sessions.is_open(&id).await);
+    assert_eq!(secrets.get(&id).unwrap(), None);
+    assert!(!connections.has_secret(&id).unwrap());
+    let session = sessions.get(&id).await.unwrap();
+    assert_eq!(query(&session, "SELECT 1").await.len(), 1);
+    sessions.disconnect(&id).await;
+
+    // A wrong stored secret stays as it is when the session uses a typed one.
+    connections.save(&saved, Some("wrong-password")).unwrap();
+    sessions.connect_saved(&connections, &id, Some(&password)).await.expect("connect");
+    assert_eq!(secrets.get(&id).unwrap().as_deref(), Some("wrong-password"));
+    sessions.disconnect(&id).await;
+
+    // Without a typed secret the stored one is used.
+    let err = sessions.connect_saved(&connections, &id, None).await.unwrap_err();
+    assert_eq!(err.kind(), "connection");
+    connections.save(&saved, Some(&password)).unwrap();
+    sessions.connect_saved(&connections, &id, None).await.expect("stored secret");
+    sessions.disconnect(&id).await;
 }

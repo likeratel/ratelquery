@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { AppErrorKind } from "../../lib/ipc"
-import { describeError } from "./errors"
+import { describeError, errorDetail, KEYCHAIN_DENIED_TIP } from "./errors"
 
 const KINDS: AppErrorKind[] = [
   "invalid_input",
@@ -35,5 +35,24 @@ describe("describeError", () => {
     expect(describeError({ kind: "credential", message: "denied" }, "test").summary).toBe(
       "Connection test failed. Credentials were rejected or could not be read from the keychain.",
     )
+  })
+})
+
+describe("errorDetail", () => {
+  it("adds the App file tip when the keychain prompt was denied", () => {
+    const denied = { kind: "credential" as const, message: "User canceled the operation." }
+    expect(errorDetail(denied)).toBe(`User canceled the operation. ${KEYCHAIN_DENIED_TIP}`)
+    expect(describeError(denied, "save")).toEqual({
+      summary:
+        "Could not save the connection. Credentials were rejected or could not be read from the keychain.",
+      detail: `User canceled the operation. ${KEYCHAIN_DENIED_TIP}`,
+    })
+  })
+
+  it("leaves other errors alone, including other kinds with the same text", () => {
+    expect(errorDetail({ kind: "credential", message: "Access denied for user" })).toBe(
+      "Access denied for user",
+    )
+    expect(errorDetail({ kind: "connection", message: "User canceled" })).toBe("User canceled")
   })
 })

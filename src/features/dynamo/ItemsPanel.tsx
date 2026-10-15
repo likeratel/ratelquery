@@ -121,7 +121,7 @@ function Pager({ tab }: { tab: DynamoTab }) {
 }
 
 function Body({ tab, schema }: { tab: DynamoTab; schema: KeySchema | null }) {
-  if (tab.error) return <DynamoErrorPanel error={tab.error} />
+  if (tab.error) return <DynamoErrorPanel error={tab.error} connectionId={tab.connectionId} />
   if (!tab.page) {
     return (
       <div className="results__empty">

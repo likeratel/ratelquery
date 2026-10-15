@@ -312,3 +312,17 @@
 .conn-form__warning {
   color: var(--warn);
 }
+
+.conn-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.conn-remember input {
+  margin: 0;
+  accent-color: var(--accent);
+}

@@ -10,7 +10,7 @@ Desktop DB client for MySQL and DynamoDB. Tauri 2 (Rust) backend, React 19 + Typ
 
 ## Rules
 
-- Credentials never cross IPC in plain form after being stored. Secrets live in the OS keyring, keyed by connection id.
+- Credentials never cross IPC in plain form after being stored. Secrets live in the OS keyring by default, or in the app's 0600 `secrets.json` when the user picks file storage in Settings, keyed by connection id.
 - Every IPC error is `{ kind, message }` (`AppError`). Frontend code branches on `kind`, never on message text.
 - Shortcuts match `KeyboardEvent.code` through `src/lib/shortcuts.ts`, never `event.key`.
 - Pure logic goes in `src/lib` or Rust modules with unit tests. UI components stay thin.

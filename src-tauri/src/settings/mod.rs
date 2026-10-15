@@ -9,7 +9,7 @@ use serde_json::Value;
 
 pub use model::{
     DEFAULT_LIMIT_RANGE, DYNAMO_PAGE_SIZE_RANGE, DynamoSettings, EDITOR_FONT_SIZE_RANGE,
-    MAX_ROWS_RANGE, QuerySettings, Settings, Theme,
+    MAX_ROWS_RANGE, QuerySettings, SecretStoreKind, Settings, Theme,
 };
 pub use store::SettingsStore;
 
@@ -125,6 +125,9 @@ mod tests {
         assert_eq!(svc.set(&json!("x")).unwrap_err().kind(), "invalid_input");
         assert!(!dir.path().join("settings.json").exists());
         assert_eq!(svc.get().unwrap(), Settings::default());
+        let err = svc.set(&json!({ "secretStore": "vault" })).unwrap_err();
+        assert_eq!(err.kind(), "invalid_input");
+        assert!(!dir.path().join("settings.json").exists());
     }
 
     #[test]

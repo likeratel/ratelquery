@@ -1,8 +1,7 @@
 use tauri::{AppHandle, State};
 
 use super::export::authorize_export_path;
-use crate::connections::ConnectionConfig;
-use crate::error::{AppError, AppResult};
+use crate::error::AppResult;
 use crate::export::{ExportOptions, ExportResult};
 use crate::mysql::{
     self, ApplyChangesResult, MysqlSessionInfo, QueryOptions, QueryResult, RowChange,
@@ -10,16 +9,14 @@ use crate::mysql::{
 };
 use crate::state::AppState;
 
+/// `secret`, when given, is used for this session only and is not stored.
 #[tauri::command]
 pub async fn mysql_connect(
     state: State<'_, AppState>,
     connection_id: String,
+    secret: Option<String>,
 ) -> AppResult<MysqlSessionInfo> {
-    let ConnectionConfig::Mysql(config) = state.connections.get(&connection_id)? else {
-        return Err(AppError::InvalidInput(format!("{connection_id} is not a MySQL connection")));
-    };
-    let password = state.connections.resolve_secret(&connection_id, None)?;
-    state.mysql.connect(&connection_id, &config, password.as_deref()).await
+    state.mysql.connect_saved(&state.connections, &connection_id, secret.as_deref()).await
 }
 
 #[tauri::command]
