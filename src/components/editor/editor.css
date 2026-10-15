@@ -7,3 +7,11 @@
 .sql-editor .cm-editor {
   height: 100%;
 }
+
+/* The app disables text selection globally; editors must opt back in or WebKit never creates a
+   DOM selection inside the contenteditable, so dragging and select-all show nothing. */
+.sql-editor,
+.sql-editor .cm-content {
+  user-select: text;
+  -webkit-user-select: text;
+}

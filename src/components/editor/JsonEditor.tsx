@@ -1,5 +1,6 @@
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete"
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
+import { runPhysicalEditingShortcut } from "./physicalKeys"
 import { bracketMatching, indentOnInput } from "@codemirror/language"
 import { searchKeymap } from "@codemirror/search"
 import { EditorState } from "@codemirror/state"
@@ -80,6 +81,11 @@ export function JsonEditor({
       // Keys that build an IME composition belong to the editor; repeats are left to the
       // shortcut handler, which claims them without running the action again.
       if (event.isComposing) return
+      if (runPhysicalEditingShortcut(event, view)) {
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
       if (latest.current.onKeyDownCapture?.(event)) {
         event.preventDefault()
         event.stopPropagation()

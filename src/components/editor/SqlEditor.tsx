@@ -6,6 +6,7 @@ import {
   type CompletionSource,
 } from "@codemirror/autocomplete"
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
+import { runPhysicalEditingShortcut } from "./physicalKeys"
 import { MySQL, sql } from "@codemirror/lang-sql"
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language"
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search"
@@ -134,6 +135,11 @@ export function SqlEditor({
       // still reaches the handler so a held shortcut stays claimed; the app shortcut handler
       // ignores repeats instead of running the action again.
       if (event.isComposing) return
+      if (runPhysicalEditingShortcut(event, view)) {
+        event.preventDefault()
+        event.stopPropagation()
+        return
+      }
       if (latest.current.onKeyDownCapture?.(event, view)) {
         event.preventDefault()
         event.stopPropagation()
