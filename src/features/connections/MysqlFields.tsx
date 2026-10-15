@@ -1,6 +1,21 @@
-import { TextField } from "../../components/ui"
+import { SegmentedControl, TextField } from "../../components/ui"
+import type { MysqlTlsMode } from "../../lib/connections"
 import { ColorSwatches } from "./ColorSwatches"
-import type { FieldErrors, MysqlDraft } from "./form"
+import { verifiesCertificate, type FieldErrors, type MysqlDraft } from "./form"
+
+const TLS_OPTIONS = [
+  { value: "preferred", label: "Preferred" },
+  { value: "required", label: "Required" },
+  { value: "verify_ca", label: "Verify CA" },
+  { value: "verify_identity", label: "Verify identity" },
+] as const
+
+const TLS_HINTS: Record<MysqlTlsMode, string> = {
+  preferred: "Uses TLS when the server offers it, otherwise connects without it.",
+  required: "Refuses to connect without TLS, but doesn't check the certificate.",
+  verify_ca: "Requires TLS and a certificate signed by a trusted CA.",
+  verify_identity: "Requires TLS, a trusted certificate and a matching host name.",
+}
 
 interface MysqlFieldsProps {
   draft: MysqlDraft
@@ -69,6 +84,29 @@ export function MysqlFields({
         placeholder={editing && hasStoredSecret ? "Saved password" : ""}
         hint={passwordHint(editing, hasStoredSecret)}
       />
+      <div className="conn-form__wide conn-form__auth">
+        <span className="ui-field__label">TLS</span>
+        <SegmentedControl<MysqlTlsMode>
+          label="TLS"
+          value={draft.tls}
+          options={TLS_OPTIONS}
+          onChange={(tls) => onChange({ tls })}
+        />
+        <p className="ui-field__hint">{TLS_HINTS[draft.tls]}</p>
+      </div>
+      {verifiesCertificate(draft.tls) && (
+        <TextField
+          className="conn-form__wide"
+          label="CA certificate"
+          optional
+          value={draft.caCertPath}
+          onValueChange={(caCertPath) => onChange({ caCertPath })}
+          error={errors.caCertPath}
+          placeholder="/path/to/ca.pem"
+          hint="PEM file with the CA that signed the server certificate."
+          mono
+        />
+      )}
       <TextField
         className="conn-form__wide"
         label="Database"

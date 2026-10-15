@@ -1,4 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react"
+import { NULL_INPUT } from "../../lib/cellEdit"
+import { matchesShortcut, parseShortcut } from "../../lib/shortcuts"
+
+/** Same physical key as the app's Apply shortcut. */
+const APPLY_SHORTCUT = parseShortcut("Mod+S")
 
 interface CellEditorProps {
   initial: string
@@ -35,6 +40,15 @@ export function CellEditor({ initial, onCommit, onCancel, onTab }: CellEditorPro
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // Enter that confirms an IME composition (Korean, Japanese) must not commit the cell.
     if (event.nativeEvent.isComposing) return
+    if (matchesShortcut(event, APPLY_SHORTCUT)) {
+      // Record the typed value first, then let the event reach the app shortcut so Apply
+      // includes it. An invalid value keeps the editor open and stops the apply.
+      if (!commit()) {
+        event.preventDefault()
+        event.stopPropagation()
+      }
+      return
+    }
     if (event.code === "Escape") {
       event.preventDefault()
       event.stopPropagation()
@@ -67,6 +81,7 @@ export function CellEditor({ initial, onCommit, onCancel, onTab }: CellEditorPro
         spellCheck={false}
         aria-invalid={error !== null}
         aria-label="Cell value"
+        title={`Type ${NULL_INPUT} for SQL NULL`}
         onChange={(event) => {
           setText(event.target.value)
           setError(null)

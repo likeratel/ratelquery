@@ -1,5 +1,6 @@
-use tauri::State;
+use tauri::{AppHandle, State};
 
+use super::export::authorize_export_path;
 use crate::connections::ConnectionConfig;
 use crate::error::{AppError, AppResult};
 use crate::export::{ExportOptions, ExportResult};
@@ -71,11 +72,13 @@ pub async fn mysql_apply_changes(
 
 #[tauri::command]
 pub async fn mysql_export(
+    app: AppHandle,
     state: State<'_, AppState>,
     connection_id: String,
     sql: String,
     options: ExportOptions,
 ) -> AppResult<ExportResult> {
+    authorize_export_path(&app, &options.path)?;
     let session = state.mysql.get(&connection_id).await?;
     mysql::run_export(&session, &sql, &options).await
 }

@@ -7,15 +7,20 @@ use sqlx::Either;
 use sqlx::mysql::MySqlConnection;
 use sqlx::{Executor, Row, Statement};
 
+use super::binary_hint::{self, has_maybe_text};
 use super::cell::Cell;
-use super::decode::{columns_of, decode_row, row_metas};
-use super::errors::{OpError, describe_sqlx_error, is_connection_error};
+use super::classify::{is_read_statement, is_use_statement};
+use super::decode::{column_metas, column_names, decode_row, settle_columns};
+use super::errors::{
+    OpError, UNKNOWN_OUTCOME, describe_sqlx_error, is_connection_error, is_unusable_database,
+};
 use super::model::{
     ColumnInfo, DEFAULT_MAX_ROWS, ExecResult, QueryOptions, QueryResult, RowsResult, SessionState,
 };
 use super::options::quote_ident;
 use super::session::{MysqlConn, MysqlSession};
 use super::splitter::split_statements;
+use super::type_meta::TypeMeta;
 use crate::error::{AppError, AppResult};
 
 pub fn elapsed_ms(start: Instant) -> u64 {
@@ -30,13 +35,14 @@ pub fn resolve_max_rows(requested: Option<i64>) -> AppResult<usize> {
     }
 }
 
-fn is_use_statement(statement: &str) -> bool {
-    let mut words = statement.split_whitespace();
-    words.next().is_some_and(|w| w.eq_ignore_ascii_case("use"))
+/// Column names and metadata of the first result set.
+struct ResultShape {
+    names: Vec<String>,
+    metas: Vec<TypeMeta>,
 }
 
 struct Collected {
-    columns: Option<Vec<ColumnInfo>>,
+    shape: Option<ResultShape>,
     rows: Vec<Vec<Cell>>,
     truncated: bool,
     affected_rows: u64,
@@ -51,13 +57,12 @@ async fn collect(
     max_rows: usize,
 ) -> Result<Collected, sqlx::Error> {
     let mut out = Collected {
-        columns: None,
+        shape: None,
         rows: Vec::new(),
         truncated: false,
         affected_rows: 0,
         last_insert_id: 0,
     };
-    let mut metas = Vec::new();
     let mut first_set_done = false;
     let mut stream = conn.fetch_many(sqlx::raw_sql(statement));
     while let Some(item) = stream.try_next().await? {
@@ -67,19 +72,19 @@ async fn collect(
                 if done.last_insert_id() > 0 {
                     out.last_insert_id = done.last_insert_id();
                 }
-                first_set_done = out.columns.is_some();
+                first_set_done = out.shape.is_some();
             }
             Either::Right(_) if first_set_done => {}
             Either::Right(row) => {
-                if out.columns.is_none() {
-                    out.columns = Some(columns_of(row.columns()));
-                    metas = row_metas(&row);
-                }
+                let shape = out.shape.get_or_insert_with(|| ResultShape {
+                    names: column_names(row.columns()),
+                    metas: column_metas(row.columns()),
+                });
                 if out.rows.len() >= max_rows {
                     out.truncated = true;
                     break;
                 }
-                out.rows.push(decode_row(&row, &metas)?);
+                out.rows.push(decode_row(&row, &shape.metas)?);
             }
         }
     }
@@ -88,10 +93,28 @@ async fn collect(
 
 /// Column metadata for a statement that returned no rows, via a prepare (no side effects).
 /// Statements that cannot be prepared are treated as returning no result set.
-async fn prepared_columns(conn: &mut MySqlConnection, statement: &str) -> Option<Vec<ColumnInfo>> {
+async fn prepared_shape(conn: &mut MySqlConnection, statement: &str) -> Option<ResultShape> {
     let prepared = conn.prepare(statement).await.ok()?;
     let columns = prepared.columns();
-    (!columns.is_empty()).then(|| columns_of(columns))
+    (!columns.is_empty())
+        .then(|| ResultShape { names: column_names(columns), metas: column_metas(columns) })
+}
+
+/// Final columns and rows: binary-flagged columns are settled from the schema when the
+/// statement reads one base table, then from the decoded values.
+async fn finish_rows(
+    conn: &mut MySqlConnection,
+    statement: &str,
+    shape: ResultShape,
+    rows: Vec<Vec<Cell>>,
+) -> (Vec<ColumnInfo>, Vec<Vec<Cell>>) {
+    let metas = if has_maybe_text(&shape.metas) {
+        let hint = binary_hint::lookup(conn, statement).await;
+        binary_hint::apply(&shape.names, &shape.metas, &hint)
+    } else {
+        shape.metas
+    };
+    settle_columns(&shape.names, &metas, rows)
 }
 
 pub async fn execute_statement(
@@ -101,22 +124,25 @@ pub async fn execute_statement(
 ) -> Result<QueryResult, sqlx::Error> {
     let start = Instant::now();
     let collected = collect(conn, statement, max_rows).await?;
-    let columns = match collected.columns {
-        Some(columns) => Some(columns),
-        None if collected.affected_rows == 0 => prepared_columns(conn, statement).await,
+    let shape = match collected.shape {
+        Some(shape) => Some(shape),
+        None if collected.affected_rows == 0 => prepared_shape(conn, statement).await,
         None => None,
     };
     let elapsed = elapsed_ms(start);
-    Ok(match columns {
-        Some(columns) => QueryResult::Rows(RowsResult {
-            columns,
-            row_count: collected.rows.len(),
-            rows: collected.rows,
-            truncated: collected.truncated,
-            elapsed_ms: elapsed,
-            reconnected: false,
-            statement: statement.to_string(),
-        }),
+    Ok(match shape {
+        Some(shape) => {
+            let (columns, rows) = finish_rows(conn, statement, shape, collected.rows).await;
+            QueryResult::Rows(RowsResult {
+                columns,
+                row_count: rows.len(),
+                rows,
+                truncated: collected.truncated,
+                elapsed_ms: elapsed,
+                reconnected: false,
+                statement: statement.to_string(),
+            })
+        }
         None => QueryResult::Exec(ExecResult {
             affected_rows: collected.affected_rows,
             last_insert_id: (collected.last_insert_id > 0)
@@ -132,6 +158,17 @@ async fn run_raw(conn: &mut MySqlConnection, sql: &str) -> Result<(), sqlx::Erro
     conn.execute(sqlx::raw_sql(sql)).await.map(|_| ())
 }
 
+/// `USE <database>` for the requested or default database. An unknown database is
+/// `invalid_input`: the option, not the statement, is wrong.
+pub async fn use_database(conn: &mut MySqlConnection, database: &str) -> Result<(), OpError> {
+    match run_raw(conn, &format!("USE {}", quote_ident(database))).await {
+        Err(err) if is_unusable_database(&err) => {
+            Err(OpError::App(AppError::InvalidInput(describe_sqlx_error(&err))))
+        }
+        other => Ok(other?),
+    }
+}
+
 /// Acquires a connection and selects the database plus any `USE` replayed after a reconnect.
 async fn prepare_conn(
     session: &MysqlSession,
@@ -140,7 +177,7 @@ async fn prepare_conn(
 ) -> Result<MysqlConn, OpError> {
     let mut conn = session.acquire().await?;
     if let Some(database) = database {
-        run_raw(&mut conn, &format!("USE {}", quote_ident(database))).await?;
+        use_database(&mut conn, database).await?;
     }
     if let Some(statement) = replay {
         run_raw(&mut conn, statement).await?;
@@ -153,7 +190,10 @@ async fn open_with_retry(
     database: Option<&str>,
 ) -> AppResult<(MysqlConn, bool)> {
     match prepare_conn(session, database, None).await {
-        Ok(conn) => Ok((conn, false)),
+        Ok(conn) => {
+            session.mark_healthy();
+            Ok((conn, false))
+        }
         Err(err) if err.is_connection_level() => {
             session.set_state(SessionState::Reconnecting, Some(super::session::op_message(&err)));
             let retried = prepare_conn(session, database, None).await;
@@ -181,7 +221,15 @@ struct Plan<'a> {
     total: usize,
 }
 
-/// Re-runs a statement that failed with a connection-level error on a new connection.
+/// A connection-level failure while a statement that may change data was running: never
+/// re-run it, because the first attempt may have been applied. The next result reports
+/// `reconnected: true`.
+fn unknown_outcome(session: &MysqlSession, err: &sqlx::Error) -> AppError {
+    session.mark_lost();
+    AppError::Connection(format!("{UNKNOWN_OUTCOME} ({})", describe_sqlx_error(err)))
+}
+
+/// Re-runs a read statement that failed with a connection-level error on a new connection.
 async fn retry_statement(
     session: &MysqlSession,
     plan: &Plan<'_>,
@@ -200,6 +248,11 @@ async fn retry_statement(
 }
 
 /// Executes every statement of `sql`, stopping at the first failure.
+///
+/// Retry policy: failures before a statement is sent (acquiring the connection, `USE`) are
+/// retried once on a new connection. A connection lost while a statement runs is retried only
+/// for read statements ([`is_read_statement`]); anything else fails with `connection` and
+/// [`UNKNOWN_OUTCOME`].
 pub async fn run_query(
     session: &MysqlSession,
     sql: &str,
@@ -223,6 +276,9 @@ pub async fn run_query(
     for (index, statement) in statements.iter().enumerate() {
         let result = match execute_statement(&mut conn, statement, plan.max_rows).await {
             Ok(result) => result.with_reconnected(reconnected),
+            Err(err) if is_connection_error(&err) && !is_read_statement(statement) => {
+                return Err(statement_error(unknown_outcome(session, &err), index, plan.total));
+            }
             Err(err) if is_connection_error(&err) => {
                 let retried = retry_statement(session, &plan, replay, statement, &err).await;
                 let (new_conn, result) =
@@ -257,14 +313,6 @@ mod tests {
         assert_eq!(resolve_max_rows(None).unwrap(), DEFAULT_MAX_ROWS);
         assert_eq!(resolve_max_rows(Some(5)).unwrap(), 5);
         assert_eq!(resolve_max_rows(Some(0)).unwrap_err().kind(), "invalid_input");
-    }
-
-    #[test]
-    fn detects_use_statements() {
-        assert!(is_use_statement("use sample"));
-        assert!(is_use_statement("USE\n`x`"));
-        assert!(!is_use_statement("user_table"));
-        assert!(!is_use_statement("SELECT 1"));
     }
 
     #[test]

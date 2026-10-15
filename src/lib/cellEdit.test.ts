@@ -59,6 +59,20 @@ describe("parseCellInput", () => {
     expect(parseCellInput("0", col("BIT"))).toEqual({ ok: true, cell: { t: "bool", v: false } })
   })
 
+  it("accepts only decimal notation for floats", () => {
+    expect(parseCellInput("-.5", col("DOUBLE"))).toEqual({
+      ok: true,
+      cell: { t: "float", v: -0.5 },
+    })
+    expect(parseCellInput("2.5E-3", col("FLOAT"))).toEqual({
+      ok: true,
+      cell: { t: "float", v: 0.0025 },
+    })
+    for (const text of ["0x10", "0b1", "0o7", "Infinity", "1e400", "1_000", "e5"]) {
+      expect(parseCellInput(text, col("DOUBLE"))).toEqual({ ok: false, error: "Enter a number" })
+    }
+  })
+
   it("validates temporal formats and normalizes datetimes", () => {
     expect(parseCellInput("2024-02-03", col("DATE"))).toEqual({
       ok: true,

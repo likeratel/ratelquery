@@ -9,6 +9,7 @@ use dbclient_lib::mysql::{
 };
 
 pub const URL_VAR: &str = "DBCLIENT_TEST_MYSQL_URL";
+const URL_EXAMPLE: &str = "mysql://dev:dev@127.0.0.1:3307/sample";
 
 pub struct TestDb {
     pub config: MysqlConnectionConfig,
@@ -19,7 +20,10 @@ pub struct TestDb {
 /// is not set.
 pub fn test_db() -> Option<TestDb> {
     let Ok(url) = std::env::var(URL_VAR) else {
-        eprintln!("skipping: {URL_VAR} is not set");
+        eprintln!(
+            "SKIPPED live MySQL test: {URL_VAR} is not set. Run `pnpm db:up` and set \
+             {URL_VAR}={URL_EXAMPLE} to run it."
+        );
         return None;
     };
     let rest = url.strip_prefix("mysql://").expect("URL must start with mysql://");
@@ -42,6 +46,8 @@ pub fn test_db() -> Option<TestDb> {
         user,
         database,
         color: None,
+        tls: None,
+        ca_cert_path: None,
     };
     Some(TestDb { config, password })
 }
@@ -77,4 +83,33 @@ pub fn rows(result: &QueryResult) -> &RowsResult {
 
 pub fn unique(prefix: &str) -> String {
     format!("{prefix}_{}", uuid::Uuid::new_v4().simple())
+}
+
+impl TestDb {
+    /// Database named in the URL; tests create their own tables there.
+    pub fn database(&self) -> &str {
+        self.config.database.as_deref().expect("the test URL must name a database")
+    }
+}
+
+/// Creates a uniquely named table from `columns` and `rows` (SQL fragments) and returns its
+/// name. Tests own their tables so they never depend on (or change) the seed data.
+pub async fn create_table(
+    session: &MysqlSession,
+    prefix: &str,
+    columns: &str,
+    rows: &str,
+) -> String {
+    let table = unique(prefix);
+    let insert = if rows.is_empty() {
+        String::new()
+    } else {
+        format!("; INSERT INTO `{table}` VALUES {rows}")
+    };
+    query(session, &format!("CREATE TABLE `{table}` ({columns}){insert}")).await;
+    table
+}
+
+pub async fn drop_table(session: &MysqlSession, table: &str) {
+    query(session, &format!("DROP TABLE IF EXISTS `{table}`")).await;
 }

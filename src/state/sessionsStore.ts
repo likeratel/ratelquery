@@ -19,11 +19,23 @@ export interface MysqlSession {
   databases: readonly string[]
   /** Schema snapshots keyed by database name. */
   schemas: Readonly<Record<string, SchemaSnapshot>>
-  schemaLoading: boolean
+  /** Databases whose schema is being fetched right now. */
+  schemaLoading: Readonly<Record<string, boolean>>
   lastError: AppError | null
   /** Increments each time the session recovers from a dropped connection. */
   reconnects: number
+  /**
+   * The last counted recovery and who reported it. A query retry is reported twice, once by the
+   * `reconnecting -> connected` event and once by the result's `reconnected` flag, in either
+   * order; the second report within `RECONNECT_DEDUPE_MS` is the same recovery.
+   */
+  lastRecovery: { source: RecoverySource; at: number } | null
 }
+
+export type RecoverySource = "event" | "result"
+
+/** Window in which an event and a result flag describe the same recovery. */
+export const RECONNECT_DEDUPE_MS = 5000
 
 interface SessionsState {
   sessions: Readonly<Record<ConnectionId, MysqlSession>>
@@ -36,8 +48,11 @@ interface SessionsState {
   ensureSchema: (id: ConnectionId, database: string | null) => Promise<void>
   setCurrentDatabase: (id: ConnectionId, database: string | null) => Promise<void>
   applyStateEvent: (event: MysqlStateEvent) => void
+  /** Called when a query result reports `reconnected`; counted once per recovery. */
   markReconnected: (id: ConnectionId) => void
   disconnect: (id: ConnectionId) => Promise<void>
+  /** Drops local state for a deleted connection; the backend already closed its session. */
+  forget: (id: ConnectionId) => void
 }
 
 export function emptySession(): MysqlSession {
@@ -47,14 +62,40 @@ export function emptySession(): MysqlSession {
     currentDatabase: null,
     databases: [],
     schemas: {},
-    schemaLoading: false,
+    schemaLoading: {},
     lastError: null,
     reconnects: 0,
+    lastRecovery: null,
   }
 }
 
+/** True while the schema of `database` is being fetched. */
+export function isSchemaLoading(session: MysqlSession | undefined, database: string | null) {
+  return Boolean(database && session?.schemaLoading[database])
+}
+
+/**
+ * Counts one recovery reported by `source`. A report from the other source shortly after the
+ * last counted one is the same recovery and only clears the marker.
+ */
+export function noteRecovery(
+  session: MysqlSession,
+  source: RecoverySource,
+  now: number,
+): MysqlSession {
+  const last = session.lastRecovery
+  if (last && last.source !== source && now - last.at <= RECONNECT_DEDUPE_MS) {
+    return { ...session, lastRecovery: null }
+  }
+  return { ...session, reconnects: session.reconnects + 1, lastRecovery: { source, at: now } }
+}
+
 /** Pure transition for a `mysql:state` event. Recovering from `reconnecting` counts as a reconnect. */
-export function reduceStateEvent(session: MysqlSession, event: MysqlStateEvent): MysqlSession {
+export function reduceStateEvent(
+  session: MysqlSession,
+  event: MysqlStateEvent,
+  now: number = Date.now(),
+): MysqlSession {
   const recovered = session.state === "reconnecting" && event.state === "connected"
   const lastError: AppError | null =
     event.state === "error"
@@ -62,13 +103,12 @@ export function reduceStateEvent(session: MysqlSession, event: MysqlStateEvent):
       : event.state === "connected"
         ? null
         : session.lastError
-  return {
-    ...session,
-    state: event.state,
-    lastError,
-    reconnects: recovered ? session.reconnects + 1 : session.reconnects,
-  }
+  const next = { ...session, state: event.state, lastError }
+  return recovered ? noteRecovery(next, "event", now) : next
 }
+
+const withoutKey = <T>(record: Readonly<Record<string, T>>, key: string): Record<string, T> =>
+  Object.fromEntries(Object.entries(record).filter(([k]) => k !== key))
 
 const inflight = new Map<ConnectionId, Promise<MysqlSessionInfo>>()
 
@@ -130,16 +170,20 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     refreshSchema: async (id, database) => {
       const target = database ?? get().sessions[id]?.currentDatabase ?? null
       if (!target) return
-      patch(id, (s) => ({ ...s, schemaLoading: true }))
+      patch(id, (s) => ({ ...s, schemaLoading: { ...s.schemaLoading, [target]: true } }))
       try {
         const snapshot = await mysqlApi.schema(id, target)
         patch(id, (s) => ({
           ...s,
-          schemaLoading: false,
+          schemaLoading: withoutKey(s.schemaLoading, target),
           schemas: { ...s.schemas, [target]: snapshot },
         }))
       } catch (raw) {
-        patch(id, (s) => ({ ...s, schemaLoading: false, lastError: normalizeError(raw) }))
+        patch(id, (s) => ({
+          ...s,
+          schemaLoading: withoutKey(s.schemaLoading, target),
+          lastError: normalizeError(raw),
+        }))
       }
     },
 
@@ -155,11 +199,16 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
 
     applyStateEvent: (event) => patch(event.connectionId, (s) => reduceStateEvent(s, event)),
 
-    markReconnected: (id) => patch(id, (s) => ({ ...s, reconnects: s.reconnects + 1 })),
+    markReconnected: (id) => patch(id, (s) => noteRecovery(s, "result", Date.now())),
 
     disconnect: async (id) => {
       await mysqlApi.disconnect(id)
       patch(id, () => emptySession())
+    },
+
+    forget: (id) => {
+      inflight.delete(id)
+      set((state) => ({ sessions: withoutKey(state.sessions, id) }))
     },
   }
 })

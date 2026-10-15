@@ -1,7 +1,7 @@
 import { CircleSlash, Plus, Trash2 } from "lucide-react"
 import { useMemo, useState } from "react"
 import { ResultGrid, type GridSelection } from "../../components/grid/ResultGrid"
-import { parseCellInput } from "../../lib/cellEdit"
+import { NULL_INPUT, parseCellInput } from "../../lib/cellEdit"
 import {
   addInsert,
   displayRows,
@@ -72,7 +72,7 @@ export function RowsView({ tab, index, result, edit }: RowsViewProps) {
 
   const setNull = () => {
     if (!selection || !selectedRow || selectedRow.deleted) return
-    const error = commit(selectedRow, selection.col, "NULL")
+    const error = commit(selectedRow, selection.col, NULL_INPUT)
     if (error) toast(error, "danger")
   }
 
@@ -111,6 +111,7 @@ export function RowsView({ tab, index, result, edit }: RowsViewProps) {
               className="q-button q-button--ghost"
               disabled={!selectedRow || selectedRow.deleted || !selectedNullable}
               onClick={setNull}
+              title={`Same as typing ${NULL_INPUT} in the cell`}
             >
               <CircleSlash size={12} strokeWidth={2.2} />
               Set NULL
@@ -127,11 +128,12 @@ export function RowsView({ tab, index, result, edit }: RowsViewProps) {
           connectionId={tab.connectionId}
           result={result}
           allowFull={tab.results.length === 1}
-          database={tab.database ?? null}
+          database={tab.ranDatabase}
         />
       </div>
       <ResultGrid
         key={`${tab.runId}-${index}`}
+        widthKey={`${tab.id}:${index}`}
         columns={result.columns}
         sourceRows={result.rows}
         rows={rows}

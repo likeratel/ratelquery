@@ -9,6 +9,13 @@ use crate::error::AppError;
 /// because of inactivity.
 const CONNECTION_ERROR_CODES: [u16; 3] = [2006, 2013, 4031];
 const CONNECTION_RESET_TEXT: &str = "connection reset";
+/// `ER_DBACCESS_DENIED_ERROR` (no access, which is also what a missing database looks like
+/// without global privileges) and `ER_BAD_DB_ERROR` (unknown database).
+const UNUSABLE_DATABASE_CODES: [u16; 2] = [1044, 1049];
+
+/// Message for a non-read statement whose connection dropped while it ran.
+pub const UNKNOWN_OUTCOME: &str = "The server dropped the connection while the statement was \
+     running; it may or may not have been applied. Check the data before running it again.";
 
 pub fn is_connection_error_code(number: u16) -> bool {
     CONNECTION_ERROR_CODES.contains(&number)
@@ -25,14 +32,21 @@ fn mysql_error(err: &sqlx::Error) -> Option<&MySqlDatabaseError> {
     }
 }
 
+/// Connection-level errors are retryable. A server (`Database`) error is classified by its
+/// error number only: its message can quote user text such as `connection reset`. The message
+/// is only inspected for driver-side errors (protocol, TLS, ...).
 pub fn is_connection_error(err: &sqlx::Error) -> bool {
     match err {
         sqlx::Error::Io(_) | sqlx::Error::PoolClosed | sqlx::Error::PoolTimedOut => true,
-        _ => {
+        sqlx::Error::Database(_) => {
             mysql_error(err).is_some_and(|db| is_connection_error_code(db.number()))
-                || mentions_connection_reset(&err.to_string())
         }
+        _ => mentions_connection_reset(&err.to_string()),
     }
+}
+
+pub fn is_unusable_database(err: &sqlx::Error) -> bool {
+    mysql_error(err).is_some_and(|db| UNUSABLE_DATABASE_CODES.contains(&db.number()))
 }
 
 /// MySQL errors start with the server's message text, followed by the error number.
@@ -108,6 +122,45 @@ mod tests {
         assert!(is_connection_error_code(2013));
         assert!(is_connection_error_code(4031));
         assert!(!is_connection_error_code(1146));
+    }
+
+    #[derive(Debug)]
+    struct FakeDbError(&'static str);
+
+    impl std::fmt::Display for FakeDbError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for FakeDbError {}
+
+    impl sqlx::error::DatabaseError for FakeDbError {
+        fn message(&self) -> &str {
+            self.0
+        }
+        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+            self
+        }
+        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+            self
+        }
+        fn kind(&self) -> sqlx::error::ErrorKind {
+            sqlx::error::ErrorKind::Other
+        }
+    }
+
+    #[test]
+    fn database_errors_never_match_on_message_text() {
+        let err = sqlx::Error::Database(Box::new(FakeDbError(
+            "Unknown column 'connection reset' in 'field list'",
+        )));
+        assert!(!is_connection_error(&err));
+        assert_eq!(OpError::Sql(err).into_app_error().kind(), "query");
+        assert!(is_connection_error(&sqlx::Error::Tls("connection reset by peer".into())));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::time::Instant;
@@ -70,7 +71,10 @@ impl<W: Write> RowWriter<W> {
                 Inner::Csv(Box::new(writer))
             }
             ExportFormat::Json => {
-                let keys = columns.iter().map(serde_json::to_string).collect::<Result<_, _>>()?;
+                let keys = unique_keys(columns)
+                    .iter()
+                    .map(serde_json::to_string)
+                    .collect::<Result<_, _>>()?;
                 Inner::Json { out, keys }
             }
             ExportFormat::Sql => {
@@ -140,26 +144,57 @@ impl<W: Write> RowWriter<W> {
     }
 }
 
+/// JSON object keys for `columns`: a repeated name gets the first free `_2`, `_3`, ...
+/// suffix (never colliding with another column's real name) so no value is lost.
+pub fn unique_keys(columns: &[String]) -> Vec<String> {
+    let originals: HashSet<&str> = columns.iter().map(String::as_str).collect();
+    let mut taken: HashSet<String> = HashSet::new();
+    columns
+        .iter()
+        .map(|name| {
+            let key = if taken.contains(name) {
+                (2..)
+                    .map(|n| format!("{name}_{n}"))
+                    .find(|k| !taken.contains(k) && !originals.contains(k.as_str()))
+                    .unwrap_or_else(|| name.clone())
+            } else {
+                name.clone()
+            };
+            taken.insert(key.clone());
+            key
+        })
+        .collect()
+}
+
+/// A row writer streaming into an [`AtomicFile`]. The writer field is declared first so that
+/// on an early return it is dropped (and its buffer flushed or discarded) before the temp
+/// file is removed.
+pub struct FileRowWriter {
+    writer: RowWriter<BufWriter<File>>,
+    atomic: AtomicFile,
+}
+
+impl FileRowWriter {
+    pub fn write_row(&mut self, cells: &[Cell]) -> AppResult<()> {
+        self.writer.write_row(cells)
+    }
+
+    /// Finishes the writer and moves the file into place; returns rows and bytes.
+    pub fn commit(self) -> AppResult<(u64, u64)> {
+        let FileRowWriter { writer, atomic } = self;
+        let (buffered, rows, bytes) = writer.finish()?;
+        let file = buffered.into_inner().map_err(|e| AppError::Io(e.error().to_string()))?;
+        atomic.commit(file)?;
+        Ok((rows, bytes))
+    }
+}
+
 /// Opens an atomic target file wrapped in a buffered row writer.
-pub fn open_file_writer(
-    columns: &[String],
-    options: &ExportOptions,
-) -> AppResult<(AtomicFile, RowWriter<BufWriter<File>>)> {
+pub fn open_file_writer(columns: &[String], options: &ExportOptions) -> AppResult<FileRowWriter> {
     let target = validate_target(&options.path)?;
     let (atomic, file) = AtomicFile::create(&target)?;
     let writer = RowWriter::new(BufWriter::with_capacity(BUFFER_SIZE, file), columns, options)?;
-    Ok((atomic, writer))
-}
-
-/// Finishes the writer and moves the file into place.
-pub fn commit_file_writer(
-    atomic: AtomicFile,
-    writer: RowWriter<BufWriter<File>>,
-) -> AppResult<(u64, u64)> {
-    let (buffered, rows, bytes) = writer.finish()?;
-    let file = buffered.into_inner().map_err(|e| AppError::Io(e.error().to_string()))?;
-    atomic.commit(file)?;
-    Ok((rows, bytes))
+    Ok(FileRowWriter { writer, atomic })
 }
 
 /// `export_rows`: writes rows already held by the frontend.
@@ -170,11 +205,11 @@ pub fn export_rows(
 ) -> AppResult<ExportResult> {
     let start = Instant::now();
     let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
-    let (atomic, mut writer) = open_file_writer(&names, options)?;
+    let mut writer = open_file_writer(&names, options)?;
     for row in rows {
         writer.write_row(row)?;
     }
-    let (rows, bytes) = commit_file_writer(atomic, writer)?;
+    let (rows, bytes) = writer.commit()?;
     let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     Ok(ExportResult { rows, bytes, elapsed_ms })
 }
@@ -239,6 +274,42 @@ mod tests {
             "INSERT INTO `export` (`id`, `na\"me`) VALUES (1, 'a,b \\\"q\\\"');\n\
              INSERT INTO `export` (`id`, `na\"me`) VALUES (99999999999999999999, NULL);\n"
         );
+    }
+
+    #[test]
+    fn json_suffixes_duplicate_column_names() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(unique_keys(&names(&["id", "id", "name"])), names(&["id", "id_2", "name"]));
+        assert_eq!(
+            unique_keys(&names(&["id", "id", "id_2", "id"])),
+            names(&["id", "id_3", "id_2", "id_4"])
+        );
+        let columns = names(&["id", "id"]);
+        let mut writer =
+            RowWriter::new(Vec::new(), &columns, &options(ExportFormat::Json)).unwrap();
+        writer.write_row(&[Cell::Int("1".into()), Cell::Int("2".into())]).unwrap();
+        let text = String::from_utf8(writer.finish().unwrap().0).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed, serde_json::json!([{ "id": 1, "id_2": 2 }]));
+    }
+
+    #[test]
+    fn failed_export_leaves_no_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.csv");
+        let opts = ExportOptions {
+            path: path.to_string_lossy().into_owned(),
+            ..options(ExportFormat::Csv)
+        };
+        let columns = vec![ColumnInfo {
+            name: "a".into(),
+            type_name: "INT".into(),
+            table: None,
+            nullable: true,
+        }];
+        let err = export_rows(&columns, &[vec![Cell::Null], vec![]], &opts).unwrap_err();
+        assert_eq!(err.kind(), "invalid_input");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]

@@ -4,6 +4,7 @@ import type {
   ConnectionId,
   DynamoConnectionConfig,
   MysqlConnectionConfig,
+  MysqlTlsMode,
 } from "../../lib/connections"
 import { HEX_COLOR } from "./colors"
 
@@ -22,6 +23,18 @@ export interface MysqlDraft {
   password: string
   database: string
   color: string
+  tls: MysqlTlsMode
+  /** CA certificate path; only sent with the verify modes. */
+  caCertPath: string
+}
+
+export const DEFAULT_TLS: MysqlTlsMode = "preferred"
+
+export const TLS_MODES = ["preferred", "required", "verify_ca", "verify_identity"] as const
+
+/** Modes that check the server certificate, and may take a custom CA. */
+export function verifiesCertificate(mode: MysqlTlsMode): boolean {
+  return mode === "verify_ca" || mode === "verify_identity"
 }
 
 export interface DynamoDraft {
@@ -100,6 +113,8 @@ export const mysqlFormSchema = z.object({
   password: z.string(),
   database: optionalText,
   color: colorField,
+  tls: z.enum(TLS_MODES),
+  caCertPath: optionalText,
 })
 
 const dynamoBase = {
@@ -132,6 +147,8 @@ export function emptyForm(kind: ConnectionKind = "mysql"): ConnectionForm {
       password: "",
       database: "",
       color: "",
+      tls: DEFAULT_TLS,
+      caCertPath: "",
     },
     dynamodb: {
       name: "",
@@ -160,6 +177,8 @@ export function formFromConfig(config: ConnectionConfig): ConnectionForm {
         password: "",
         database: config.database ?? "",
         color: config.color ?? "",
+        tls: config.tls ?? DEFAULT_TLS,
+        caCertPath: config.caCertPath ?? "",
       },
     }
   }
@@ -189,11 +208,53 @@ function idFor(context: FormContext, kind: ConnectionKind): ConnectionId {
   return context.original?.kind === kind ? context.original.id : ""
 }
 
+export const MYSQL_SECRET_AGAIN = "Enter the password again for the new server"
+export const DYNAMO_SECRET_AGAIN = "Enter the secret access key again for the new endpoint or key"
+
+/**
+ * A blank secret (`null`) keeps the stored one. When the edit points the connection somewhere
+ * else (another host, port or user; another region, endpoint or access key ID), that stored
+ * secret must not travel to the new target, and the backend rejects the request. Returns the
+ * field error to show instead of sending it, or null when the request is fine.
+ */
+export function secretReentryError(
+  config: ConnectionConfig,
+  secret: string | null,
+  context: FormContext,
+): FieldErrors | null {
+  const original = context.original
+  if (secret !== null || !context.hasStoredSecret) return null
+  if (config.kind === "mysql" && original?.kind === "mysql") {
+    const moved =
+      config.host !== original.host ||
+      config.port !== original.port ||
+      config.user !== original.user
+    return moved ? { password: MYSQL_SECRET_AGAIN } : null
+  }
+  if (config.kind === "dynamodb" && original?.kind === "dynamodb") {
+    // Only access keys reuse a stored secret; a profile reads credentials from the AWS config.
+    if (config.auth.type !== "keys" || original.auth.type !== "keys") return null
+    const moved =
+      config.region !== original.region ||
+      (config.endpoint ?? "") !== (original.endpoint ?? "") ||
+      config.auth.accessKeyId !== original.auth.accessKeyId
+    return moved ? { secretAccessKey: DYNAMO_SECRET_AGAIN } : null
+  }
+  return null
+}
+
 function parseMysql(draft: MysqlDraft, context: FormContext): ParseResult {
   const result = mysqlFormSchema.safeParse(draft)
   if (!result.success) return { ok: false, errors: collectErrors(result.error) }
-  const { password, ...values } = result.data
-  const config: MysqlConnectionConfig = { kind: "mysql", id: idFor(context, "mysql"), ...values }
+  const { password, tls, caCertPath, ...values } = result.data
+  const config: MysqlConnectionConfig = {
+    kind: "mysql",
+    id: idFor(context, "mysql"),
+    ...values,
+    // "preferred" is the backend default; leaving it out keeps older configs unchanged.
+    tls: tls === DEFAULT_TLS ? undefined : tls,
+    caCertPath: verifiesCertificate(tls) ? caCertPath : undefined,
+  }
   // Blank password keeps whatever is stored (or stores nothing for a new connection).
   return { ok: true, config, secret: password === "" ? null : password }
 }
@@ -237,6 +298,36 @@ function stripUndefined<T extends object>(value: T): T {
 export function parseForm(form: ConnectionForm, context: FormContext): ParseResult {
   const result =
     form.kind === "mysql" ? parseMysql(form.mysql, context) : parseDynamo(form.dynamodb, context)
+  if (!result.ok) return result
+  const reentry = secretReentryError(result.config, result.secret, context)
+  if (reentry) return { ok: false, errors: reentry }
   // Drop undefined optional keys so the IPC payload matches the contract exactly.
-  return result.ok ? { ...result, config: stripUndefined(result.config) } : result
+  return { ...result, config: stripUndefined(result.config) }
+}
+
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "[::1]", "::1"])
+
+function isLoopback(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  return LOOPBACK_HOSTS.has(host) || /^127(\.\d{1,3}){3}$/.test(host)
+}
+
+export const INSECURE_ENDPOINT_WARNING =
+  "This endpoint uses plain HTTP, so requests and AWS signatures cross the network unencrypted. Use https:// for anything but a local DynamoDB."
+
+/**
+ * Warning for an `http://` endpoint that isn't on this machine. DynamoDB Local on localhost is
+ * the expected plain-HTTP case; anything else is allowed but called out.
+ */
+export function insecureEndpointWarning(endpoint: string): string | null {
+  const value = endpoint.trim()
+  if (value === "") return null
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return null
+  }
+  if (url.protocol !== "http:" || isLoopback(url.hostname)) return null
+  return INSECURE_ENDPOINT_WARNING
 }

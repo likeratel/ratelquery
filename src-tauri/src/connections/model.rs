@@ -1,5 +1,25 @@
 use serde::{Deserialize, Serialize};
 
+/// MySQL TLS mode, mapped onto sqlx `MySqlSslMode`.
+/// `preferred` and `required` encrypt without verifying the certificate; `verify_ca` checks the
+/// chain (against `caCertPath`, or the bundled Mozilla roots when absent); `verify_identity`
+/// also checks the host name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MysqlTlsMode {
+    #[default]
+    Preferred,
+    Required,
+    VerifyCa,
+    VerifyIdentity,
+}
+
+impl MysqlTlsMode {
+    pub fn verifies_certificate(self) -> bool {
+        matches!(self, MysqlTlsMode::VerifyCa | MysqlTlsMode::VerifyIdentity)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MysqlConnectionConfig {
@@ -13,6 +33,18 @@ pub struct MysqlConnectionConfig {
     pub database: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Absent means `preferred`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<MysqlTlsMode>,
+    /// PEM file with the CA certificate(s) for `verify_ca` / `verify_identity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert_path: Option<String>,
+}
+
+impl MysqlConnectionConfig {
+    pub fn tls_mode(&self) -> MysqlTlsMode {
+        self.tls.unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +133,21 @@ mod tests {
         let config: ConnectionConfig = serde_json::from_value(value.clone()).unwrap();
         assert!(matches!(&config, ConnectionConfig::Mysql(c) if c.port == 3307));
         assert_eq!(serde_json::to_value(&config).unwrap(), value);
+    }
+
+    #[test]
+    fn mysql_tls_fields_round_trip() {
+        let value = json!({
+            "kind": "mysql", "id": "a", "name": "rds", "host": "db.example.com", "port": 3306,
+            "user": "app", "tls": "verify_identity", "caCertPath": "/etc/ssl/rds.pem"
+        });
+        let config: ConnectionConfig = serde_json::from_value(value.clone()).unwrap();
+        let ConnectionConfig::Mysql(c) = &config else { panic!("expected mysql") };
+        assert_eq!(c.tls_mode(), MysqlTlsMode::VerifyIdentity);
+        assert_eq!(serde_json::to_value(&config).unwrap(), value);
+        let bad = json!({ "kind": "mysql", "id": "a", "name": "n", "host": "h", "port": 1,
+                          "user": "u", "tls": "sometimes" });
+        assert!(serde_json::from_value::<ConnectionConfig>(bad).is_err());
     }
 
     #[test]

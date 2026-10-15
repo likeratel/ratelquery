@@ -1,19 +1,22 @@
-import { PanelLeft, Plus, X } from "lucide-react"
+import { Cloud, Database, PanelLeft, Plus, X } from "lucide-react"
 import type { MouseEvent } from "react"
 import { closeQueryTab, newTabFromActive } from "../../features/query"
-import { isTabDirty, type QueryTab } from "../../lib/queryTabs"
+import { isWorkspaceTabDirty, type WorkspaceTab } from "../../lib/queryTabs"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useTabsStore } from "../../state/tabsStore"
 import { useUiStore } from "../../state/uiStore"
 
 const MIDDLE_BUTTON = 1
 
-function TabItem({ tab, active }: { tab: QueryTab; active: boolean }) {
+const KIND_LABEL: Record<WorkspaceTab["kind"], string> = { query: "SQL", dynamo: "DynamoDB" }
+
+function TabItem({ tab, active }: { tab: WorkspaceTab; active: boolean }) {
   const activate = useTabsStore((s) => s.activate)
   const connection = useConnectionsStore((s) =>
     s.connections.find((c) => c.id === tab.connectionId),
   )
-  const dirty = isTabDirty(tab)
+  const dirty = isWorkspaceTabDirty(tab)
+  const KindIcon = tab.kind === "dynamo" ? Cloud : Database
 
   const onAuxClick = (event: MouseEvent) => {
     if (event.button === MIDDLE_BUTTON) {
@@ -28,7 +31,7 @@ function TabItem({ tab, active }: { tab: QueryTab; active: boolean }) {
       role="tab"
       aria-selected={active}
       tabIndex={active ? 0 : -1}
-      title={connection ? `${tab.title} · ${connection.name}` : tab.title}
+      title={[tab.title, KIND_LABEL[tab.kind], connection?.name].filter(Boolean).join(" · ")}
       onMouseDown={(event) => {
         if (event.button === MIDDLE_BUTTON) event.preventDefault()
         else if (event.button === 0) activate(tab.id)
@@ -38,6 +41,12 @@ function TabItem({ tab, active }: { tab: QueryTab; active: boolean }) {
       <span
         className="tab__color"
         style={connection?.color ? { background: connection.color } : undefined}
+      />
+      <KindIcon
+        size={12}
+        strokeWidth={1.9}
+        className="tab__kind"
+        aria-label={KIND_LABEL[tab.kind]}
       />
       <span className="tab__title">{tab.title}</span>
       <span className="tab__trail" data-dirty={dirty || undefined}>
@@ -63,7 +72,7 @@ export function TabBar() {
   const activeId = useTabsStore((s) => s.activeId)
   return (
     <div className="tabbar" data-tauri-drag-region>
-      <div className="tabbar__tabs" role="tablist" aria-label="Query tabs">
+      <div className="tabbar__tabs" role="tablist" aria-label="Tabs">
         {tabs.map((tab) => (
           <TabItem key={tab.id} tab={tab} active={tab.id === activeId} />
         ))}
@@ -72,8 +81,8 @@ export function TabBar() {
             type="button"
             className="icon-button tabbar__new"
             onClick={newTabFromActive}
-            aria-label="New query tab"
-            title="New query tab"
+            aria-label="New tab"
+            title="New tab on the same connection"
           >
             <Plus size={14} strokeWidth={2} />
           </button>

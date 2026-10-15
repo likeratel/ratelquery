@@ -62,7 +62,7 @@ impl MysqlSessions {
                 spawn_ping(&session, self.ping_interval);
                 let previous = self.sessions.write().await.insert(id.to_string(), session);
                 if let Some(previous) = previous {
-                    previous.close().await;
+                    previous.shutdown();
                 }
                 self.emit(id, SessionState::Connected, None);
                 Ok(info)
@@ -115,11 +115,12 @@ impl MysqlSessions {
         self.sessions.read().await.contains_key(id)
     }
 
-    /// Closes the session if open. Closing an unknown id is a no-op.
+    /// Closes the session if open without waiting for running queries (they finish on their
+    /// own connection; the pool closes afterwards). Closing an unknown id is a no-op.
     pub async fn disconnect(&self, id: &str) {
         let removed = self.sessions.write().await.remove(id);
         if let Some(session) = removed {
-            session.close().await;
+            session.shutdown();
             self.emit(id, SessionState::Disconnected, None);
         }
     }

@@ -2,8 +2,11 @@ import { useVirtualizer } from "@tanstack/react-virtual"
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react"
 import { cellToEditText } from "../../lib/cellEdit"
 import { cellTone, formatCell } from "../../lib/cellFormat"
+import { copyText } from "../../lib/gridCopy"
 import type { DisplayRow } from "../../lib/gridEdits"
 import type { Cell, ColumnInfo } from "../../lib/mysql"
+import { matchesShortcut, parseShortcut } from "../../lib/shortcuts"
+import { showToast } from "../ui/toastStore"
 import { CellEditor } from "./CellEditor"
 import { useColumnWidths } from "./useColumnWidths"
 import "./grid.css"
@@ -11,6 +14,10 @@ import "./grid.css"
 export const ROW_HEIGHT = 26
 const GUTTER_WIDTH = 52
 const OVERSCAN = 12
+
+/** Mod+C copies the selected cell; Mod+Shift+C copies its whole row, tab separated. */
+export const COPY_CELL_SHORTCUT = parseShortcut("Mod+C")
+export const COPY_ROW_SHORTCUT = parseShortcut("Mod+Shift+C")
 
 export interface GridSelection {
   row: number
@@ -29,6 +36,22 @@ export interface ResultGridProps {
   onCommit?: (row: DisplayRow, col: number, text: string) => string | null
   /** Text shown for unset cells of inserted rows, per column (e.g. "default", "auto"). */
   insertPlaceholder?: (col: number) => string
+  /** Identity of the grid (tab and result); resized column widths are kept per key. */
+  widthKey?: string
+}
+
+function copyToClipboard(text: string): void {
+  if (!navigator.clipboard) {
+    showToast({ tone: "error", message: "The clipboard isn't available here" })
+    return
+  }
+  navigator.clipboard.writeText(text).catch((error: unknown) => {
+    showToast({
+      tone: "error",
+      message: "Couldn't copy to the clipboard",
+      detail: error instanceof Error ? error.message : undefined,
+    })
+  })
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
@@ -36,7 +59,7 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 export function ResultGrid(props: ResultGridProps) {
   const { columns, sourceRows, rows, editable, selection, onSelect, onCommit } = props
   const scrollRef = useRef<HTMLDivElement>(null)
-  const { widths, resize } = useColumnWidths(columns, sourceRows)
+  const { widths, resize } = useColumnWidths(columns, sourceRows, props.widthKey)
   const [editing, setEditing] = useState<GridSelection | null>(null)
 
   const virtualizer = useVirtualizer({
@@ -67,8 +90,22 @@ export function ResultGrid(props: ResultGridProps) {
     })
   }
 
+  /** Copies the selected cell (or its row); returns false when there is nothing to copy. */
+  const copySelection = (wholeRow: boolean): boolean => {
+    const row = selection ? rows[selection.row] : undefined
+    if (!selection || !row) return false
+    copyToClipboard(copyText(wholeRow ? row.cells : [row.cells[selection.col]]))
+    return true
+  }
+
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Keys typed into the cell editor keep their default behaviour, copy included.
     if (event.target !== event.currentTarget || rows.length === 0) return
+    const wholeRow = matchesShortcut(event, COPY_ROW_SHORTCUT)
+    if (wholeRow || matchesShortcut(event, COPY_CELL_SHORTCUT)) {
+      if (copySelection(wholeRow)) event.preventDefault()
+      return
+    }
     if (event.metaKey || event.ctrlKey || event.altKey) return
     const steps: Record<string, [number, number]> = {
       ArrowUp: [-1, 0],

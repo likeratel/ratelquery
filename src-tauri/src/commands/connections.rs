@@ -17,12 +17,18 @@ pub async fn connections_save(
     config: ConnectionConfig,
     secret: Option<String>,
 ) -> AppResult<ConnectionConfig> {
-    state.connections.save(&config, secret.as_deref())
+    let saved = state.connections.save(&config, secret.as_deref())?;
+    // A cached DynamoDB client would keep the old region, endpoint or credentials.
+    state.dynamo.remove(saved.id()).await;
+    Ok(saved)
 }
 
+/// Closes any open session first (without waiting for running queries), then removes the
+/// keyring entry and the config.
 #[tauri::command]
 pub async fn connections_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
     state.mysql.disconnect(&id).await;
+    state.dynamo.remove(&id).await;
     state.connections.delete(&id)
 }
 
@@ -38,7 +44,7 @@ pub async fn connections_test(
     secret: Option<String>,
 ) -> AppResult<ConnectionTestResult> {
     let config = validate_config(&config)?;
-    let secret = state.connections.resolve_secret(config.id(), secret.as_deref())?;
+    let secret = state.connections.resolve_test_secret(&config, secret.as_deref())?;
     match &config {
         ConnectionConfig::Mysql(c) => probe_mysql(c, secret.as_deref()).await,
         ConnectionConfig::Dynamodb(c) => probe_dynamodb(c, secret.as_deref()).await,

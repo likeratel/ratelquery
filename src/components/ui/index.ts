@@ -1,5 +1,5 @@
 export { Button, type ButtonVariant } from "./Button"
-export { Dialog } from "./Dialog"
+export { Dialog, isModalOpen } from "./Dialog"
 export { Menu, type MenuItem } from "./Menu"
 export { SegmentedControl, type SegmentOption } from "./SegmentedControl"
 export { TextField } from "./TextField"

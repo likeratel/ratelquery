@@ -9,10 +9,10 @@ mod validate;
 
 pub use model::{
     ConnectionConfig, ConnectionTestResult, DynamoAuth, DynamoConnectionConfig,
-    MysqlConnectionConfig,
+    MysqlConnectionConfig, MysqlTlsMode,
 };
 pub use probe::{probe_dynamodb, probe_mysql};
 pub use secrets::{KeyringSecretStore, MemorySecretStore, SecretStore};
 pub use service::ConnectionsService;
 pub use store::ConnectionStore;
-pub use validate::validate_config;
+pub use validate::{same_target, validate_config};

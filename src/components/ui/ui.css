@@ -332,6 +332,10 @@
   border-left-color: var(--ok);
 }
 
+.ui-toast[data-tone="warning"] {
+  border-left-color: var(--warn);
+}
+
 .ui-toast[data-tone="error"] {
   border-left-color: var(--danger);
 }

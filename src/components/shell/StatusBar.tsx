@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react"
 import { formatElapsed } from "../../lib/cellFormat"
 import { isTauri } from "@tauri-apps/api/core"
+import { DynamoStatus } from "../../features/dynamo"
+import type { MysqlTlsMode } from "../../lib/connections"
 import { ipc } from "../../lib/ipc"
-import type { MysqlSession } from "../../state/sessionsStore"
 import { useConnectionsStore } from "../../state/connectionsStore"
-import { useSessionsStore } from "../../state/sessionsStore"
+import { isSchemaLoading, useSessionsStore, type MysqlSession } from "../../state/sessionsStore"
 import { selectActiveTab, useTabsStore } from "../../state/tabsStore"
+import { showToast } from "../ui"
 
 interface AppInfo {
   name: string
@@ -18,6 +20,13 @@ const STATE_LABELS: Record<MysqlSession["state"], string> = {
   reconnecting: "Reconnecting",
   disconnected: "Disconnected",
   error: "Connection error",
+}
+
+const TLS_LABELS: Record<MysqlTlsMode, string> = {
+  preferred: "TLS preferred",
+  required: "TLS required",
+  verify_ca: "TLS verify CA",
+  verify_identity: "TLS verify identity",
 }
 
 /** Replays the ripple once each time `reconnects` grows for the same connection. */
@@ -55,7 +64,8 @@ function useAppInfo(): AppInfo | null {
 
 export function StatusBar() {
   const info = useAppInfo()
-  const tab = useTabsStore(selectActiveTab)
+  const active = useTabsStore(selectActiveTab)
+  const tab = active?.kind === "query" ? active : null
   const setDatabase = useTabsStore((s) => s.setDatabase)
   const session = useSessionsStore((s) => (tab ? s.sessions[tab.connectionId] : undefined))
   const loadDatabases = useSessionsStore((s) => s.loadDatabases)
@@ -69,10 +79,23 @@ export function StatusBar() {
   const database = tab ? (tab.database ?? session?.currentDatabase ?? null) : null
   const databases = session?.databases ?? []
   const options = database && !databases.includes(database) ? [database, ...databases] : databases
+  const schemaLoading = isSchemaLoading(session, database)
+  const tls = connection?.kind === "mysql" ? (connection.tls ?? "preferred") : null
+
+  const changeDatabase = (tabId: string, next: string | null) => {
+    if (!setDatabase(tabId, next)) {
+      showToast({
+        tone: "info",
+        message: "Apply or discard pending changes before switching databases",
+      })
+    }
+  }
 
   return (
     <footer className="statusbar">
-      {tab ? (
+      {active?.kind === "dynamo" ? (
+        <DynamoStatus tab={active} />
+      ) : tab ? (
         <>
           <span
             className="statusbar__item"
@@ -86,6 +109,7 @@ export function StatusBar() {
           {session?.serverVersion && (
             <span className="statusbar__item">MySQL {session.serverVersion}</span>
           )}
+          {tls && <span className="statusbar__item">{TLS_LABELS[tls]}</span>}
           <label className="statusbar__item statusbar__db">
             <span className="statusbar__label">Database</span>
             <select
@@ -94,7 +118,7 @@ export function StatusBar() {
               onFocus={() => {
                 if (databases.length === 0) void loadDatabases(tab.connectionId)
               }}
-              onChange={(event) => setDatabase(tab.id, event.target.value || null)}
+              onChange={(event) => changeDatabase(tab.id, event.target.value || null)}
             >
               <option value="">None</option>
               {options.map((name) => (
@@ -108,11 +132,11 @@ export function StatusBar() {
             <button
               type="button"
               className="statusbar__link"
-              disabled={session?.schemaLoading}
+              disabled={schemaLoading}
               onClick={() => void refreshSchema(tab.connectionId, database)}
               title="Reload tables and columns for completion and editing"
             >
-              {session?.schemaLoading ? "Loading schema…" : "Refresh schema"}
+              {schemaLoading ? "Loading schema…" : "Refresh schema"}
             </button>
           )}
           {tab.lastElapsedMs !== null && (

@@ -1,14 +1,12 @@
 import { Plus } from "lucide-react"
 import { useEffect } from "react"
 import {
-  ConnectionDialog,
   ConnectionList,
   NEW_CONNECTION_SHORTCUT,
   useNewConnectionShortcut,
 } from "../../features/connections"
 import { formatShortcut } from "../../lib/shortcuts"
 import { useConnectionsStore } from "../../state/connectionsStore"
-import { Toaster } from "../ui"
 
 interface SidebarProps {
   /** Optional extra callback; the dialog itself is opened through the connections store. */
@@ -50,8 +48,6 @@ export function Sidebar({ onAddConnection, inert = false }: SidebarProps) {
       <div className="sidebar__body">
         <ConnectionList />
       </div>
-      <ConnectionDialog />
-      <Toaster />
     </aside>
   )
 }

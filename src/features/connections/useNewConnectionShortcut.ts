@@ -1,4 +1,5 @@
 import { useEffect } from "react"
+import { isModalOpen } from "../../components/ui"
 import { matchesShortcut, parseShortcut } from "../../lib/shortcuts"
 import { useConnectionsStore } from "../../state/connectionsStore"
 
@@ -10,6 +11,8 @@ export function useNewConnectionShortcut(): void {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.repeat || !matchesShortcut(event, NEW_CONNECTION_SHORTCUT)) return
       event.preventDefault()
+      // Another modal (or this one) is open; the page behind it is inert.
+      if (isModalOpen()) return
       const { dialog, openDialog } = useConnectionsStore.getState()
       if (!dialog.open) openDialog()
     }

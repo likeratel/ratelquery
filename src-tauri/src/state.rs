@@ -4,12 +4,14 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 use crate::connections::{ConnectionStore, ConnectionsService, SecretStore};
+use crate::dynamo::DynamoClients;
 use crate::mysql::{MysqlSessions, MysqlStateEvent, STATE_EVENT, StateSink};
 
 /// Managed Tauri state shared by all commands.
 pub struct AppState {
     pub connections: ConnectionsService,
     pub mysql: MysqlSessions,
+    pub dynamo: DynamoClients,
 }
 
 impl AppState {
@@ -17,6 +19,7 @@ impl AppState {
         Self {
             connections: ConnectionsService::new(ConnectionStore::new(config_dir), secrets),
             mysql: MysqlSessions::new(sink),
+            dynamo: DynamoClients::new(),
         }
     }
 }

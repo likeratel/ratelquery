@@ -19,6 +19,8 @@ export interface KeyLike {
   ctrlKey: boolean
   shiftKey: boolean
   altKey: boolean
+  /** True for auto-repeat events while the key is held down. */
+  repeat?: boolean
 }
 
 const SINGLE_CHAR_CODES: Record<string, string> = {

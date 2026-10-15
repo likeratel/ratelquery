@@ -27,6 +27,8 @@ pub struct MysqlSession {
     /// Set when the session observed a lost connection; the next successful result reports
     /// `reconnected: true` and clears it.
     lost: AtomicBool,
+    /// Set once the session left the registry; later state changes are not reported.
+    closed: AtomicBool,
     state: Mutex<SessionState>,
     sink: Arc<dyn StateSink>,
     ping_task: Mutex<Option<AbortHandle>>,
@@ -44,6 +46,7 @@ impl MysqlSession {
             pool,
             default_database,
             lost: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
             state: Mutex::new(SessionState::Connected),
             sink,
             ping_task: Mutex::new(None),
@@ -62,8 +65,12 @@ impl MysqlSession {
         self.default_database.as_deref()
     }
 
-    /// Emits a state event when the state changes.
+    /// Emits a state event when the state changes. A closed session stays silent so a query
+    /// that finishes after `mysql_disconnect` cannot report a stale state.
     pub fn set_state(&self, state: SessionState, message: Option<String>) {
+        if self.closed.load(Ordering::SeqCst) {
+            return;
+        }
         let changed = match self.state.lock() {
             Ok(mut current) => {
                 let changed = *current != state;
@@ -75,6 +82,11 @@ impl MysqlSession {
         if changed {
             self.sink.emit(MysqlStateEvent { connection_id: self.id.clone(), state, message });
         }
+    }
+
+    /// A round trip succeeded: leaves `error` / `reconnecting` (e.g. after a failed ping).
+    pub fn mark_healthy(&self) {
+        self.set_state(SessionState::Connected, None);
     }
 
     pub fn mark_lost(&self) {
@@ -114,7 +126,10 @@ impl MysqlSession {
         let pending = self.take_lost();
         let first = self.attempt(&op).await;
         match first {
-            Ok(value) => Ok((value, pending)),
+            Ok(value) => {
+                self.mark_healthy();
+                Ok((value, pending))
+            }
             Err(err) if err.is_connection_level() => self.retry(&op, err).await,
             Err(err) => {
                 if pending {
@@ -180,13 +195,18 @@ impl MysqlSession {
         }
     }
 
-    pub async fn close(&self) {
+    /// Stops the health check and closes the pool in the background: `pool.close()` waits for
+    /// checked-out connections, and a disconnect must not block on a running query. New
+    /// acquires fail immediately with `PoolClosed`.
+    pub fn shutdown(&self) {
+        self.closed.store(true, Ordering::SeqCst);
         if let Ok(mut task) = self.ping_task.lock()
             && let Some(handle) = task.take()
         {
             handle.abort();
         }
-        self.pool.close().await;
+        let pool = self.pool.clone();
+        tokio::spawn(async move { pool.close().await });
     }
 }
 

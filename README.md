@@ -26,6 +26,8 @@ pnpm format:check   # Prettier
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+Live database tests are skipped unless `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample` and `DBCLIENT_TEST_DYNAMODB_ENDPOINT=http://localhost:8000` are set (optional: `DBCLIENT_TEST_MYSQL_CA=<server ca.pem>`).
+
 ## Renaming
 
 The product name lives in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` and `src/appMeta.ts`.

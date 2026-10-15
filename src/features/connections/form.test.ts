@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest"
 import type { ConnectionConfig } from "../../lib/connections"
-import { emptyForm, formFromConfig, mysqlFormSchema, parseForm, type ConnectionForm } from "./form"
+import {
+  DYNAMO_SECRET_AGAIN,
+  emptyForm,
+  formFromConfig,
+  insecureEndpointWarning,
+  MYSQL_SECRET_AGAIN,
+  mysqlFormSchema,
+  parseForm,
+  type ConnectionForm,
+} from "./form"
 
 const NEW = { hasStoredSecret: false }
 
@@ -161,5 +170,135 @@ describe("formFromConfig", () => {
       config,
       secret: null,
     })
+  })
+})
+
+describe("TLS settings", () => {
+  it("defaults to preferred and leaves it out of the payload", () => {
+    expect(emptyForm().mysql.tls).toBe("preferred")
+    const result = parseForm(mysqlForm({ caCertPath: "/ca.pem" }), NEW)
+    expect(result.ok && Object.keys(result.config)).not.toContain("tls")
+    expect(result.ok && Object.keys(result.config)).not.toContain("caCertPath")
+  })
+
+  it("sends the mode, and the CA path only for the verify modes", () => {
+    const required = parseForm(mysqlForm({ tls: "required", caCertPath: "/ca.pem" }), NEW)
+    expect(required.ok && required.config).toMatchObject({ tls: "required" })
+    expect(required.ok && Object.keys(required.config)).not.toContain("caCertPath")
+    const verify = parseForm(mysqlForm({ tls: "verify_ca", caCertPath: " /etc/ca.pem " }), NEW)
+    expect(verify.ok && verify.config).toMatchObject({
+      tls: "verify_ca",
+      caCertPath: "/etc/ca.pem",
+    })
+    const noCa = parseForm(mysqlForm({ tls: "verify_identity" }), NEW)
+    expect(noCa.ok && Object.keys(noCa.config)).not.toContain("caCertPath")
+  })
+
+  it("round-trips TLS settings through the form", () => {
+    const config: ConnectionConfig = {
+      kind: "mysql",
+      id: "m1",
+      name: "Prod",
+      host: "db",
+      port: 3306,
+      user: "app",
+      tls: "verify_identity",
+      caCertPath: "/ca.pem",
+    }
+    const form = formFromConfig(config)
+    expect(form.mysql).toMatchObject({ tls: "verify_identity", caCertPath: "/ca.pem" })
+    expect(parseForm(form, { original: config, hasStoredSecret: true })).toEqual({
+      ok: true,
+      config,
+      secret: null,
+    })
+  })
+
+  it("rejects unknown modes", () => {
+    const form = mysqlForm()
+    const bad = { ...form, mysql: { ...form.mysql, tls: "off" as never } }
+    expect(parseForm(bad, NEW).ok).toBe(false)
+  })
+})
+
+describe("re-entering a secret for a new target", () => {
+  const mysql: ConnectionConfig = {
+    kind: "mysql",
+    id: "m1",
+    name: "Prod",
+    host: "db",
+    port: 3306,
+    user: "app",
+  }
+  const stored = { original: mysql, hasStoredSecret: true }
+
+  it.each([
+    ["host", { host: "evil.example" }],
+    ["port", { port: "3307" }],
+    ["user", { user: "root" }],
+  ])("asks for the password when the %s changes", (_field, patch) => {
+    const form = formFromConfig(mysql)
+    const moved = { ...form, mysql: { ...form.mysql, ...patch } }
+    expect(parseForm(moved, stored)).toEqual({
+      ok: false,
+      errors: { password: MYSQL_SECRET_AGAIN },
+    })
+  })
+
+  it("allows the change with a new password, or when nothing is stored", () => {
+    const form = formFromConfig(mysql)
+    const moved = { ...form, mysql: { ...form.mysql, host: "db2", password: "pw" } }
+    expect(parseForm(moved, stored).ok).toBe(true)
+    const blank = { ...form, mysql: { ...form.mysql, host: "db2" } }
+    expect(parseForm(blank, { original: mysql, hasStoredSecret: false }).ok).toBe(true)
+  })
+
+  it("keeps the stored password for edits that don't move the connection", () => {
+    const form = formFromConfig(mysql)
+    const renamed = { ...form, mysql: { ...form.mysql, name: "Renamed", host: " db " } }
+    expect(parseForm(renamed, stored)).toMatchObject({ ok: true, secret: null })
+  })
+
+  it("asks for the secret access key when region, endpoint or key ID changes", () => {
+    const dynamo: ConnectionConfig = {
+      kind: "dynamodb",
+      id: "d1",
+      name: "Dynamo",
+      region: "us-east-1",
+      auth: { type: "keys", accessKeyId: "AKIA" },
+    }
+    const context = { original: dynamo, hasStoredSecret: true }
+    const form = formFromConfig(dynamo)
+    for (const patch of [
+      { region: "eu-west-1" },
+      { endpoint: "https://proxy.example" },
+      { accessKeyId: "AKIB" },
+    ]) {
+      const moved = { ...form, dynamodb: { ...form.dynamodb, ...patch } }
+      expect(parseForm(moved, context)).toEqual({
+        ok: false,
+        errors: { secretAccessKey: DYNAMO_SECRET_AGAIN },
+      })
+    }
+    const withSecret = {
+      ...form,
+      dynamodb: { ...form.dynamodb, region: "eu-west-1", secretAccessKey: "s" },
+    }
+    expect(parseForm(withSecret, context).ok).toBe(true)
+  })
+})
+
+describe("insecureEndpointWarning", () => {
+  it.each([
+    ["", false],
+    ["http://localhost:8000", false],
+    ["http://127.0.0.1:8000", false],
+    ["http://[::1]:8000", false],
+    ["https://dynamodb.example.com", false],
+    ["http://dynamo.internal:8000", true],
+    ["http://10.0.0.5:8000", true],
+    ["http://localhost.example.com", true],
+  ])("%j warns: %s", (endpoint, warns) => {
+    expect(insecureEndpointWarning(endpoint) !== null).toBe(warns)
   })
 })

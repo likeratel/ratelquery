@@ -5,7 +5,9 @@ mod format;
 mod model;
 mod writer;
 
-pub use file::{AtomicFile, validate_target};
+pub use file::{AtomicFile, PathPolicy, authorize_target, validate_target};
 pub use format::{csv_field, json_value, sql_literal};
 pub use model::{ExportFormat, ExportOptions, ExportResult};
-pub use writer::{CountingWriter, RowWriter, commit_file_writer, export_rows, open_file_writer};
+pub use writer::{
+    CountingWriter, FileRowWriter, RowWriter, export_rows, open_file_writer, unique_keys,
+};

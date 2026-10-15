@@ -1,8 +1,10 @@
 //! MySQL sessions, queries, schema, grid edits and streaming export.
 
+mod binary_hint;
 mod bind;
 mod cell;
 mod changes;
+mod classify;
 mod decode;
 mod errors;
 mod events;
@@ -19,7 +21,8 @@ mod type_meta;
 pub use bind::{BindValue, to_bind_value};
 pub use cell::Cell;
 pub use changes::{BuiltStatement, apply_changes, build_statement};
-pub use errors::{describe_sqlx_error, is_connection_error};
+pub use classify::{infer_base_table, is_read_statement};
+pub use errors::{UNKNOWN_OUTCOME, describe_sqlx_error, is_connection_error};
 pub use events::{RecordingSink, STATE_EVENT, StateSink};
 pub use export::run_export;
 pub use model::{

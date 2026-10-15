@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use super::model::ConnectionConfig;
 use crate::error::{AppError, AppResult};
+use crate::fsutil::create_private;
 
 const FILE_NAME: &str = "connections.json";
 const FORMAT_VERSION: u32 = 1;
@@ -72,7 +73,7 @@ impl ConnectionStore {
 }
 
 fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = fs::File::create(path)?;
+    let mut file = create_private(path)?;
     file.write_all(bytes)?;
     file.sync_all()
 }
@@ -91,6 +92,8 @@ mod tests {
             user: "u".into(),
             database: None,
             color: None,
+            tls: None,
+            ca_cert_path: None,
         })
     }
 
@@ -111,6 +114,18 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         assert_eq!(names, vec![FILE_NAME.to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connections_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConnectionStore::new(dir.path());
+        store.save(&[sample("a")]).unwrap();
+        store.save(&[sample("b")]).unwrap();
+        let mode = fs::metadata(store.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]

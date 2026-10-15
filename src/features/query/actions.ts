@@ -1,42 +1,64 @@
-import { forgetEditorState } from "../../components/editor/SqlEditor"
+import { forgetEditorState } from "../../components/editor/editorStateCache"
 import type { ConnectionId } from "../../lib/connections"
+import { onAppEvent } from "../../lib/events"
 import { isAppError } from "../../lib/ipc"
+import { tabsForConnection } from "../../lib/queryTabs"
 import { statementAtCursor } from "../../lib/sqlContext"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useSessionsStore } from "../../state/sessionsStore"
-import { selectActiveTab, useTabsStore, type RunOutcome } from "../../state/tabsStore"
+import {
+  selectActiveQueryTab,
+  selectActiveTab,
+  useTabsStore,
+  type RunOutcome,
+} from "../../state/tabsStore"
+import { openDynamoTabFor } from "../dynamo/actions"
+import { useDynamoCatalog } from "../dynamo/catalogStore"
 import { editTargetFor } from "./editing"
 import { editorFor } from "./editorRegistry"
 import { toast } from "./toastStore"
 
 /**
- * Connects (if needed) and opens a query tab for the given MySQL connection. A failed connect
- * shows a toast and rejects with the AppError, so callers may also react to it.
+ * Opens a tab for any connection: a query tab for MySQL, a table browser for DynamoDB.
+ * A failed MySQL connect rejects with the AppError; the caller reports it.
  */
-export async function openQueryTabFor(connectionId: ConnectionId): Promise<void> {
+export async function openConnection(connectionId: ConnectionId): Promise<void> {
   const config = useConnectionsStore.getState().byId(connectionId)
-  const fallback = config?.kind === "mysql" ? (config.database ?? null) : null
-  try {
-    const info = await useSessionsStore.getState().connect(connectionId, fallback)
-    useTabsStore.getState().open(connectionId, info.currentDatabase)
-  } catch (raw) {
-    const name = config?.name ?? "the server"
-    toast(
-      `Couldn't connect to ${name}: ${isAppError(raw) ? raw.message : "unknown error"}`,
-      "danger",
-    )
-    throw raw
+  if (config?.kind === "dynamodb") {
+    openDynamoTabFor(connectionId)
+    return
   }
+  await openMysqlTab(connectionId)
 }
 
-/** Mod+T: a new tab on the active tab's connection and database. */
+/**
+ * Kept for existing callers (the connection list). Routes through `openConnection`, so a
+ * DynamoDB connection opens its table browser instead of a SQL tab.
+ */
+export function openQueryTabFor(connectionId: ConnectionId): Promise<void> {
+  return openConnection(connectionId)
+}
+
+/**
+ * Connects (if needed) and opens a query tab for the given MySQL connection. A failed connect
+ * rejects with the AppError and shows nothing, so the caller's report is the only one.
+ */
+async function openMysqlTab(connectionId: ConnectionId): Promise<void> {
+  const config = useConnectionsStore.getState().byId(connectionId)
+  const fallback = config?.kind === "mysql" ? (config.database ?? null) : null
+  const info = await useSessionsStore.getState().connect(connectionId, fallback)
+  useTabsStore.getState().open(connectionId, info.currentDatabase)
+}
+
+/** Mod+T: a new tab of the active tab's kind, on its connection (and database for MySQL). */
 export function newTabFromActive(): void {
   const active = selectActiveTab(useTabsStore.getState())
   if (!active) {
     toast("Open a connection from the sidebar first")
     return
   }
-  useTabsStore.getState().open(active.connectionId, active.database)
+  if (active.kind === "dynamo") openDynamoTabFor(active.connectionId)
+  else useTabsStore.getState().open(active.connectionId, active.database)
 }
 
 export function closeQueryTab(id: string): void {
@@ -47,6 +69,18 @@ export function closeQueryTab(id: string): void {
 export function closeActiveTab(): void {
   const active = selectActiveTab(useTabsStore.getState())
   if (active) closeQueryTab(active.id)
+}
+
+/** Closes every tab of a deleted connection and drops its session and table catalog. */
+export function forgetConnection(connectionId: ConnectionId): void {
+  for (const id of tabsForConnection(useTabsStore.getState(), connectionId)) closeQueryTab(id)
+  useSessionsStore.getState().forget(connectionId)
+  useDynamoCatalog.getState().forget(connectionId)
+}
+
+/** Cleans up after deleted connections. Returns the unsubscribe function. */
+export function subscribeConnectionCleanup(): () => void {
+  return onAppEvent("connection-removed", forgetConnection)
 }
 
 const OUTCOME_MESSAGES: Partial<Record<RunOutcome, string>> = {
@@ -61,7 +95,7 @@ function reportOutcome(outcome: RunOutcome): void {
 
 /** Mod+Enter runs the whole editor; Mod+Shift+Enter only the statement at the cursor. */
 export async function runActiveTab(scope: "all" | "statement", cursor?: number): Promise<void> {
-  const tab = selectActiveTab(useTabsStore.getState())
+  const tab = selectActiveQueryTab(useTabsStore.getState())
   if (!tab) return
   if (scope === "all") {
     reportOutcome(await useTabsStore.getState().run(tab.id))
@@ -78,8 +112,9 @@ export async function runActiveTab(scope: "all" | "statement", cursor?: number):
 
 /** Mod+S: apply the active result's pending edits. */
 export async function applyActiveEdits(): Promise<void> {
-  const tab = selectActiveTab(useTabsStore.getState())
-  if (!tab) return
+  const tab = selectActiveQueryTab(useTabsStore.getState())
+  // A held or repeated Mod+S must not send the same batch twice.
+  if (!tab || tab.applying) return
   const index = tab.activeResult
   const session = useSessionsStore.getState().sessions[tab.connectionId]
   const resolved = editTargetFor(tab, tab.results[index], session)

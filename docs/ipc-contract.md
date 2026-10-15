@@ -20,8 +20,19 @@ interface MysqlConnectionConfig {
   port: number           // 1..65535
   user: string
   database?: string      // default schema, optional
-  color?: string         // optional hex accent chosen by the user, e.g. "#7c9cff"
+  color?: string         // optional accent, exactly "#rrggbb", e.g. "#7c9cff"
+  tls?: MysqlTlsMode     // default "preferred"; omitted when not set
+  caCertPath?: string    // absolute path to a PEM CA bundle; only with verify_ca / verify_identity
 }
+
+// preferred: TLS when the server offers it, certificate not verified (sqlx Preferred)
+// required:  TLS or fail, certificate not verified
+// verify_ca: TLS, certificate chain verified against caCertPath, or the bundled Mozilla roots
+//            (webpki-roots) when caCertPath is absent. Known limitation: with sqlx 0.8.6 and
+//            rustls 0.23.46 the host name is also checked (fails closed), so it currently
+//            behaves like verify_identity.
+// verify_identity: verify_ca plus the certificate must name `host`.
+type MysqlTlsMode = "preferred" | "required" | "verify_ca" | "verify_identity"
 
 interface DynamoConnectionConfig {
   kind: "dynamodb"
@@ -43,26 +54,47 @@ passed only as the `secret` argument of `connections_save` / `connections_test` 
 OS keyring under service `dbclient`, account `<connection id>`.
 
 Configs are persisted as JSON at `<app config dir>/connections.json` (Tauri `app_config_dir`),
-written atomically (write temp file, rename).
+written atomically (write temp file, rename) with owner-only permissions (`0600` on unix).
 
 | command | args | returns |
 | --- | --- | --- |
 | `connections_list` | – | `ConnectionConfig[]` sorted by name |
 | `connections_save` | `config: ConnectionConfig`, `secret: string \| null` | saved `ConnectionConfig` (with generated id). `secret === null` keeps the stored secret; `""` clears it. |
-| `connections_delete` | `id` | `void`, also removes the keyring entry and closes any open session |
+| `connections_delete` | `id` | `void`. Closes any open session (without waiting for running queries), then removes the keyring entry and the config. If the keyring entry cannot be removed the config is still removed and the call rejects with `kind: "credential"` ("... its saved secret is still in the keychain ..."). |
 | `connections_has_secret` | `id` | `boolean` |
-| `connections_test` | `config: ConnectionConfig`, `secret: string \| null` | `{ ok: true, serverVersion?: string, latencyMs: number }`. Rejects with `kind: "connection"` on failure. `null` secret falls back to the stored one for `config.id`. |
+| `connections_test` | `config: ConnectionConfig`, `secret: string \| null` | `{ ok: true, serverVersion?: string, latencyMs: number }`. Rejects with `kind: "connection"` on failure. A `null` secret falls back to the stored one for `config.id` **only when the config still targets the saved server**: same host (case-insensitive), port, user, `tls` and `caCertPath` for MySQL; same endpoint, region and auth (`accessKeyId` / `profile`) for DynamoDB. Otherwise it rejects with `kind: "invalid_input"` ("Enter the password again to test a different server" / "Enter the secret access key again to test a different endpoint or key"); name, database and color changes do not matter. |
 
 Validation (backend, `kind: "invalid_input"`): name non-empty, host non-empty, port in range,
-region non-empty, profile non-empty, accessKeyId non-empty.
+region non-empty, profile non-empty, accessKeyId non-empty, `color` is `#rrggbb`, `endpoint` is
+an absolute `http://` or `https://` URL with a host, `caCertPath` is absolute and only set with
+`tls` `verify_ca` / `verify_identity`. An empty `id` passed to `connections_delete` or
+`connections_has_secret` is rejected.
 
 ## MySQL sessions
 
 One `sqlx::MySqlPool` per connection id, created on `mysql_connect`, `test_before_acquire(true)`,
-`max_connections(4)`, `acquire_timeout(10s)`. Every query that fails with a connection-level error
-(`sqlx::Error::Io`, `PoolClosed`, `PoolTimedOut`, server error codes 2006/2013/4031 or
-"Connection reset") is retried **once** on a fresh connection; the result then has
-`reconnected: true`. A background task pings each pool every 30 s and emits state events.
+`max_connections(4)`, `acquire_timeout(10s)`.
+
+Connection-level errors are `sqlx::Error::Io`, `PoolClosed`, `PoolTimedOut`, server errors
+2006/2013/4031 (by error number only; a server error's message text is never inspected), and
+driver-side errors (protocol, TLS) whose text says "connection reset". Retry policy:
+
+- A failure **before the statement is sent** (acquiring the connection, the `USE` for
+  `options.database` or a replayed `USE`) is retried **once** on a fresh connection.
+- A failure **while a statement runs** is retried once only for read statements: those starting
+  with `SELECT`, `SHOW`, `EXPLAIN`, `DESCRIBE`, `DESC`, `WITH`, `TABLE` or `VALUES` that contain
+  no `INSERT` / `UPDATE` / `DELETE` / `REPLACE` statement (e.g. `WITH ... DELETE`, `EXPLAIN
+  ANALYZE UPDATE`) and no `INTO OUTFILE` / `INTO DUMPFILE`. Any other statement is not re-run
+  and the call rejects with `kind: "connection"` and a message starting "The server dropped the
+  connection while the statement was running; it may or may not have been applied.". The
+  same rule applies to `mysql_export`.
+- A retried result has `reconnected: true`; after a connection was lost without a retry, the
+  next result reports `reconnected: true`.
+
+A background task pings each pool every 30 s and emits state events. Any successful round trip
+while the state is `error` or `reconnecting` emits `connected`. `mysql_disconnect` (and
+`connections_delete`) remove the session and emit `disconnected` immediately; running queries
+finish on their connection and the pool closes afterwards without further state events.
 
 Event `mysql:state` payload:
 
@@ -79,7 +111,8 @@ interface MysqlSessionInfo { serverVersion: string; currentDatabase: string | nu
 
 interface ColumnInfo {
   name: string
-  typeName: string            // MySQL type name upper-cased: "INT", "VARCHAR", "DATETIME", "JSON", ...
+  typeName: string            // MySQL type name upper-cased: "INT", "VARCHAR", "DATETIME", "JSON",
+                              // "TINYINT UNSIGNED", ... (see "Binary-flagged strings" below)
   table: string | null        // origin table when known
   nullable: boolean
 }
@@ -90,7 +123,8 @@ type Cell =
   | { t: "str"; v: string }
   | { t: "int"; v: string }        // decimal string, any integer width
   | { t: "float"; v: number }
-  | { t: "bool"; v: boolean }      // only for BIT(1) / TINYINT(1) when the column is declared tinyint(1)
+  | { t: "bool"; v: boolean }      // BIT(1), and TINYINT(1) when every value in the result is 0 or 1
+                                   // (otherwise the whole TINYINT(1) column is `int`)
   | { t: "decimal"; v: string }
   | { t: "date"; v: string }       // "YYYY-MM-DD"
   | { t: "time"; v: string }       // "HH:MM:SS[.ffffff]"
@@ -121,11 +155,24 @@ type QueryResult =
 interface QueryOptions { database?: string; maxRows?: number /* default 1000 */ }
 ```
 
+Binary-flagged strings: MySQL flags both real binary strings (`BINARY`, `VARBINARY`, `BLOB`
+types) and text with a `_bin` collation (including `JSON_UNQUOTE` / `->>` results) as binary,
+and sqlx does not expose the collation. For such columns:
+
+1. When the statement reads a single base table (`SELECT ... FROM t [alias] [WHERE ...]`,
+   `TABLE t`; no joins, unions or derived tables), `information_schema.COLUMNS.DATA_TYPE` of the
+   column with the same name decides: binary types are `bytes` with the binary `typeName`,
+   others `str` with the text `typeName` (`VARCHAR`, `TEXT`, `LONGTEXT`, ...). Columns are
+   matched by result name, so an alias reusing another column's name can be misattributed.
+2. Otherwise the values decide: if every value is valid UTF-8 the column is `str` with the text
+   `typeName`; if any value is not, every value of the column is `bytes` with the binary name.
+   `mysql_export` streams rows and decides per value in this case.
+
 | command | args | returns |
 | --- | --- | --- |
 | `mysql_connect` | `connectionId` | `MysqlSessionInfo` |
 | `mysql_disconnect` | `connectionId` | `void` |
-| `mysql_query` | `connectionId`, `sql`, `options: QueryOptions` | `QueryResult[]` – one entry per statement in `sql` (split on `;` outside strings/comments by the backend). Stops at the first failing statement and rejects with `kind: "query"`; the message starts with the MySQL error text. |
+| `mysql_query` | `connectionId`, `sql`, `options: QueryOptions` | `QueryResult[]` – one entry per statement in `sql` (split on `;` outside strings/comments by the backend; `/*! ... */` executable comments count as statements). Stops at the first failing statement and rejects with `kind: "query"`; the message starts with the MySQL error text. An `options.database` (or default database) that does not exist or is not accessible rejects with `kind: "invalid_input"`. |
 | `mysql_databases` | `connectionId` | `string[]` (excludes `information_schema`, `performance_schema`, `mysql`, `sys`) |
 | `mysql_schema` | `connectionId`, `database` | `SchemaSnapshot` for that database |
 
@@ -172,7 +219,7 @@ anything other than exactly 1 row fails the whole batch with `kind: "query"`.
 type ExportFormat = "csv" | "json" | "sql"
 interface ExportOptions {
   format: ExportFormat
-  path: string                 // absolute path chosen by the user via the dialog plugin
+  path: string                 // absolute path returned by the dialog plugin's save()
   tableName?: string           // for "sql" INSERT statements; default "export"
   includeHeader?: boolean      // csv, default true
   database?: string            // mysql_export only: schema to run `sql` in; default the session database
@@ -185,10 +232,20 @@ interface ExportResult { rows: number; bytes: number; elapsedMs: number }
 | `mysql_export` | `connectionId`, `sql`, `options: ExportOptions` | `ExportResult` – re-runs `sql` (single statement) and streams every row to `path` without the `maxRows` cap. |
 | `export_rows` | `columns: ColumnInfo[]`, `rows: Cell[][]`, `options: ExportOptions` | `ExportResult` – writes rows already in the frontend (selection or visible page). |
 
+Paths: `export_rows`, `mysql_export` and `dynamo_export` only write to a file the user picked in
+the save dialog (the dialog plugin adds it to the runtime fs scope, which the commands check);
+any other path rejects with `kind: "invalid_input"` ("Choose the file through the save
+dialog"). Files are written to a new temp file next to the target (owner-only, `0600` on unix)
+and renamed into place; a failed export leaves no file behind.
+
 Formatting: CSV follows RFC 4180 with UTF-8 and `\n` line ends, `null` → empty field, bytes →
 base64. JSON writes an array of objects keyed by column name, numbers for `int` values that fit in
-53 bits and strings otherwise, `decimal` as string, dates as strings. SQL writes
+53 bits and strings otherwise, `decimal` as string, dates as strings; a repeated column name gets
+the first free `_2`, `_3`, ... suffix as its key (`id`, `id_2`). SQL writes
 `INSERT INTO \`table\` (...) VALUES (...);` one row per line with standard MySQL escaping.
+
+Known limitation: CSV cells are written verbatim, so a value starting with `=`, `+`, `-` or `@`
+can be interpreted as a formula by spreadsheet applications (CSV formula injection).
 
 ## Frontend stores (ownership)
 

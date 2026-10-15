@@ -14,11 +14,15 @@ import {
 } from "./gridEdits"
 import type { Cell, ColumnInfo, SchemaSnapshot } from "./mysql"
 
+// The backend never reports a column's table (`table: null`), so these go through the same
+// statement-based path as the app.
 const columns: ColumnInfo[] = [
-  { name: "id", typeName: "INT", table: "users", nullable: false },
-  { name: "email", typeName: "VARCHAR", table: "users", nullable: false },
-  { name: "note", typeName: "TEXT", table: "users", nullable: true },
+  { name: "id", typeName: "INT", table: null, nullable: false },
+  { name: "email", typeName: "VARCHAR", table: null, nullable: false },
+  { name: "note", typeName: "TEXT", table: null, nullable: true },
 ]
+
+const SELECT_USERS = "select id, email, note from users where id > 0"
 
 const schemaColumn = (name: string, isPrimary = false) => ({
   name,
@@ -53,7 +57,7 @@ const rows: Cell[][] = [
 ]
 
 const target = (): EditTarget => {
-  const resolved = resolveEditTarget(columns, schema, "app")
+  const resolved = resolveEditTarget(columns, schema, "app", SELECT_USERS)
   if (!resolved.editable) throw new Error(resolved.reason)
   return resolved.target
 }
@@ -63,21 +67,37 @@ describe("resolveEditTarget", () => {
     expect(target()).toMatchObject({ database: "app", table: "users", keyIndexes: [0] })
   })
 
+  it("accepts a table qualified with the same database", () => {
+    const resolved = resolveEditTarget(columns, schema, "app", "select * from `app`.`users`")
+    expect(resolved).toMatchObject({ editable: true, target: { table: "users" } })
+  })
+
   it("rejects results that cannot be keyed back to one row", () => {
-    const mixed = [columns[0], { ...columns[1], table: "orders" }]
-    expect(resolveEditTarget(mixed, schema, "app").editable).toBe(false)
-    expect(resolveEditTarget(columns.slice(1), schema, "app").editable).toBe(false)
-    const view = [{ ...columns[0], table: "v_users" }]
-    expect(resolveEditTarget(view, schema, "app").editable).toBe(false)
-    const noKey = [{ name: "msg", typeName: "TEXT", table: "logs", nullable: true }]
-    expect(resolveEditTarget(noKey, schema, "app")).toEqual({
+    const joined = "select u.id, o.email from users u join orders o on o.user_id = u.id"
+    expect(resolveEditTarget(columns.slice(0, 2), schema, "app", joined)).toEqual({
+      editable: false,
+      reason: "Read only: rows don't come from a single table",
+    })
+    expect(
+      resolveEditTarget(columns.slice(1), schema, "app", "select email, note from users").editable,
+    ).toBe(false)
+    expect(resolveEditTarget(columns.slice(0, 1), schema, "app", "select id from v_users")).toEqual(
+      { editable: false, reason: "Read only: v_users isn't a base table in app" },
+    )
+    const noKey = [{ name: "msg", typeName: "TEXT", table: null, nullable: true }]
+    expect(resolveEditTarget(noKey, schema, "app", "select msg from logs")).toEqual({
       editable: false,
       reason: "Read only: logs has no primary key",
     })
     const aliased = [columns[0], { ...columns[1], name: "mail" }]
-    expect(resolveEditTarget(aliased, schema, "app").editable).toBe(false)
-    expect(resolveEditTarget(columns, schema, "other").editable).toBe(false)
-    expect(resolveEditTarget(columns, null, null).editable).toBe(false)
+    const aliasSql = "select id, email as mail from users"
+    expect(resolveEditTarget(aliased, schema, "app", aliasSql).editable).toBe(false)
+    expect(resolveEditTarget(columns, schema, "other", SELECT_USERS).editable).toBe(false)
+    expect(
+      resolveEditTarget(columns, schema, "app", "select id, email, note from shop.users").editable,
+    ).toBe(false)
+    expect(resolveEditTarget(columns, schema, "app", "").editable).toBe(false)
+    expect(resolveEditTarget(columns, null, null, SELECT_USERS).editable).toBe(false)
   })
 })
 

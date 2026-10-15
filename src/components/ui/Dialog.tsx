@@ -10,6 +10,11 @@ interface DialogProps {
   description?: ReactNode
 }
 
+/** True while any modal <dialog> is open; app-wide shortcuts stand down until it closes. */
+export function isModalOpen(): boolean {
+  return typeof document !== "undefined" && document.querySelector("dialog[open]") !== null
+}
+
 /**
  * Centered modal built on the native <dialog> element, which gives focus trapping,
  * top-layer stacking and inert background for free. Mount it only while open.

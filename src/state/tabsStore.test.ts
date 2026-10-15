@@ -1,16 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { EMPTY_EDITS, resolveEditTarget, setCellEdit } from "../lib/gridEdits"
 import { setTransport } from "../lib/ipc"
-import { INITIAL_TABS } from "../lib/queryTabs"
+import { INITIAL_TABS, type QueryTab } from "../lib/queryTabs"
 import type { QueryResult, RowsResult, SchemaSnapshot } from "../lib/mysql"
-import { useSessionsStore } from "./sessionsStore"
+import { editTargetFor } from "../features/query/editing"
+import { emptySession, useSessionsStore } from "./sessionsStore"
 import { useTabsStore } from "./tabsStore"
 
 const usersResult = (email: string, reconnected = false): RowsResult => ({
   kind: "rows",
   columns: [
-    { name: "id", typeName: "INT", table: "users", nullable: false },
-    { name: "email", typeName: "VARCHAR", table: "users", nullable: false },
+    // The backend never reports the origin table; editing reads it from the statement.
+    { name: "id", typeName: "INT", table: null, nullable: false },
+    { name: "email", typeName: "VARCHAR", table: null, nullable: false },
   ],
   rows: [
     [
@@ -113,11 +115,11 @@ describe("applyEdits", () => {
     const store = useTabsStore.getState()
     const id = store.open("c1", "app")
     await store.run(id, "select id, email from users")
-    const result = useTabsStore.getState().tabs[0].results[0] as RowsResult
+    const result = (useTabsStore.getState().tabs[0] as QueryTab).results[0] as RowsResult
     useTabsStore
       .getState()
       .updateEdits(id, 0, () => setCellEdit(EMPTY_EDITS, result.rows, 0, 1, { t: "str", v: "b@x" }))
-    const resolved = resolveEditTarget(result.columns, schema, "app")
+    const resolved = resolveEditTarget(result.columns, schema, "app", result.statement)
     if (!resolved.editable) throw new Error(resolved.reason)
 
     queryResults = [usersResult("b@x")]
@@ -138,8 +140,90 @@ describe("applyEdits", () => {
         },
       ],
     })
-    const tab = useTabsStore.getState().tabs[0]
+    const tab = useTabsStore.getState().tabs[0] as QueryTab
     expect(tab.edits[0]).toBeUndefined()
     expect((tab.results[0] as RowsResult).rows[0][1]).toEqual({ t: "str", v: "b@x" })
+  })
+})
+
+const queryTab = () => useTabsStore.getState().tabs[0] as QueryTab
+
+/** Runs the users query in a tab on the session's current database "app", with its schema. */
+async function runUsers(): Promise<string> {
+  queryResults = [usersResult("a@x")]
+  useSessionsStore.setState({
+    sessions: {
+      c1: {
+        ...emptySession(),
+        state: "connected",
+        currentDatabase: "app",
+        schemas: { app: schema, shop: { ...schema, database: "shop" } },
+      },
+    },
+  })
+  const id = useTabsStore.getState().open("c1", null)
+  await useTabsStore.getState().run(id, "select id, email from users")
+  return id
+}
+
+function editEmail(id: string, email: string) {
+  const result = queryTab().results[0] as RowsResult
+  useTabsStore
+    .getState()
+    .updateEdits(id, 0, (e) => setCellEdit(e, result.rows, 0, 1, { t: "str", v: email }))
+}
+
+describe("database of a result", () => {
+  it("records the database a run used and keeps editing aimed at it after a switch", async () => {
+    const id = await runUsers()
+    expect(queryTab().ranDatabase).toBe("app")
+    expect(useTabsStore.getState().setDatabase(id, "shop")).toBe(true)
+    const session = useSessionsStore.getState().sessions.c1
+    const resolved = editTargetFor(queryTab(), queryTab().results[0], session)
+    expect(resolved).toMatchObject({ editable: true, target: { database: "app", table: "users" } })
+  })
+
+  it("refuses to switch databases while edits are pending", async () => {
+    const id = await runUsers()
+    editEmail(id, "b@x")
+    expect(useTabsStore.getState().setDatabase(id, "shop")).toBe(false)
+    expect(queryTab().database).toBeNull()
+    expect(calls.some((c) => c.command === "mysql_schema")).toBe(false)
+  })
+})
+
+describe("applyEdits while one is in flight", () => {
+  it("sends the batch once when Apply fires twice", async () => {
+    const id = await runUsers()
+    editEmail(id, "b@x")
+    const session = useSessionsStore.getState().sessions.c1
+    const resolved = editTargetFor(queryTab(), queryTab().results[0], session)
+    if (!resolved.editable) throw new Error(resolved.reason)
+    const store = useTabsStore.getState()
+    const first = store.applyEdits(id, 0, resolved.target)
+    expect(queryTab().applying).toBe(true)
+    const second = store.applyEdits(id, 0, resolved.target)
+    await expect(second).resolves.toBeNull()
+    await expect(first).resolves.toEqual({ affectedRows: 1, elapsedMs: 2 })
+    expect(calls.filter((c) => c.command === "mysql_apply_changes")).toHaveLength(1)
+    expect(queryTab().applying).toBe(false)
+  })
+
+  it("clears the flag when the apply fails", async () => {
+    const id = await runUsers()
+    editEmail(id, "b@x")
+    const session = useSessionsStore.getState().sessions.c1
+    const resolved = editTargetFor(queryTab(), queryTab().results[0], session)
+    if (!resolved.editable) throw new Error(resolved.reason)
+    restore()
+    restore = setTransport(async () => {
+      throw { kind: "query", message: "Duplicate entry" }
+    })
+    await expect(useTabsStore.getState().applyEdits(id, 0, resolved.target)).rejects.toEqual({
+      kind: "query",
+      message: "Duplicate entry",
+    })
+    expect(queryTab()).toMatchObject({ applying: false })
+    expect(queryTab().edits[0]).toBeDefined()
   })
 })

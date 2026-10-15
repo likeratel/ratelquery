@@ -354,6 +354,15 @@
   color: var(--text-faint);
 }
 
+.pending-bar__hint {
+  margin-left: auto;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* Menu */
 
 .menu {

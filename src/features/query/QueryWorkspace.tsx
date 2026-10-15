@@ -1,5 +1,5 @@
 import { useSessionsStore } from "../../state/sessionsStore"
-import { selectActiveTab, useTabsStore } from "../../state/tabsStore"
+import { selectActiveQueryTab, useTabsStore } from "../../state/tabsStore"
 import { EditorPane } from "./EditorPane"
 import { tabDatabase } from "./editing"
 import { ResultsPanel } from "./ResultsPanel"
@@ -8,7 +8,7 @@ import "./query.css"
 
 /** The active query tab: editor above, results below. */
 export function QueryWorkspace() {
-  const tab = useTabsStore(selectActiveTab)
+  const tab = useTabsStore(selectActiveQueryTab)
   const session = useSessionsStore((s) => (tab ? s.sessions[tab.connectionId] : undefined))
   if (!tab) return null
   const database = tabDatabase(tab, session)

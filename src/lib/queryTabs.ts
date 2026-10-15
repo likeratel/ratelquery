@@ -1,22 +1,31 @@
 import type { ConnectionId } from "./connections"
+import { createDynamoTab, isDynamoTabDirty, type DynamoTab } from "./dynamoTabs"
 import type { GridEdits } from "./gridEdits"
 import { pendingCount } from "./gridEdits"
 import type { AppError } from "./ipc"
 import type { QueryResult } from "./mysql"
 
 export interface QueryTab {
+  kind: "query"
   id: string
   connectionId: ConnectionId
   title: string
   sql: string
   /** Database the tab's queries run against; null uses the session default. */
   database: string | null
+  /**
+   * Database the current results came from, resolved when the run started. Editing, applying
+   * and full exports use it, so changing the database afterwards can't retarget them.
+   */
+  ranDatabase: string | null
   results: readonly QueryResult[]
   activeResult: number
   running: boolean
   error: AppError | null
   /** Pending grid edits keyed by result index. */
   edits: Readonly<Record<number, GridEdits>>
+  /** True while a batch of edits is being sent, so a second Apply can't send it again. */
+  applying: boolean
   /** Increments on every finished run; drives stale-response checks and count-up animation. */
   runId: number
   /** SQL that last ran (whole script or the single statement). */
@@ -26,8 +35,11 @@ export interface QueryTab {
   lastElapsedMs: number | null
 }
 
+/** Every tab in the tab bar; `kind` picks the screen that renders it. */
+export type WorkspaceTab = QueryTab | DynamoTab
+
 export interface TabsState {
-  tabs: readonly QueryTab[]
+  tabs: readonly WorkspaceTab[]
   activeId: string | null
   /** Monotonic counter used for "Query N" titles. */
   seq: number
@@ -42,16 +54,19 @@ export function createTab(
   database: string | null,
 ): QueryTab {
   return {
+    kind: "query",
     id,
     connectionId,
     title,
     sql: "",
     database,
+    ranDatabase: null,
     results: [],
     activeResult: 0,
     running: false,
     error: null,
     edits: {},
+    applying: false,
     runId: 0,
     lastRunSql: null,
     sqlAtRun: null,
@@ -69,6 +84,21 @@ export function openTab(
   return { tabs: [...state.tabs, tab], activeId: tab.id, seq }
 }
 
+/** Appends a DynamoDB tab titled "DynamoDB N" and activates it. */
+export function openDynamoTab(
+  state: TabsState,
+  params: { id: string; connectionId: ConnectionId },
+): TabsState {
+  const seq = state.seq + 1
+  const tab = createDynamoTab(params.id, params.connectionId, `DynamoDB ${seq}`)
+  return { tabs: [...state.tabs, tab], activeId: tab.id, seq }
+}
+
+/** Ids of every tab, of any kind, opened on `connectionId`. */
+export function tabsForConnection(state: TabsState, connectionId: ConnectionId): string[] {
+  return state.tabs.filter((t) => t.connectionId === connectionId).map((t) => t.id)
+}
+
 /** Removes a tab; when it was active, the right neighbour (or else the left) becomes active. */
 export function closeTab(state: TabsState, id: string): TabsState {
   const index = state.tabs.findIndex((t) => t.id === id)
@@ -83,12 +113,28 @@ export function activateTab(state: TabsState, id: string): TabsState {
   return state.tabs.some((t) => t.id === id) ? { ...state, activeId: id } : state
 }
 
+/** Updates a query tab; tabs of another kind are left alone. */
 export function updateTab(
   state: TabsState,
   id: string,
   update: (tab: QueryTab) => QueryTab,
 ): TabsState {
-  return { ...state, tabs: state.tabs.map((t) => (t.id === id ? update(t) : t)) }
+  return {
+    ...state,
+    tabs: state.tabs.map((t) => (t.id === id && t.kind === "query" ? update(t) : t)),
+  }
+}
+
+/** Updates a DynamoDB tab; tabs of another kind are left alone. */
+export function updateDynamoTab(
+  state: TabsState,
+  id: string,
+  update: (tab: DynamoTab) => DynamoTab,
+): TabsState {
+  return {
+    ...state,
+    tabs: state.tabs.map((t) => (t.id === id && t.kind === "dynamo" ? update(t) : t)),
+  }
 }
 
 export function startRun(tab: QueryTab): QueryTab {
@@ -103,11 +149,18 @@ export function preferredResultIndex(results: readonly QueryResult[]): number {
   return Math.max(0, results.length - 1)
 }
 
-export function finishRun(tab: QueryTab, sql: string, results: readonly QueryResult[]): QueryTab {
+/** `ranDatabase` is the database the statement ran against (defaults to the tab's own). */
+export function finishRun(
+  tab: QueryTab,
+  sql: string,
+  results: readonly QueryResult[],
+  ranDatabase: string | null = tab.database,
+): QueryTab {
   return {
     ...tab,
     running: false,
     error: null,
+    ranDatabase,
     results,
     activeResult: preferredResultIndex(results),
     edits: {},
@@ -145,4 +198,9 @@ export function tabPendingCount(tab: QueryTab): number {
 export function isTabDirty(tab: QueryTab): boolean {
   if (tabPendingCount(tab) > 0) return true
   return tab.sql.trim() !== "" && tab.sql !== (tab.sqlAtRun ?? "")
+}
+
+/** Dirty marker for any tab kind. */
+export function isWorkspaceTabDirty(tab: WorkspaceTab): boolean {
+  return tab.kind === "query" ? isTabDirty(tab) : isDynamoTabDirty(tab)
 }

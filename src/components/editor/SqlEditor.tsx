@@ -20,6 +20,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view"
 import { useEffect, useRef } from "react"
+import { cachedEditorState, cacheEditorState } from "./editorStateCache"
 import { tokenHighlightStyle, tokenTheme } from "./editorTheme"
 import "./editor.css"
 
@@ -40,14 +41,10 @@ export interface SqlEditorProps {
   autoFocus?: boolean
 }
 
-const languageSlot = new Compartment()
-const stateCache = new Map<string, EditorState>()
-const changeHandlers = new Map<string, (update: ViewUpdate) => void>()
+export { forgetEditorState } from "./editorStateCache"
 
-/** Drops the remembered editor state for a closed document. */
-export function forgetEditorState(stateKey: string): void {
-  stateCache.delete(stateKey)
-}
+const languageSlot = new Compartment()
+const changeHandlers = new Map<string, (update: ViewUpdate) => void>()
 
 function languageFor(schema: SQLNamespace | undefined): Extension {
   return sql({ dialect: MySQL, schema, upperCaseKeywords: true })
@@ -112,7 +109,7 @@ export function SqlEditor({
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
-    const cached = stateCache.get(stateKey)
+    const cached = cachedEditorState(stateKey)
     const state =
       cached && cached.doc.toString() === value
         ? cached
@@ -129,6 +126,10 @@ export function SqlEditor({
     if (autoFocus) view.focus()
 
     const onKeyDown = (event: KeyboardEvent) => {
+      // Keys that build an IME composition (Korean, Japanese) belong to the editor. Key repeat
+      // still reaches the handler so a held shortcut stays claimed; the app shortcut handler
+      // ignores repeats instead of running the action again.
+      if (event.isComposing) return
       if (latest.current.onKeyDownCapture?.(event, view)) {
         event.preventDefault()
         event.stopPropagation()
@@ -137,7 +138,7 @@ export function SqlEditor({
     host.addEventListener("keydown", onKeyDown, { capture: true })
     return () => {
       host.removeEventListener("keydown", onKeyDown, { capture: true })
-      stateCache.set(stateKey, view.state)
+      cacheEditorState(stateKey, view.state)
       latest.current.onViewChange?.(null)
       view.destroy()
       viewRef.current = null

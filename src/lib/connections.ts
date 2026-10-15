@@ -11,7 +11,13 @@ export interface MysqlConnectionConfig {
   user: string
   database?: string
   color?: string
+  /** TLS requirement; defaults to "preferred" (use TLS when the server offers it). */
+  tls?: MysqlTlsMode
+  /** PEM file with the CA to trust for "verify_ca" / "verify_identity". */
+  caCertPath?: string
 }
+
+export type MysqlTlsMode = "preferred" | "required" | "verify_ca" | "verify_identity"
 
 export type DynamoAuth =
   { type: "profile"; profile: string } | { type: "keys"; accessKeyId: string }

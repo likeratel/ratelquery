@@ -344,6 +344,15 @@
   background: var(--text-faint);
 }
 
+.tab__kind {
+  flex: none;
+  color: var(--text-faint);
+}
+
+.tab[aria-selected="true"] .tab__kind {
+  color: var(--text-muted);
+}
+
 .tab__title {
   overflow: hidden;
   text-overflow: ellipsis;

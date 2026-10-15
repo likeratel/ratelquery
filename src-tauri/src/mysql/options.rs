@@ -1,14 +1,36 @@
+use std::sync::Once;
 use std::time::Duration;
 
-use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlPoolOptions, MySqlRow};
+use sqlx::mysql::{MySqlConnectOptions, MySqlConnection, MySqlPoolOptions, MySqlRow, MySqlSslMode};
 use sqlx::{Executor, Row};
 
-use crate::connections::MysqlConnectionConfig;
+use crate::connections::{MysqlConnectionConfig, MysqlTlsMode};
 use crate::error::{AppError, AppResult};
 
 pub const MAX_CONNECTIONS: u32 = 4;
 pub const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(10);
 const CHARSET: &str = "utf8mb4";
+
+fn ssl_mode(mode: MysqlTlsMode) -> MySqlSslMode {
+    match mode {
+        MysqlTlsMode::Preferred => MySqlSslMode::Preferred,
+        MysqlTlsMode::Required => MySqlSslMode::Required,
+        MysqlTlsMode::VerifyCa => MySqlSslMode::VerifyCa,
+        MysqlTlsMode::VerifyIdentity => MySqlSslMode::VerifyIdentity,
+    }
+}
+
+/// sqlx's certificate-verifying TLS modes build a rustls verifier from the process default
+/// crypto provider. Both `ring` (sqlx) and `aws-lc-rs` (AWS SDK) are compiled in, so rustls
+/// cannot pick one and would panic; install `ring`, the provider sqlx itself uses. The AWS
+/// client passes its provider explicitly and is unaffected. An already installed default is
+/// kept.
+pub fn ensure_tls_provider() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 /// Connect options for a saved config. No session time zone is forced so TIMESTAMP values are
 /// shown exactly as the server renders them, and `||` keeps MySQL's default meaning.
@@ -16,6 +38,7 @@ pub fn connect_options(
     config: &MysqlConnectionConfig,
     password: Option<&str>,
 ) -> AppResult<MySqlConnectOptions> {
+    ensure_tls_provider();
     let port = u16::try_from(config.port)
         .map_err(|_| AppError::InvalidInput(format!("invalid port {}", config.port)))?;
     let base = MySqlConnectOptions::new()
@@ -24,7 +47,12 @@ pub fn connect_options(
         .username(&config.user)
         .charset(CHARSET)
         .timezone(None)
-        .pipes_as_concat(false);
+        .pipes_as_concat(false)
+        .ssl_mode(ssl_mode(config.tls_mode()));
+    let base = match &config.ca_cert_path {
+        Some(path) => base.ssl_ca(path),
+        None => base,
+    };
     let with_password = match password.filter(|p| !p.is_empty()) {
         Some(password) => base.password(password),
         None => base,
@@ -75,6 +103,8 @@ mod tests {
             user: "dev".into(),
             database: Some("sample".into()),
             color: None,
+            tls: None,
+            ca_cert_path: None,
         }
     }
 
@@ -85,6 +115,21 @@ mod tests {
         assert_eq!(options.get_port(), 3307);
         assert_eq!(options.get_database(), Some("sample"));
         assert_eq!(options.get_charset(), CHARSET);
+    }
+
+    #[test]
+    fn maps_tls_modes() {
+        let options = connect_options(&config(3307), None).unwrap();
+        assert!(matches!(options.get_ssl_mode(), MySqlSslMode::Preferred));
+        let strict = MysqlConnectionConfig {
+            tls: Some(MysqlTlsMode::VerifyIdentity),
+            ca_cert_path: Some("/etc/ca.pem".into()),
+            ..config(3307)
+        };
+        let options = connect_options(&strict, None).unwrap();
+        assert!(matches!(options.get_ssl_mode(), MySqlSslMode::VerifyIdentity));
+        assert!(matches!(ssl_mode(MysqlTlsMode::Required), MySqlSslMode::Required));
+        assert!(matches!(ssl_mode(MysqlTlsMode::VerifyCa), MySqlSslMode::VerifyCa));
     }
 
     #[test]

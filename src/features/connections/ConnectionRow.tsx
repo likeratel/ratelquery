@@ -66,6 +66,12 @@ export function ConnectionRow({ config }: { config: ConnectionConfig }) {
     if (!result.ok) {
       setMode("confirm")
       showToast({ tone: "error", message: result.error.summary, detail: result.error.detail })
+    } else if (result.warning) {
+      showToast({
+        tone: "warning",
+        message: `Removed ${config.name}, but its saved secret is still in the keychain.`,
+        detail: result.warning.detail,
+      })
     }
   }
 

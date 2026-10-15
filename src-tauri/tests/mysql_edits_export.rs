@@ -4,7 +4,7 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{connect, query, rows, test_db, unique};
+use common::{connect, create_table, drop_table, query, rows, test_db, unique};
 use dbclient_lib::export::{ExportFormat, ExportOptions};
 use dbclient_lib::mysql::{Cell, MysqlSession, RowChange, apply_changes, run_export};
 
@@ -53,7 +53,7 @@ async fn applies_changes_atomically_with_single_row_guarantee() {
         },
         RowChange::Delete { key: cells(&[("id", int(3))]) },
     ];
-    let result = apply_changes(&c.session, "sample", &t, &ok).await.unwrap();
+    let result = apply_changes(&c.session, db.database(), &t, &ok).await.unwrap();
     assert_eq!(result.affected_rows, 4);
     let after = query(&c.session, &format!("SELECT price FROM `{t}` WHERE id = 1")).await;
     assert_eq!(rows(&after[0]).rows[0][0], Cell::Decimal("1.50".into()));
@@ -63,7 +63,7 @@ async fn applies_changes_atomically_with_single_row_guarantee() {
         RowChange::Insert { values: cells(&[("name", Cell::Str("rolled back".into()))]) },
         RowChange::Delete { key: cells(&[("id", int(999))]) },
     ];
-    let err = apply_changes(&c.session, "sample", &t, &missing).await.unwrap_err();
+    let err = apply_changes(&c.session, db.database(), &t, &missing).await.unwrap_err();
     assert_eq!(err.kind(), "query");
     assert_eq!(count(&c.session, &t).await, int(3), "insert was rolled back");
 
@@ -71,17 +71,20 @@ async fn applies_changes_atomically_with_single_row_guarantee() {
         key: cells(&[("grp", int(1))]),
         set: cells(&[("name", Cell::Str("x".into()))]),
     }];
-    assert_eq!(apply_changes(&c.session, "sample", &t, &many).await.unwrap_err().kind(), "query");
+    assert_eq!(
+        apply_changes(&c.session, db.database(), &t, &many).await.unwrap_err().kind(),
+        "query"
+    );
     let names = query(&c.session, &format!("SELECT name FROM `{t}` WHERE id = 1")).await;
     assert_eq!(rows(&names[0]).rows[0][0], Cell::Str("a".into()), "multi-row update rolled back");
 
     let bad_column = vec![RowChange::Delete { key: cells(&[("nope", int(1))]) }];
     assert_eq!(
-        apply_changes(&c.session, "sample", &t, &bad_column).await.unwrap_err().kind(),
+        apply_changes(&c.session, db.database(), &t, &bad_column).await.unwrap_err().kind(),
         "invalid_input"
     );
     assert_eq!(
-        apply_changes(&c.session, "sample", "no_table", &ok).await.unwrap_err().kind(),
+        apply_changes(&c.session, db.database(), "no_table", &ok).await.unwrap_err().kind(),
         "invalid_input"
     );
     assert_eq!(
@@ -102,25 +105,34 @@ fn export_options(format: ExportFormat, path: &std::path::Path) -> ExportOptions
     }
 }
 
+const PEOPLE_COLUMNS: &str = "id INT UNSIGNED PRIMARY KEY, name VARCHAR(50), \
+     balance DECIMAL(10,2), is_active TINYINT(1), profile JSON";
+const PEOPLE_ROWS: &str = "(1, 'Ada Lovelace', 1200.50, 1, '{\"tags\": [\"math\"]}'), \
+     (2, 'Grace Hopper', 7.00, 0, '{}'), (3, 'Linus Torvalds', 0.00, 1, NULL), \
+     (4, 'Margaret Hamilton', 42.42, 1, '{\"tags\": [\"apollo\"]}'), \
+     (5, '세종대왕', -3.10, 0, '[]')";
+
 #[tokio::test]
 async fn exports_csv_json_and_sql() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
+    let people = create_table(&c.session, "it_people", PEOPLE_COLUMNS, PEOPLE_ROWS).await;
     let dir = tempfile::tempdir().unwrap();
-    let sql = "SELECT id, name, balance, is_active, profile FROM customers ORDER BY id";
+    let sql = format!("SELECT id, name, balance, is_active, profile FROM `{people}` ORDER BY id");
 
     let csv_path = dir.path().join("c.csv");
     let csv =
-        run_export(&c.session, sql, &export_options(ExportFormat::Csv, &csv_path)).await.unwrap();
+        run_export(&c.session, &sql, &export_options(ExportFormat::Csv, &csv_path)).await.unwrap();
     let text = std::fs::read_to_string(&csv_path).unwrap();
     assert_eq!(csv.rows, 5);
     assert_eq!(csv.bytes, text.len() as u64);
     assert!(text.starts_with("id,name,balance,is_active,profile\n1,Ada Lovelace,1200.50,1,"));
     assert!(text.contains("4,Margaret Hamilton,42.42,1,"));
     assert!(text.contains("3,Linus Torvalds,0.00,1,\n"));
+    assert!(text.contains("5,세종대왕,-3.10,0,[]\n"));
 
     let json_path = dir.path().join("c.json");
-    run_export(&c.session, sql, &export_options(ExportFormat::Json, &json_path)).await.unwrap();
+    run_export(&c.session, &sql, &export_options(ExportFormat::Json, &json_path)).await.unwrap();
     let parsed: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
     assert_eq!(parsed.as_array().unwrap().len(), 5);
@@ -147,19 +159,55 @@ async fn exports_csv_json_and_sql() {
         table_name: Some(copy.clone()),
         ..export_options(ExportFormat::Sql, &sql_path)
     };
-    run_export(&c.session, "SELECT * FROM customers ORDER BY id", &options).await.unwrap();
+    run_export(&c.session, &format!("SELECT * FROM `{people}` ORDER BY id"), &options)
+        .await
+        .unwrap();
     let inserts = std::fs::read_to_string(&sql_path).unwrap();
     assert_eq!(inserts.lines().count(), 5);
     assert!(inserts.lines().all(|l| l.starts_with(&format!("INSERT INTO `{copy}` ("))));
     // Round trip: the generated statements load back into an identical table.
-    query(&c.session, &format!("CREATE TABLE `{copy}` LIKE customers; {inserts}")).await;
+    query(&c.session, &format!("CREATE TABLE `{copy}` LIKE `{people}`; {inserts}")).await;
     let diff = query(
         &c.session,
-        &format!("SELECT COUNT(*) FROM customers c JOIN `{copy}` k USING (id, email, name, tier, balance, is_active, signed_up_at)"),
+        &format!(
+            "SELECT COUNT(*) FROM `{people}` p JOIN `{copy}` k \
+             USING (id, name, balance, is_active)"
+        ),
     )
     .await;
     assert_eq!(rows(&diff[0]).rows[0][0], Cell::Int("5".into()));
-    query(&c.session, &format!("DROP TABLE `{copy}`")).await;
+    drop_table(&c.session, &copy).await;
+    drop_table(&c.session, &people).await;
+}
+
+#[tokio::test]
+async fn exports_binary_collation_text_as_text() {
+    let Some(db) = test_db() else { return };
+    let c = connect(&db).await;
+    let t = create_table(
+        &c.session,
+        "it_binexp",
+        "id INT PRIMARY KEY, v VARCHAR(10) COLLATE utf8mb4_bin, vb VARBINARY(10), j JSON",
+        "(1, 'abc', 'AB', '{\"lang\": \"ko\"}')",
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bin.csv");
+    let sql = format!("SELECT v, vb, j->>'$.lang' AS lang FROM `{t}`");
+    run_export(&c.session, &sql, &export_options(ExportFormat::Csv, &path)).await.unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "v,vb,lang\nabc,QUI=,ko\n");
+    let dup = dir.path().join("dup.json");
+    run_export(
+        &c.session,
+        &format!("SELECT id, id FROM `{t}`"),
+        &export_options(ExportFormat::Json, &dup),
+    )
+    .await
+    .unwrap();
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&dup).unwrap()).unwrap();
+    assert_eq!(parsed, serde_json::json!([{ "id": 1, "id_2": 1 }]));
+    drop_table(&c.session, &t).await;
 }
 
 #[tokio::test]
@@ -176,9 +224,10 @@ async fn export_streams_past_max_rows_and_validates_input() {
     assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2701);
 
     let empty_path = dir.path().join("empty.csv");
+    let t = create_table(&c.session, "it_empty", "id INT PRIMARY KEY, name VARCHAR(5)", "").await;
     run_export(
         &c.session,
-        "SELECT id, name FROM customers WHERE 1 = 0",
+        &format!("SELECT id, name FROM `{t}` WHERE 1 = 0"),
         &export_options(ExportFormat::Csv, &empty_path),
     )
     .await
@@ -209,4 +258,12 @@ async fn export_streams_past_max_rows_and_validates_input() {
             .await;
     assert_eq!(err.unwrap_err().kind(), "query");
     assert!(!failing.exists());
+    let options = ExportOptions {
+        database: Some("no_such_db_for_tests".into()),
+        ..export_options(ExportFormat::Csv, &failing)
+    };
+    let missing_db = run_export(&c.session, "SELECT 1", &options).await;
+    assert_eq!(missing_db.unwrap_err().kind(), "invalid_input");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "no temp files left");
+    drop_table(&c.session, &t).await;
 }

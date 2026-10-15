@@ -39,6 +39,10 @@ pub fn split_statements(sql: &str) -> Vec<String> {
                 b'#' => state = State::LineComment,
                 b'-' if starts_line_comment(bytes, i) => state = State::LineComment,
                 b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    // `/*! ... */` is a MySQL executable comment: the server runs its body.
+                    if bytes.get(i + 2) == Some(&b'!') {
+                        piece.has_code = true;
+                    }
                     state = State::BlockComment;
                     i += 1;
                 }
@@ -113,6 +117,16 @@ mod tests {
     fn drops_empty_and_comment_only_pieces() {
         assert_eq!(split_statements(" ; ;\n-- only a comment\n; /* x */ "), Vec::<String>::new());
         assert_eq!(split_statements("SELECT 1; -- trailing"), vec!["SELECT 1"]);
+    }
+
+    #[test]
+    fn keeps_executable_comment_statements() {
+        let sql =
+            "/*!40101 SET NAMES utf8mb4 */;\n/* plain */;\n/*!40014 SET FOREIGN_KEY_CHECKS=0 */";
+        assert_eq!(
+            split_statements(sql),
+            vec!["/*!40101 SET NAMES utf8mb4 */", "/*!40014 SET FOREIGN_KEY_CHECKS=0 */"]
+        );
     }
 
     #[test]

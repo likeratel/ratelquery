@@ -1,6 +1,11 @@
 import { SegmentedControl, TextField } from "../../components/ui"
 import { ColorSwatches } from "./ColorSwatches"
-import type { DynamoAuthType, DynamoDraft, FieldErrors } from "./form"
+import {
+  insecureEndpointWarning,
+  type DynamoAuthType,
+  type DynamoDraft,
+  type FieldErrors,
+} from "./form"
 
 interface DynamoFieldsProps {
   draft: DynamoDraft
@@ -16,6 +21,7 @@ const AUTH_OPTIONS = [
 ] as const
 
 export function DynamoFields({ draft, errors, secretOptional, onChange }: DynamoFieldsProps) {
+  const endpointWarning = insecureEndpointWarning(draft.endpoint)
   return (
     <div className="conn-form__grid">
       <TextField
@@ -42,7 +48,15 @@ export function DynamoFields({ draft, errors, secretOptional, onChange }: Dynamo
         onValueChange={(endpoint) => onChange({ endpoint })}
         error={errors.endpoint}
         placeholder="http://localhost:8000"
-        hint="Set this for DynamoDB Local."
+        hint={
+          endpointWarning ? (
+            <span className="conn-form__warning" role="status">
+              {endpointWarning}
+            </span>
+          ) : (
+            "Set this for DynamoDB Local."
+          )
+        }
         mono
       />
       <div className="conn-form__wide conn-form__auth">

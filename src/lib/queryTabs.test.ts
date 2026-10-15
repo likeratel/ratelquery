@@ -15,6 +15,7 @@ import {
   startRun,
   tabPendingCount,
   updateTab,
+  type QueryTab,
 } from "./queryTabs"
 
 const exec = (statement: string): QueryResult => ({
@@ -78,7 +79,7 @@ describe("tab list", () => {
 })
 
 describe("run lifecycle", () => {
-  const tab = () => three().tabs[0]
+  const tab = () => three().tabs[0] as QueryTab
 
   it("stores results, picks the last rows result and sums elapsed", () => {
     const running = startRun({ ...tab(), sql: "select 1; update t" })
@@ -114,6 +115,6 @@ describe("run lifecycle", () => {
 
   it("updates only the targeted tab", () => {
     const state = updateTab(three(), "b", (t) => ({ ...t, sql: "x" }))
-    expect(state.tabs.map((t) => t.sql)).toEqual(["", "x", ""])
+    expect(state.tabs.map((t) => (t as QueryTab).sql)).toEqual(["", "x", ""])
   })
 })

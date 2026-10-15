@@ -1,3 +1,14 @@
+/**
+ * Parses what a user types into a grid cell into a typed Cell for the backend.
+ *
+ * NULL rule: the exact, uppercase text `NULL` sets SQL NULL (refused for NOT NULL columns).
+ * Any other spelling, such as `null` or `Null`, is ordinary text in string columns and invalid
+ * input for typed ones. The grid can't store the four-letter string "NULL" in a text column;
+ * use an UPDATE statement for that. The Set NULL button types `NULL` for you.
+ *
+ * Numbers use plain decimal notation only (`12`, `-3.5`, `1e3` for floats). Hex, binary,
+ * `Infinity` and similar JavaScript number forms are rejected rather than silently converted.
+ */
 import type { Cell } from "./mysql"
 
 /** Cell tags a user can type a value for. */
@@ -54,6 +65,7 @@ const TIME_RE = /^-?\d{1,3}:\d{2}:\d{2}(\.\d{1,6})?$/
 const DATETIME_RE = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(\.\d{1,6})?)$/
 const INT_RE = /^[+-]?\d+$/
 const DECIMAL_RE = /^[+-]?(\d+(\.\d*)?|\.\d+)$/
+const FLOAT_RE = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/
 
 const fail = (error: string): ParseResult => ({ ok: false, error })
 const ok = (cell: Cell): ParseResult => ({ ok: true, cell })
@@ -93,7 +105,7 @@ function parseByKind(text: string, kind: CellKind, unsigned: boolean): ParseResu
     case "int":
       return parseInteger(value, unsigned)
     case "float": {
-      const n = Number(value)
+      const n = FLOAT_RE.test(value) ? Number(value) : Number.NaN
       return Number.isFinite(n) ? ok({ t: "float", v: n }) : fail("Enter a number")
     }
     case "decimal":

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { NULL_INPUT } from "../../lib/cellEdit"
 import { pendingCount } from "../../lib/gridEdits"
 import type { QueryTab } from "../../lib/queryTabs"
 import { formatShortcut } from "../../lib/shortcuts"
@@ -8,19 +8,10 @@ import { APP_SHORTCUTS } from "./appShortcuts"
 
 export function PendingBar({ tab, index }: { tab: QueryTab; index: number }) {
   const discardEdits = useTabsStore((s) => s.discardEdits)
-  const [applying, setApplying] = useState(false)
+  const applying = tab.applying
   const edits = tab.edits[index]
   const count = edits ? pendingCount(edits) : 0
   if (count === 0) return null
-
-  const apply = async () => {
-    setApplying(true)
-    try {
-      await applyActiveEdits()
-    } finally {
-      setApplying(false)
-    }
-  }
 
   return (
     <div className="pending-bar" role="region" aria-label="Pending changes">
@@ -32,7 +23,7 @@ export function PendingBar({ tab, index }: { tab: QueryTab; index: number }) {
         type="button"
         className="q-button q-button--primary"
         disabled={applying}
-        onClick={() => void apply()}
+        onClick={() => void applyActiveEdits()}
       >
         {applying ? "Applying…" : "Apply"}
         <kbd className="q-kbd">{formatShortcut(APP_SHORTCUTS.apply)}</kbd>
@@ -46,6 +37,9 @@ export function PendingBar({ tab, index }: { tab: QueryTab; index: number }) {
       >
         Discard
       </button>
+      <span className="pending-bar__hint">
+        Type {NULL_INPUT} in a cell for SQL NULL; lowercase null stays text
+      </span>
     </div>
   )
 }

@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import { connectionsApi, type ConnectionConfig, type ConnectionId } from "../lib/connections"
+import { emitAppEvent } from "../lib/events"
 import { normalizeError } from "../lib/ipc"
 import {
   describeError,
@@ -26,7 +27,8 @@ export interface DialogState {
   session: number
 }
 
-export type ActionResult<T = void> = { ok: true; value: T } | { ok: false; error: FriendlyError }
+export type ActionResult<T = void> =
+  { ok: true; value: T; warning?: FriendlyError } | { ok: false; error: FriendlyError }
 
 interface ConnectionsState {
   connections: ConnectionConfig[]
@@ -133,12 +135,24 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
   },
 
   remove: async (id) => {
+    const forget = () => {
+      set((state) => ({ connections: state.connections.filter((c) => c.id !== id) }))
+      // Tabs, sessions and caches subscribe to this to clean up after the deleted connection.
+      emitAppEvent("connection-removed", id)
+    }
     try {
       await connectionsApi.delete(id)
-      set((state) => ({ connections: state.connections.filter((c) => c.id !== id) }))
+      forget()
       return { ok: true, value: undefined }
     } catch (raw) {
-      return { ok: false, error: friendly(raw, "delete") }
+      const error = normalizeError(raw)
+      // The backend removes the config even when the keyring refuses to delete the secret;
+      // treat that as removed and surface the leftover secret as a warning.
+      if (error.kind === "credential") {
+        forget()
+        return { ok: true, value: undefined, warning: describeError(error, "delete") }
+      }
+      return { ok: false, error: describeError(error, "delete") }
     }
   },
 
