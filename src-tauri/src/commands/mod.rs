@@ -1,3 +1,4 @@
+pub mod athena;
 pub mod aws;
 pub mod connections;
 pub mod dynamo;

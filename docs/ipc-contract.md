@@ -46,7 +46,23 @@ interface DynamoConnectionConfig {
   color?: string
 }
 
-type ConnectionConfig = MysqlConnectionConfig | DynamoConnectionConfig
+interface AthenaConnectionConfig {
+  kind: "athena"
+  id: ConnectionId
+  name: string
+  region: string         // e.g. "ap-northeast-2"
+  auth: AwsAuth          // same union as DynamoDB (`profile` / `keys`); the secret key lives in the secret store
+  workgroup?: string     // absent means "primary"
+  outputLocation?: string // "s3://bucket[/prefix/]"; absent means the workgroup's, else the default bucket (see Athena)
+  database?: string      // default database of new query tabs
+  color?: string
+}
+
+type AwsAuth =
+  | { type: "profile"; profile: string }
+  | { type: "keys"; accessKeyId: string }
+
+type ConnectionConfig = MysqlConnectionConfig | DynamoConnectionConfig | AthenaConnectionConfig
 ```
 
 Secrets (MySQL password, AWS secret access key) are never part of `ConnectionConfig`. They are
@@ -62,15 +78,17 @@ written atomically (write temp file, rename) with owner-only permissions (`0600`
 | `connections_save` | `config: ConnectionConfig`, `secret: string \| null` | saved `ConnectionConfig` (with generated id). `secret === null` keeps the stored secret; `""` clears it. Keeping a stored secret (`null`) while the config no longer targets the saved server (same rule as `connections_test` below) rejects with `kind: "invalid_input"` ("Enter the password again for the new server" / "Enter the secret access key again for the new endpoint or key") and saves nothing. |
 | `connections_delete` | `id` | `void`. Closes any open session (without waiting for running queries), then removes the secret from both secret stores and the config. Only the active store's failure counts: the config is still removed and the call rejects with `kind: "credential"` ("... its saved secret is still in the keychain ..." or "... still in secrets.json ..."); a failure of the inactive store is ignored. |
 | `connections_has_secret` | `id` | `boolean` |
-| `connections_test` | `config: ConnectionConfig`, `secret: string \| null` | `{ ok: true, serverVersion?: string, latencyMs: number }`. Rejects with `kind: "connection"` on failure. A `null` secret falls back to the stored one for `config.id` **only when the config still targets the saved server**: same host (case-insensitive), port, user, `tls` and `caCertPath` for MySQL; same endpoint, region and auth (`accessKeyId` / `profile`) for DynamoDB. Otherwise it rejects with `kind: "invalid_input"` ("Enter the password again to test a different server" / "Enter the secret access key again to test a different endpoint or key"); name, database and color changes do not matter. |
+| `connections_test` | `config: ConnectionConfig`, `secret: string \| null` | `{ ok: true, serverVersion?: string, latencyMs: number, athena?: AthenaTestInfo }`. Rejects with `kind: "connection"` on failure. A `null` secret falls back to the stored one for `config.id` **only when the config still targets the saved server**: same host (case-insensitive), port, user, `tls` and `caCertPath` for MySQL; same endpoint, region and auth (`accessKeyId` / `profile`) for DynamoDB; same region and auth for Athena. Otherwise it rejects with `kind: "invalid_input"` ("Enter the password again to test a different server" / "Enter the secret access key again to test a different endpoint or key"); name, database, workgroup, output location and color changes do not matter. For Athena the probe is `GetWorkGroup` plus the output-location resolution below; `athena` is set only for Athena configs. |
 | `aws_profiles` | – | `{ name: string, region: string \| null, source: "config" \| "credentials" \| "both", sso: boolean }[]` sorted by name: `[default]` / `[profile x]` of `AWS_CONFIG_FILE` (else `~/.aws/config`) merged with `[x]` of `AWS_SHARED_CREDENTIALS_FILE` (else `~/.aws/credentials`). `region` is the config section's `region` only (never an SSO session's `sso_region`); `sso` is true when the config section has `sso_start_url` or `sso_session`. Missing files give `[]`, unparsable lines are skipped, an unreadable file rejects with `kind: "io"`. No secret value is read into or returned in the result. |
 
 Validation (backend, `kind: "invalid_input"`): name non-empty, host non-empty, port in range,
 region non-empty, profile non-empty, accessKeyId non-empty, `color` is `#rrggbb`, `endpoint` is
 an absolute `http://` or `https://` URL with a host and without user info (`user:pass@`) or a
-`#` fragment, `caCertPath` is absolute and only set with `tls` `verify_ca` / `verify_identity`.
-Text fields, `user` and `id` are trimmed. An empty `id` passed to `connections_delete` or
-`connections_has_secret` is rejected.
+`#` fragment, `caCertPath` is absolute and only set with `tls` `verify_ca` / `verify_identity`, `workgroup`
+non-empty when present, `outputLocation` (when present) is `s3://<bucket>` or
+`s3://<bucket>/<prefix>` with a bucket name of 3–63 lowercase letters, digits, dots or hyphens
+(a missing trailing `/` is added). Text fields, `user` and `id` are trimmed. An empty `id`
+passed to `connections_delete` or `connections_has_secret` is rejected.
 
 ## MySQL sessions
 
@@ -277,6 +295,7 @@ default. Sessions with `sql_mode` `NO_BACKSLASH_ESCAPES` are not supported: a st
 - `src/state/connectionsStore.ts` – configs, dialog open state, test status. Owned by the connections feature.
 - `src/state/sessionsStore.ts` – per connection: `state`, `serverVersion`, `currentDatabase`, `schema` cache. Owned by the query feature.
 - `src/state/tabsStore.ts` – open tabs, active tab, per-tab sql text and last result. Owned by the query feature.
+- `src/state/athenaStore.ts` – per Athena connection: `databases`, `schemas` cache (same `SchemaSnapshot` shape as MySQL), `currentDatabase`, loading flags. Owned by the athena feature; the query feature reads it for completion and the database switcher.
 
 ## DynamoDB
 
@@ -548,3 +567,93 @@ surfaces as `error` with the SSH message, and the call fails with kind `ssh` / `
 The password prompt flow applies to the SSH secret too: when the SSH auth needs a secret that is
 not stored, `mysql_connect` accepts `sshSecret?: string` for the session only
 (`mysql_connect(connectionId, secret?, sshSecret?)`); it is kept in memory to re-open the tunnel.
+
+## Athena
+
+Amazon Athena runs each statement as an asynchronous *query execution*: the backend starts it,
+the frontend waits for it (and may cancel it), and the rows are read from Athena's result API.
+There is no session or connection state to keep: like DynamoDB, one SDK client per connection id
+is built on first use from the saved config and dropped on `connections_delete`, on edit, or after
+a `credential` error (so `aws sso login` is picked up on the next call). A `keys` connection whose
+secret is missing from the active secret store rejects with `kind: "credential"`.
+
+Every statement **costs money** (billed by bytes scanned), so nothing is ever re-run
+automatically: there is no retry and no `reconnected` flag.
+
+**Output location** (where Athena writes result files) is resolved on every client build and
+on `connections_test`, in this order:
+
+0. a workgroup with *managed query results* needs no location: `StartQueryExecution` is sent
+   without one and `connections_test` reports `outputLocation: null`, `missingBucket: null`;
+1. the workgroup's own `ResultConfiguration.OutputLocation` when the workgroup *enforces* its
+   configuration;
+2. `config.outputLocation` when set;
+3. the workgroup's `OutputLocation` when set;
+4. the console's default bucket `s3://aws-athena-query-results-<account id>-<region>/`, with
+   the account id from `sts:GetCallerIdentity`. When that bucket does not exist (`HeadBucket`
+   → 404) nothing is created: `connections_test` reports it in `missingBucket` and `athena_start`
+   rejects with `kind: "invalid_input"` naming the bucket (`athena_databases` / `athena_schema`
+   need no location and still work; the check runs again on the next `athena_start`, so a bucket
+   created elsewhere is picked up). Any other `HeadBucket` outcome (403 included) counts as
+   existing.
+
+```ts
+interface AthenaTestInfo {
+  workgroup: string               // the workgroup probed ("primary" when the config has none)
+  outputLocation: string | null   // resolved as above; null with managed results or when missingBucket is set
+  missingBucket: string | null    // default bucket name that would have to be created
+}
+
+interface AthenaQueryOptions {
+  database?: string               // QueryExecutionContext.Database; absent = no default database
+  catalog?: string                // QueryExecutionContext.Catalog; absent = "AwsDataCatalog"
+  maxRows?: number                // rows kept, default 1000 (same meaning as mysql_query)
+}
+
+interface AthenaStats {
+  executionId: string
+  dataScannedBytes: number        // Statistics.DataScannedInBytes (0 for metadata statements)
+  engineMs: number | null         // Statistics.EngineExecutionTimeInMillis
+  outputLocation: string | null   // ResultConfiguration.OutputLocation of the execution
+}
+
+// A RowsResult (same `columns` / `rows` / `Cell` shapes as mysql_query) plus Athena statistics.
+// `reconnected` is always false; `elapsedMs` is wall time from start to the last result page.
+interface AthenaRowsResult extends RowsResult { athena: AthenaStats }
+```
+
+| command | args | returns |
+| --- | --- | --- |
+| `athena_workgroups` | `config: AthenaConnectionConfig`, `secret: string \| null` | `string[]` workgroup names sorted, `ListWorkGroups` across all pages. The secret fallback rule is that of `connections_test`. |
+| `athena_create_output_bucket` | `config`, `secret`, `bucket: string` | `{ outputLocation: string }` (`s3://<bucket>/`). Creates the bucket in `config.region` (`LocationConstraint` except for `us-east-1`) and blocks all public access on it. Only called after the user confirmed the creation in the connection dialog. `bucket` must be the name `connections_test` reported in `missingBucket`; another name rejects with `invalid_input`. A bucket that already exists and is owned by the account counts as created. Drops the cached client so the next `athena_start` re-resolves the location. |
+| `athena_databases` | `connectionId` | `string[]` sorted, `ListDatabases` of catalog `AwsDataCatalog` across all pages. |
+| `athena_schema` | `connectionId`, `database` | `SchemaSnapshot` (`mysql_schema` shape) from `ListTableMetadata` across all pages. `kind` is `"view"` for `TableType` `VIRTUAL_VIEW`, else `"table"`. Columns are the table's columns followed by its partition keys; `typeName` is the Athena/Glue type as returned (e.g. `varchar`, `bigint`, `array<string>`), `nullable` true, `isPrimary` / `isAutoIncrement` false, `defaultValue` null, `comment` from the column comment. An unknown database rejects with `not_found` (Athena's `MetadataException`). |
+| `athena_start` | `connectionId`, `sql: string`, `options: AthenaQueryOptions` | `{ executionId: string }` from `StartQueryExecution` in the config's workgroup with the resolved output location. `sql` is **one** statement (Athena rejects several); the frontend splits scripts and runs statements one after another. An empty statement rejects with `invalid_input`. |
+| `athena_wait` | `connectionId`, `executionId`, `maxRows?: number` | `AthenaRowsResult`. Polls `GetQueryExecution` (0.5 s, growing to 2 s) until the state is terminal, then pages through `GetQueryResults` (1000 per page) until `maxRows` rows are kept; `truncated` is true when more existed. `FAILED` rejects with `kind: "query"` and `AthenaError.ErrorMessage` (else `StateChangeReason`); `CANCELLED` rejects with `kind: "query"` and the message "The query was cancelled". The first result row is dropped when it repeats the column names (Athena returns a header row for `SELECT`-like statements only). Metadata statements (`SHOW ...`, DDL) return their text rows as `str` cells; a statement with no result set returns `columns: []`, `rows: []`. |
+| `athena_cancel` | `connectionId`, `executionId` | `void`. `StopQueryExecution`; already finished executions are a no-op. |
+
+`athena_start` and `athena_wait` are two calls so a running statement can be cancelled: the tab
+keeps the `executionId` while it runs.
+
+**Cells**: Athena returns every value as text with a column type; `athena_wait` maps them to
+`Cell` by the column's type (case-insensitive, parameters ignored, e.g. `decimal(10,2)` →
+`decimal`). A missing `VarCharValue` is `null`. `boolean` → `bool`; `tinyint` / `smallint` /
+`integer` / `int` / `bigint` → `int`; `real` / `float` / `double` → `float` (`NaN`, `Infinity`
+and anything that is not a finite number stay `str`); `decimal` → `decimal`; `date` → `date`;
+`time` → `time`; `timestamp` (with or without time zone) → `datetime`; `json` → `json`;
+`varbinary` → `bytes` (Athena prints bytes as space-separated hex pairs, decoded to base64; text
+that is not hex pairs stays `str`); every other type (`varchar`, `char`, `string`, `array<…>`,
+`map<…>`, `row(…)`, `interval …`, `ipaddress`, `uuid`, unknown) → `str`. `ColumnInfo.typeName`
+is the Athena type upper-cased and cut at the first `(` or `<` (`VARCHAR`, `BIGINT`, `DECIMAL`,
+`ARRAY`, `TIMESTAMP WITH TIME ZONE`),
+`table` is null and `nullable` is false only for `Nullable` `NOT_NULL`.
+
+**Errors** map like DynamoDB: missing or expired credentials (the DynamoDB credential codes plus
+`InvalidAccessKeyId`) are `credential` and drop the cached client; `AccessDeniedException` is
+`query` with a message starting "Access denied by IAM for this operation:" (the client is kept);
+throttling, service and HTTP failures are `connection`; `InvalidRequestException` is
+`invalid_input`; `MetadataException` / `ResourceNotFoundException` are `not_found`; anything else
+is `query`.
+
+`connections_delete` of an Athena connection drops its client; running executions are not
+stopped (they finish or fail on the AWS side).

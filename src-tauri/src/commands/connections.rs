@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::connections::{
-    ConnectionConfig, ConnectionTestResult, ConnectionsService, SecretSlot, probe_dynamodb,
-    probe_mysql_via, validate_config,
+    ConnectionConfig, ConnectionTestResult, ConnectionsService, SecretSlot, probe_athena,
+    probe_dynamodb, probe_mysql_via, validate_config,
 };
 use crate::error::AppResult;
 use crate::ssh::tunnel_request;
@@ -13,7 +13,7 @@ use crate::util::run_blocking;
 
 /// Runs a call on the connections service (config file and secret store I/O) on the blocking
 /// pool.
-async fn blocking<T, F>(state: &AppState, work: F) -> AppResult<T>
+pub(super) async fn blocking<T, F>(state: &AppState, work: F) -> AppResult<T>
 where
     T: Send + 'static,
     F: FnOnce(&ConnectionsService) -> AppResult<T> + Send + 'static,
@@ -38,8 +38,9 @@ pub async fn connections_save(
         c.save_with_ssh(&config, secret.as_deref(), ssh_secret.as_deref())
     })
     .await?;
-    // A cached DynamoDB client would keep the old region, endpoint or credentials.
+    // A cached AWS client would keep the old region, endpoint, workgroup or credentials.
     state.dynamo.remove(saved.id()).await;
+    state.athena.remove(saved.id()).await;
     Ok(saved)
 }
 
@@ -49,6 +50,8 @@ pub async fn connections_save(
 pub async fn connections_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
     state.mysql.disconnect(&id).await;
     state.dynamo.remove(&id).await;
+    // Running Athena executions are not stopped; they finish or fail on the AWS side.
+    state.athena.remove(&id).await;
     blocking(&state, move |c| c.delete(&id)).await
 }
 
@@ -82,5 +85,6 @@ pub async fn connections_test(
             probe_mysql_via(c, secret.as_deref(), tunnel.as_ref()).await
         }
         ConnectionConfig::Dynamodb(c) => probe_dynamodb(c, secret.as_deref()).await,
+        ConnectionConfig::Athena(c) => probe_athena(c, secret.as_deref()).await,
     }
 }

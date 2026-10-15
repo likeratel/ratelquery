@@ -74,26 +74,50 @@ pub async fn sdk_config(
     config: &DynamoConnectionConfig,
     secret: Option<&str>,
 ) -> AppResult<aws_types::SdkConfig> {
+    aws_sdk_config(&config.region, config.endpoint.as_deref(), &config.auth, secret).await
+}
+
+/// SDK config for any AWS service: `region`, an optional endpoint override and either exactly
+/// the named profile or the given access key. A missing secret for `keys` auth is `credential`.
+pub async fn aws_sdk_config(
+    region: &str,
+    endpoint: Option<&str>,
+    auth: &DynamoAuth,
+    secret: Option<&str>,
+) -> AppResult<aws_types::SdkConfig> {
     let loader =
-        aws_config::defaults(BehaviorVersion::latest()).region(Region::new(config.region.clone()));
-    let loader = match &config.endpoint {
+        aws_config::defaults(BehaviorVersion::latest()).region(Region::new(region.to_string()));
+    let loader = match endpoint {
         Some(endpoint) => loader.endpoint_url(endpoint),
         None => loader,
     };
-    let loader = match &config.auth {
-        DynamoAuth::Profile { profile } => loader
-            .profile_name(profile)
-            .credentials_provider(profile_credentials(profile, &config.region)),
+    let loader = match auth {
+        DynamoAuth::Profile { profile } => {
+            loader.profile_name(profile).credentials_provider(profile_credentials(profile, region))
+        }
         DynamoAuth::Keys { access_key_id } => {
-            let secret = secret.filter(|s| !s.is_empty()).ok_or_else(|| {
-                credential_error(&config.auth, "the secret access key is not set")
-            })?;
+            let secret = secret
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| credential_error(auth, "the secret access key is not set"))?;
             let credentials =
                 Credentials::new(access_key_id, secret, None, None, CREDENTIALS_PROVIDER_NAME);
             loader.credentials_provider(credentials)
         }
     };
     Ok(loader.load().await)
+}
+
+/// Resolves the credentials of `sdk_config` once so missing or expired credentials surface as
+/// `credential` before any request is made.
+pub async fn resolve_credentials(
+    sdk_config: &aws_types::SdkConfig,
+    auth: &DynamoAuth,
+) -> AppResult<()> {
+    let provider = sdk_config
+        .credentials_provider()
+        .ok_or_else(|| credential_error(auth, "no credentials provider is configured"))?;
+    provider.provide_credentials().await.map_err(|e| credentials_resolution_error(auth, &e))?;
+    Ok(())
 }
 
 /// Builds a client and resolves its credentials once so missing or expired credentials surface
@@ -103,13 +127,7 @@ pub async fn open_handle(
     secret: Option<&str>,
 ) -> AppResult<DynamoHandle> {
     let sdk_config = sdk_config(config, secret).await?;
-    let provider = sdk_config
-        .credentials_provider()
-        .ok_or_else(|| credential_error(&config.auth, "no credentials provider is configured"))?;
-    provider
-        .provide_credentials()
-        .await
-        .map_err(|e| credentials_resolution_error(&config.auth, &e))?;
+    resolve_credentials(&sdk_config, &config.auth).await?;
     Ok(DynamoHandle {
         client: Client::new(&sdk_config),
         auth: config.auth.clone(),

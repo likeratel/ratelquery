@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 use aws_sdk_dynamodb::error::DisplayErrorContext;
 use sqlx::Connection;
 
-use super::model::{ConnectionTestResult, DynamoConnectionConfig, MysqlConnectionConfig};
+use super::model::{
+    AthenaConnectionConfig, ConnectionTestResult, DynamoConnectionConfig, MysqlConnectionConfig,
+};
+use crate::athena::{AthenaTestInfo, connect_sdk, resolve_output};
 use crate::dynamo::sdk_config;
 use crate::error::{AppError, AppResult};
 use crate::mysql::{connect_options, describe_sqlx_error, fetch_server_version};
@@ -63,6 +66,7 @@ pub async fn probe_mysql_via(
         ok: true,
         server_version: Some(version),
         latency_ms: elapsed_ms(start),
+        athena: None,
     })
 }
 
@@ -93,7 +97,47 @@ pub async fn probe_dynamodb(
     tokio::time::timeout(PROBE_TIMEOUT, work)
         .await
         .map_err(|_| timed_out("DynamoDB request"))??;
-    Ok(ConnectionTestResult { ok: true, server_version: None, latency_ms: elapsed_ms(start) })
+    Ok(ConnectionTestResult {
+        ok: true,
+        server_version: None,
+        latency_ms: elapsed_ms(start),
+        athena: None,
+    })
+}
+
+/// `connections_test` reports every failure as `connection`, keeping the message.
+fn into_connection_error(err: AppError) -> AppError {
+    match err {
+        AppError::Connection(message) => AppError::Connection(message),
+        other => AppError::Connection(other.to_string()),
+    }
+}
+
+/// Loads credentials, calls `GetWorkGroup` and resolves the output location (STS and
+/// `HeadBucket` only for the default bucket). Nothing is created.
+pub async fn probe_athena(
+    config: &AthenaConnectionConfig,
+    secret: Option<&str>,
+) -> AppResult<ConnectionTestResult> {
+    let start = Instant::now();
+    let work = async {
+        let (sdk, client) = connect_sdk(config, secret).await?;
+        resolve_output(&sdk, &client, config).await
+    };
+    let output = tokio::time::timeout(PROBE_TIMEOUT, work)
+        .await
+        .map_err(|_| timed_out("Athena request"))?
+        .map_err(into_connection_error)?;
+    Ok(ConnectionTestResult {
+        ok: true,
+        server_version: None,
+        latency_ms: elapsed_ms(start),
+        athena: Some(AthenaTestInfo {
+            workgroup: config.workgroup_name().to_string(),
+            output_location: output.location().map(str::to_string),
+            missing_bucket: output.missing_bucket().map(str::to_string),
+        }),
+    })
 }
 
 #[cfg(test)]
@@ -114,5 +158,23 @@ mod tests {
         let err = probe_dynamodb(&config, None).await.unwrap_err();
         assert_eq!(err.kind(), "connection");
         assert!(err.to_string().contains("secret access key is not set"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn athena_missing_key_secret_is_a_connection_error() {
+        let config = AthenaConnectionConfig {
+            id: "x".into(),
+            name: "x".into(),
+            region: "ap-northeast-2".into(),
+            auth: DynamoAuth::Keys { access_key_id: "AKIA".into() },
+            workgroup: None,
+            output_location: None,
+            database: None,
+            color: None,
+        };
+        let err = probe_athena(&config, None).await.unwrap_err();
+        assert_eq!(err.kind(), "connection");
+        assert!(err.to_string().contains("secret access key is not set"), "{err}");
+        assert_eq!(into_connection_error(AppError::NotFound("n".into())).kind(), "connection");
     }
 }

@@ -5,6 +5,8 @@ use super::model::{
     SshAuth, SshConfig,
 };
 use super::secrets::SSH_SECRET_SUFFIX;
+pub use super::validate_athena::normalize_output_location;
+use super::validate_athena::validate_athena;
 use crate::error::{AppError, AppResult};
 
 const ENDPOINT_SCHEMES: [&str; 2] = ["http", "https"];
@@ -12,19 +14,19 @@ const ENDPOINT_SCHEMES: [&str; 2] = ["http", "https"];
 const MIN_PORT: i64 = 1;
 const MAX_PORT: i64 = 65_535;
 
-fn require(value: &str, field: &str) -> AppResult<()> {
+pub(super) fn require(value: &str, field: &str) -> AppResult<()> {
     if value.trim().is_empty() {
         return Err(AppError::InvalidInput(format!("{field} must not be empty")));
     }
     Ok(())
 }
 
-fn non_empty(value: &Option<String>) -> Option<String> {
+pub(super) fn non_empty(value: &Option<String>) -> Option<String> {
     value.as_ref().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
 /// `#rrggbb`, or nothing.
-fn validate_color(color: &Option<String>) -> AppResult<Option<String>> {
+pub(super) fn validate_color(color: &Option<String>) -> AppResult<Option<String>> {
     let Some(color) = non_empty(color) else { return Ok(None) };
     let hex = color.strip_prefix('#').unwrap_or("");
     if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -140,7 +142,7 @@ fn validate_mysql(c: &MysqlConnectionConfig) -> AppResult<MysqlConnectionConfig>
     })
 }
 
-fn validate_auth(auth: &DynamoAuth) -> AppResult<DynamoAuth> {
+pub(super) fn validate_auth(auth: &DynamoAuth) -> AppResult<DynamoAuth> {
     match auth {
         DynamoAuth::Profile { profile } => {
             require(profile, "profile")?;
@@ -183,6 +185,7 @@ pub fn validate_config(config: &ConnectionConfig) -> AppResult<ConnectionConfig>
     match config {
         ConnectionConfig::Mysql(c) => validate_mysql(c).map(ConnectionConfig::Mysql),
         ConnectionConfig::Dynamodb(c) => validate_dynamo(c).map(ConnectionConfig::Dynamodb),
+        ConnectionConfig::Athena(c) => validate_athena(c).map(ConnectionConfig::Athena),
     }
 }
 
@@ -216,7 +219,7 @@ pub fn same_ssh_target(a: &ConnectionConfig, b: &ConnectionConfig) -> bool {
 
 /// True when both configs send the stored secret to the same place: same kind and
 /// host/port/user/TLS settings and SSH bastion (MySQL) or endpoint/region/auth identity
-/// (DynamoDB). Compare validated configs.
+/// (DynamoDB) or region/auth identity (Athena). Compare validated configs.
 pub fn same_target(a: &ConnectionConfig, b: &ConnectionConfig) -> bool {
     match (a, b) {
         (ConnectionConfig::Mysql(a), ConnectionConfig::Mysql(b)) => {
@@ -229,6 +232,9 @@ pub fn same_target(a: &ConnectionConfig, b: &ConnectionConfig) -> bool {
         }
         (ConnectionConfig::Dynamodb(a), ConnectionConfig::Dynamodb(b)) => {
             a.endpoint == b.endpoint && a.region == b.region && a.auth == b.auth
+        }
+        (ConnectionConfig::Athena(a), ConnectionConfig::Athena(b)) => {
+            a.region == b.region && a.auth == b.auth
         }
         _ => false,
     }

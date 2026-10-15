@@ -30,7 +30,7 @@ fn require_id(id: &str) -> AppResult<&str> {
 fn retarget_message(config: &ConnectionConfig) -> &'static str {
     match config {
         ConnectionConfig::Mysql(_) => "Enter the password again for the new server",
-        ConnectionConfig::Dynamodb(_) => {
+        ConnectionConfig::Dynamodb(_) | ConnectionConfig::Athena(_) => {
             "Enter the secret access key again for the new endpoint or key"
         }
     }
@@ -39,7 +39,7 @@ fn retarget_message(config: &ConnectionConfig) -> &'static str {
 fn retype_message(config: &ConnectionConfig) -> &'static str {
     match config {
         ConnectionConfig::Mysql(_) => "Enter the password again to test a different server",
-        ConnectionConfig::Dynamodb(_) => {
+        ConnectionConfig::Dynamodb(_) | ConnectionConfig::Athena(_) => {
             "Enter the secret access key again to test a different endpoint or key"
         }
     }

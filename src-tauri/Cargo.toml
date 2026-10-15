@@ -25,6 +25,8 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-sts = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-athena = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-types = "1"
 aws-credential-types = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }

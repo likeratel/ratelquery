@@ -1,3 +1,4 @@
+pub mod athena;
 mod aws_profiles;
 mod commands;
 pub mod connections;
@@ -77,6 +78,13 @@ pub fn run() {
             commands::dynamo::dynamo_put_item,
             commands::dynamo::dynamo_delete_item,
             commands::dynamo::dynamo_export,
+            commands::athena::athena_workgroups,
+            commands::athena::athena_create_output_bucket,
+            commands::athena::athena_databases,
+            commands::athena::athena_schema,
+            commands::athena::athena_start,
+            commands::athena::athena_wait,
+            commands::athena::athena_cancel,
             commands::settings::settings_get,
             commands::settings::settings_set,
             commands::ssh::ssh_trust_host,

@@ -51,7 +51,8 @@ pub fn credentials_resolution_error(auth: &DynamoAuth, err: &CredentialsError) -
     credential_error(auth, &DisplayErrorContext(err).to_string())
 }
 
-fn has_credentials_source(err: &(dyn StdError + 'static)) -> bool {
+/// True when a credentials provider failure is somewhere in the error's source chain.
+pub fn has_credentials_source(err: &(dyn StdError + 'static)) -> bool {
     let mut current: Option<&(dyn StdError + 'static)> = Some(err);
     while let Some(e) = current {
         if e.downcast_ref::<CredentialsError>().is_some() {

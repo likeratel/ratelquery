@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::athena::AthenaTestInfo;
+
 /// MySQL TLS mode, mapped onto sqlx `MySqlSslMode`.
 /// `preferred` and `required` encrypt without verifying the certificate; `verify_ca` checks the
 /// chain (against `caCertPath`, or the bundled Mozilla roots when absent); `verify_identity`
@@ -111,6 +113,38 @@ pub struct DynamoConnectionConfig {
     pub color: Option<String>,
 }
 
+/// AWS authentication shared by the AWS connection kinds (DynamoDB, Athena).
+pub type AwsAuth = DynamoAuth;
+
+/// Workgroup used when an Athena config names none.
+pub const DEFAULT_ATHENA_WORKGROUP: &str = "primary";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AthenaConnectionConfig {
+    pub id: String,
+    pub name: String,
+    pub region: String,
+    pub auth: AwsAuth,
+    /// Absent means [`DEFAULT_ATHENA_WORKGROUP`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workgroup: Option<String>,
+    /// `s3://bucket/[prefix/]`; absent means the workgroup's or the default bucket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_location: Option<String>,
+    /// Default database of new query tabs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+impl AthenaConnectionConfig {
+    pub fn workgroup_name(&self) -> &str {
+        self.workgroup.as_deref().unwrap_or(DEFAULT_ATHENA_WORKGROUP)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum ConnectionConfig {
@@ -118,6 +152,8 @@ pub enum ConnectionConfig {
     Mysql(MysqlConnectionConfig),
     #[serde(rename = "dynamodb")]
     Dynamodb(DynamoConnectionConfig),
+    #[serde(rename = "athena")]
+    Athena(AthenaConnectionConfig),
 }
 
 impl ConnectionConfig {
@@ -125,6 +161,7 @@ impl ConnectionConfig {
         match self {
             ConnectionConfig::Mysql(c) => &c.id,
             ConnectionConfig::Dynamodb(c) => &c.id,
+            ConnectionConfig::Athena(c) => &c.id,
         }
     }
 
@@ -132,6 +169,7 @@ impl ConnectionConfig {
         match self {
             ConnectionConfig::Mysql(c) => &c.name,
             ConnectionConfig::Dynamodb(c) => &c.name,
+            ConnectionConfig::Athena(c) => &c.name,
         }
     }
 
@@ -145,6 +183,9 @@ impl ConnectionConfig {
                 id: id.to_string(),
                 ..c.clone()
             }),
+            ConnectionConfig::Athena(c) => {
+                ConnectionConfig::Athena(AthenaConnectionConfig { id: id.to_string(), ..c.clone() })
+            }
         }
     }
 }
@@ -156,6 +197,9 @@ pub struct ConnectionTestResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_version: Option<String>,
     pub latency_ms: u64,
+    /// Workgroup and output location; set only for Athena configs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub athena: Option<AthenaTestInfo>,
 }
 
 #[cfg(test)]
@@ -235,7 +279,52 @@ mod tests {
 
     #[test]
     fn test_result_omits_missing_version() {
-        let result = ConnectionTestResult { ok: true, server_version: None, latency_ms: 3 };
+        let result =
+            ConnectionTestResult { ok: true, server_version: None, latency_ms: 3, athena: None };
         assert_eq!(serde_json::to_value(result).unwrap(), json!({ "ok": true, "latencyMs": 3 }));
+    }
+
+    #[test]
+    fn test_result_carries_athena_info() {
+        let athena = AthenaTestInfo {
+            workgroup: "primary".into(),
+            output_location: None,
+            missing_bucket: Some("aws-athena-query-results-1-us-east-1".into()),
+        };
+        let result = ConnectionTestResult {
+            ok: true,
+            server_version: None,
+            latency_ms: 3,
+            athena: Some(athena),
+        };
+        assert_eq!(
+            serde_json::to_value(result).unwrap(),
+            json!({ "ok": true, "latencyMs": 3, "athena": {
+                "workgroup": "primary", "outputLocation": null,
+                "missingBucket": "aws-athena-query-results-1-us-east-1" } })
+        );
+    }
+
+    #[test]
+    fn athena_config_round_trips() {
+        let value = json!({
+            "kind": "athena", "id": "c", "name": "lake", "region": "ap-northeast-2",
+            "auth": { "type": "profile", "profile": "data" }, "workgroup": "analysts",
+            "outputLocation": "s3://bucket/results/", "database": "sales", "color": "#7c9cff"
+        });
+        let config: ConnectionConfig = serde_json::from_value(value.clone()).unwrap();
+        let ConnectionConfig::Athena(c) = &config else { panic!("expected athena") };
+        assert_eq!(c.workgroup_name(), "analysts");
+        assert_eq!(serde_json::to_value(&config).unwrap(), value);
+
+        let minimal = json!({
+            "kind": "athena", "id": "c", "name": "lake", "region": "us-east-1",
+            "auth": { "type": "keys", "accessKeyId": "AKIA" }
+        });
+        let config: ConnectionConfig = serde_json::from_value(minimal.clone()).unwrap();
+        let ConnectionConfig::Athena(c) = &config else { panic!("expected athena") };
+        assert_eq!(c.workgroup_name(), DEFAULT_ATHENA_WORKGROUP);
+        assert_eq!(serde_json::to_value(&config).unwrap(), minimal);
+        assert_eq!(config.with_id("d").id(), "d");
     }
 }

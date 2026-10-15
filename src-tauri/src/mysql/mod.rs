@@ -33,7 +33,7 @@ pub use model::{
     SchemaSnapshot, SchemaTable, SessionState, TableDetails, TableKind,
 };
 pub use options::{MAX_CONNECTIONS, connect_options, fetch_server_version, quote_ident};
-pub use query::run_query;
+pub use query::{resolve_max_rows, run_query};
 pub use registry::{MysqlSessions, PING_INTERVAL};
 pub use session::MysqlSession;
 pub use splitter::split_statements;

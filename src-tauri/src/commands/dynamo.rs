@@ -19,7 +19,7 @@ const MISSING_KEY_MESSAGE: &str = "No secret access key is stored for this conne
 
 /// The stored secret access key of a `keys` connection, or a `credential` error asking the user
 /// to edit the connection (the active secret store may have been switched).
-fn require_stored_key(secret: Option<String>) -> AppResult<String> {
+pub(super) fn require_stored_key(secret: Option<String>) -> AppResult<String> {
     secret
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::Credential(MISSING_KEY_MESSAGE.to_string()))

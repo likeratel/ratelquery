@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter};
 
+use crate::athena::AthenaClients;
 use crate::connections::{
     ConnectionStore, ConnectionsService, FileSecretStore, SecretStore, SwitchableSecretStore,
 };
@@ -18,6 +19,7 @@ pub struct AppState {
     pub secrets: Arc<SwitchableSecretStore>,
     pub mysql: MysqlSessions,
     pub dynamo: DynamoClients,
+    pub athena: AthenaClients,
     pub settings: Arc<SettingsService>,
     /// `~/.ssh/known_hosts` plus the app's own file, for SSH tunnels.
     pub known_hosts: KnownHosts,
@@ -47,6 +49,7 @@ impl AppState {
             secrets,
             mysql: MysqlSessions::new(sink).with_known_hosts(known_hosts.clone()),
             dynamo: DynamoClients::new(),
+            athena: AthenaClients::new(),
             settings,
             known_hosts,
         }
