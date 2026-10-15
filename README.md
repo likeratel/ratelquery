@@ -85,7 +85,7 @@ Live database tests run only when `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0
 
 On macOS, `tauri dev` re-signs the debug binary (see `scripts/cargo.sh`) so the keychain's "Always allow" on saved passwords survives rebuilds. It uses `DBCLIENT_DEV_SIGN_IDENTITY` when set, otherwise the only code-signing identity in your keychain; with none or several it leaves the ad-hoc signature and says so. Set `DBCLIENT_DEV_SIGN=0` to skip signing.
 
-A DynamoDB or Athena connection that uses an AWS profile runs whatever that profile configures, including a `credential_process` command from your AWS config, exactly as the AWS CLI would. There is no local Athena emulator, so Athena is covered by unit tests on the result decoding and the location rules, and checked by hand against a real account.
+A DynamoDB or Athena connection that uses an AWS profile runs whatever that profile configures, including a `credential_process` command from your AWS config, exactly as the AWS CLI would. There is no local Athena emulator, so Athena is covered by unit tests on the result decoding and the location rules, plus `src-tauri/tests/athena_live.rs`, which runs constant `SELECT`s and metadata statements against a real account only when `DBCLIENT_TEST_ATHENA_PROFILE=<~/.aws profile>` is set (optionally `DBCLIENT_TEST_ATHENA_REGION`, `DBCLIENT_TEST_ATHENA_WORKGROUP`); those statements scan no data, but Athena still writes their result files to the workgroup's result location.
 
 To avoid keychain prompts altogether, choose the file secret store in Settings: secrets are then kept in `<app config dir>/secrets.json` (mode 0600), protected by file permissions only. Secrets are moved when possible; ones the old store refuses to hand over stay there.
 
