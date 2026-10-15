@@ -36,6 +36,8 @@ const snapshot: SchemaSnapshot = {
 class FakeMysql {
   calls: { command: string; args?: Record<string, unknown> }[] = []
   failDatabases = false
+  failSchema = false
+  schema: SchemaSnapshot = snapshot
 
   handle = async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
     this.calls.push({ command, args })
@@ -46,7 +48,8 @@ class FakeMysql {
         if (this.failDatabases) throw { kind: "connection", message: "Connection refused" }
         return ["app", "shop"]
       case "mysql_schema":
-        return snapshot
+        if (this.failSchema) throw { kind: "connection", message: "Lost connection" }
+        return this.schema
       case "mysql_table_details":
         if (args?.table !== "users") throw { kind: "not_found", message: "Unknown table" }
         return details
@@ -92,7 +95,7 @@ describe("tree loading", () => {
         { name: "shop", kind: "database" },
       ],
     })
-    // The session store also lists databases after connecting; only the tree's own call counts.
+    // A loaded node is not listed again.
     const before = fake.count("mysql_databases")
     await loadDatabases("c1")
     expect(fake.count("mysql_databases")).toBe(before)
@@ -110,6 +113,59 @@ describe("tree loading", () => {
     ])
     await loadTables("c1", "app", true)
     expect(fake.count("mysql_schema")).toBe(1)
+  })
+})
+
+describe("tree and session cache", () => {
+  const fresh: SchemaSnapshot = {
+    ...snapshot,
+    fetchedAt: "2026-02-01T00:00:00Z",
+    tables: [{ name: "orders", kind: "table", columns: [] }],
+  }
+
+  it("lists databases once on the first expand and shares them with the session", async () => {
+    await loadDatabases("c1")
+    expect(fake.count("mysql_databases")).toBe(1)
+    expect(useSessionsStore.getState().sessions.c1?.databases).toEqual(["app", "shop"])
+    expect(useSchemaTree.getState().loads[connectionKey("c1")]?.children).toHaveLength(2)
+  })
+
+  it("reuses databases the session already listed and refetches on refresh", async () => {
+    useSessionsStore.setState({
+      sessions: { c1: { ...emptySession(), state: "connected", databases: ["app"] } },
+    })
+    await loadDatabases("c1")
+    expect(fake.calls).toEqual([])
+    expect(useSchemaTree.getState().loads[connectionKey("c1")]?.children).toEqual([
+      { name: "app", kind: "database" },
+    ])
+    await loadDatabases("c1", true)
+    expect(fake.count("mysql_databases")).toBe(1)
+    expect(useSessionsStore.getState().sessions.c1?.databases).toEqual(["app", "shop"])
+  })
+
+  it("stores a forced table refresh in the session's schema cache", async () => {
+    useSessionsStore.setState({
+      sessions: { c1: { ...emptySession(), state: "connected", schemas: { app: snapshot } } },
+    })
+    fake.schema = fresh
+    await loadTables("c1", "app", true)
+    expect(useSessionsStore.getState().sessions.c1?.schemas.app).toEqual(fresh)
+    expect(useSchemaTree.getState().loads[databaseKey("c1", "app")]?.children).toEqual([
+      { name: "orders", kind: "table" },
+    ])
+  })
+
+  it("reports a failed forced refresh instead of showing the stale cache", async () => {
+    useSessionsStore.setState({
+      sessions: { c1: { ...emptySession(), state: "connected", schemas: { app: snapshot } } },
+    })
+    fake.failSchema = true
+    await loadTables("c1", "app", true)
+    expect(useSchemaTree.getState().loads[databaseKey("c1", "app")]).toMatchObject({
+      status: "error",
+      error: { kind: "connection", message: "Lost connection" },
+    })
   })
 })
 

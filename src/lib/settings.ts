@@ -8,7 +8,7 @@ export interface QuerySettings {
   /** LIMIT appended to a SELECT that has none. */
   defaultLimit: number
   addLimitToSelect: boolean
-  /** Ask before UPDATE/DELETE without WHERE, DROP, TRUNCATE, ALTER. */
+  /** Ask before UPDATE/DELETE without WHERE, DROP, TRUNCATE, ALTER, RENAME TABLE. */
   confirmDestructive: boolean
   /** Rows kept in memory per result. */
   maxRows: number
@@ -130,8 +130,19 @@ export function parseNumericSetting(field: NumericSetting, text: string): FieldR
   return { ok: false, error: parsed.error.issues[0]?.message ?? message }
 }
 
+export type NumericCommit =
+  { kind: "commit"; value: number } | { kind: "unchanged" } | { kind: "invalid"; error: string }
+
+/** What committing the typed text (on blur or Enter) does for a numeric setting at `current`. */
+export function numericCommit(field: NumericSetting, text: string, current: number): NumericCommit {
+  const parsed = parseNumericSetting(field, text)
+  if (!parsed.ok) return { kind: "invalid", error: parsed.error }
+  return parsed.value === current ? { kind: "unchanged" } : { kind: "commit", value: parsed.value }
+}
+
 export const settingsApi = {
   get: async () => normalizeSettings(await ipc<unknown>("settings_get")),
-  set: async (settings: Settings) =>
-    normalizeSettings(await ipc<unknown>("settings_set", { settings })),
+  /** Sends only the changed fields; the backend deep-merges them and returns the full result. */
+  set: async (patch: SettingsPatch) =>
+    normalizeSettings(await ipc<unknown>("settings_set", { settings: patch })),
 }

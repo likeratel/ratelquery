@@ -41,9 +41,16 @@ interface SessionsState {
   sessions: Readonly<Record<ConnectionId, MysqlSession>>
   /** Connects once; concurrent callers share the same in-flight request. */
   connect: (id: ConnectionId, fallbackDatabase?: string | null) => Promise<MysqlSessionInfo>
-  loadDatabases: (id: ConnectionId) => Promise<void>
-  /** Fetches (or re-fetches) the schema of `database`, defaulting to the current database. */
-  refreshSchema: (id: ConnectionId, database?: string | null) => Promise<void>
+  /**
+   * Lists the databases into the session; concurrent callers share the request in flight.
+   * Resolves with the error (also kept in `lastError`) or null on success.
+   */
+  loadDatabases: (id: ConnectionId) => Promise<AppError | null>
+  /**
+   * Fetches (or re-fetches) the schema of `database`, defaulting to the current database.
+   * Resolves with the error (also kept in `lastError`) or null on success.
+   */
+  refreshSchema: (id: ConnectionId, database?: string | null) => Promise<AppError | null>
   /** Loads the schema for `database` only when it isn't cached yet. */
   ensureSchema: (id: ConnectionId, database: string | null) => Promise<void>
   setCurrentDatabase: (id: ConnectionId, database: string | null) => Promise<void>
@@ -111,6 +118,7 @@ const withoutKey = <T>(record: Readonly<Record<string, T>>, key: string): Record
   Object.fromEntries(Object.entries(record).filter(([k]) => k !== key))
 
 const inflight = new Map<ConnectionId, Promise<MysqlSessionInfo>>()
+const databasesInflight = new Map<ConnectionId, Promise<AppError | null>>()
 
 /**
  * Deleted connections. Responses and events that arrive after `forget` must not bring the
@@ -183,19 +191,31 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       return request
     },
 
-    loadDatabases: async (id) => {
+    loadDatabases: (id) => {
+      const pending = databasesInflight.get(id)
+      if (pending) return pending
       const epoch = epochOf(id)
-      try {
-        const databases = await mysqlApi.databases(id)
-        patch(id, (s) => ({ ...s, databases }), epoch)
-      } catch (raw) {
-        patch(id, (s) => ({ ...s, lastError: normalizeError(raw) }), epoch)
-      }
+      const request = mysqlApi
+        .databases(id)
+        .then((databases) => {
+          patch(id, (s) => ({ ...s, databases }), epoch)
+          return null
+        })
+        .catch((raw: unknown) => {
+          const error = normalizeError(raw)
+          patch(id, (s) => ({ ...s, lastError: error }), epoch)
+          return error
+        })
+        .finally(() => {
+          if (databasesInflight.get(id) === request) databasesInflight.delete(id)
+        })
+      databasesInflight.set(id, request)
+      return request
     },
 
     refreshSchema: async (id, database) => {
       const target = database ?? get().sessions[id]?.currentDatabase ?? null
-      if (!target) return
+      if (!target) return null
       const epoch = epochOf(id)
       patch(id, (s) => ({ ...s, schemaLoading: { ...s.schemaLoading, [target]: true } }), epoch)
       try {
@@ -209,16 +229,19 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
           }),
           epoch,
         )
+        return null
       } catch (raw) {
+        const error = normalizeError(raw)
         patch(
           id,
           (s) => ({
             ...s,
             schemaLoading: withoutKey(s.schemaLoading, target),
-            lastError: normalizeError(raw),
+            lastError: error,
           }),
           epoch,
         )
+        return error
       }
     },
 
@@ -246,6 +269,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       forgotten.add(id)
       epochs.set(id, epochOf(id) + 1)
       inflight.delete(id)
+      databasesInflight.delete(id)
       set((state) => ({ sessions: withoutKey(state.sessions, id) }))
     },
   }

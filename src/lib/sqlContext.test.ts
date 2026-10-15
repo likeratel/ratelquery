@@ -30,6 +30,21 @@ describe("splitStatements", () => {
     expect(texts("")).toEqual([])
   })
 
+  it("counts an executable comment as a statement, like the backend", () => {
+    const sql = "/*!40101 SET NAMES utf8mb4 */;\n/* plain */;\n/*!40014 SET FOREIGN_KEY_CHECKS=0 */"
+    expect(texts(sql)).toEqual([
+      "/*!40101 SET NAMES utf8mb4 */;",
+      "/*!40014 SET FOREIGN_KEY_CHECKS=0 */",
+    ])
+  })
+
+  it("does not split on a semicolon inside an executable comment", () => {
+    expect(texts("/*!50000 SELECT 1; */ ; SELECT 2")).toEqual([
+      "/*!50000 SELECT 1; */ ;",
+      "SELECT 2",
+    ])
+  })
+
   it("reports offsets into the original text", () => {
     const sql = "  select 1 ;  select 2"
     const [first, second] = splitStatements(sql)
@@ -58,6 +73,12 @@ describe("statementAtCursor", () => {
 
   it("falls back to the previous statement in trailing whitespace", () => {
     expect(statementAtCursor("select 1;\n\n", 11)?.text).toBe("select 1;")
+  })
+
+  it("selects an executable comment statement under the cursor", () => {
+    const text = "SELECT 1;\n/*!50000 DELETE FROM t */;\n/* note */"
+    expect(statementAtCursor(text, text.indexOf("DELETE"))?.text).toBe("/*!50000 DELETE FROM t */;")
+    expect(statementAtCursor(text, text.length)?.text).toBe("/*!50000 DELETE FROM t */;")
   })
 
   it("returns null when there is nothing to run", () => {

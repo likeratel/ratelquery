@@ -1,6 +1,8 @@
 /**
  * Statement splitting for the query editor. Mirrors the backend rule: split on `;` outside
- * strings, quoted identifiers and comments. `DELIMITER` blocks are not supported.
+ * strings, quoted identifiers and comments. A `/*! ... *\/` executable comment is code (MySQL
+ * runs its body) but, like a comment, never splits on a `;` inside it. `DELIMITER` blocks are
+ * not supported.
  */
 
 export interface StatementRange {
@@ -34,6 +36,12 @@ export function blankStringsAndComments(sql: string): string {
   let i = 0
   while (i < sql.length) {
     const ch = sql[i] as string
+    const executable = executableComment(sql, i)
+    if (executable) {
+      out += ` ${blankStringsAndComments(sql.slice(executable.bodyFrom, executable.bodyTo))} `
+      i = executable.end
+      continue
+    }
     const commentEnd = skipComment(sql, i)
     if (commentEnd !== -1) {
       out += " "
@@ -74,7 +82,30 @@ export function skipQuoted(sql: string, start: number): number {
   return sql.length
 }
 
-/** Returns the index just past a comment starting at `i`, or -1 if none starts there. */
+/** Bounds of a `/*!NNNNN body *\/` executable comment: the body sits between the markers. */
+export interface ExecutableComment {
+  bodyFrom: number
+  bodyTo: number
+  /** Index just past the closing `*\/` (the end of the text when unterminated). */
+  end: number
+}
+
+const VERSION_PREFIX = /^\d{5}\d?/
+
+/** The executable comment starting at `i`, or null if none starts there. */
+export function executableComment(sql: string, i: number): ExecutableComment | null {
+  if (sql[i] !== "/" || sql[i + 1] !== "*" || sql[i + 2] !== "!") return null
+  const version = VERSION_PREFIX.exec(sql.slice(i + 3, i + 9))
+  const bodyFrom = i + 3 + (version ? version[0].length : 0)
+  const close = sql.indexOf("*/", bodyFrom)
+  if (close === -1) return { bodyFrom, bodyTo: sql.length, end: sql.length }
+  return { bodyFrom, bodyTo: close, end: close + 2 }
+}
+
+/**
+ * Returns the index just past a comment starting at `i`, or -1 if none starts there. An
+ * executable comment (`/*! ... *\/`) is code, not a comment; see `executableComment`.
+ */
 export function skipComment(sql: string, i: number): number {
   const ch = sql[i]
   const next = sql[i + 1]
@@ -83,7 +114,7 @@ export function skipComment(sql: string, i: number): number {
     const newline = sql.indexOf("\n", i)
     return newline === -1 ? sql.length : newline
   }
-  if (ch === "/" && next === "*") {
+  if (ch === "/" && next === "*" && sql[i + 2] !== "!") {
     const close = sql.indexOf("*/", i + 2)
     return close === -1 ? sql.length : close + 2
   }
@@ -102,8 +133,12 @@ function scanSegments(sql: string): Segment[] {
   }
   while (i < sql.length) {
     const ch = sql[i]
+    const executable = executableComment(sql, i)
     const commentEnd = skipComment(sql, i)
-    if (commentEnd !== -1) {
+    if (executable) {
+      markCode(i, executable.end)
+      i = executable.end
+    } else if (commentEnd !== -1) {
       i = commentEnd
     } else if (QUOTES.has(ch)) {
       const end = skipQuoted(sql, i)

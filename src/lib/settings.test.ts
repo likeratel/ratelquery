@@ -3,6 +3,7 @@ import {
   DEFAULT_SETTINGS,
   mergeSettings,
   normalizeSettings,
+  numericCommit,
   parseNumericSetting,
   settingsSchema,
 } from "./settings"
@@ -59,5 +60,14 @@ describe("parseNumericSetting", () => {
       })
     }
     expect(parseNumericSetting("editorFontSize", "21")).toMatchObject({ ok: false })
+  })
+})
+
+describe("numericCommit", () => {
+  it("commits a valid changed value, skips an unchanged one and reports invalid text", () => {
+    expect(numericCommit("editorFontSize", "15", 13)).toEqual({ kind: "commit", value: 15 })
+    expect(numericCommit("editorFontSize", " 13 ", 13)).toEqual({ kind: "unchanged" })
+    expect(numericCommit("editorFontSize", "1", 13)).toMatchObject({ kind: "invalid" })
+    expect(numericCommit("pageSize", "", 100)).toMatchObject({ kind: "invalid" })
   })
 })

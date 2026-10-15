@@ -23,8 +23,42 @@ describe("planRun", () => {
       "SELECT * FROM a LIMIT 1000;\nSELECT * FROM b LIMIT 5;\nSELECT 1 LIMIT 1000",
     )
     expect(plan.limited).toEqual([
-      { statement: "SELECT * FROM a LIMIT 1000", limit: 1000 },
-      { statement: "SELECT 1 LIMIT 1000", limit: 1000 },
+      { index: 0, limit: 1000 },
+      { index: 2, limit: 1000 },
+    ])
+  })
+
+  it("keeps the text between statements, including executable comments", () => {
+    const sql = [
+      "/*!40101 SET NAMES utf8mb4 */;",
+      "-- users first",
+      "SELECT * FROM users;",
+      "/* plain */",
+      "/*!40014 SET FOREIGN_KEY_CHECKS=0 */;",
+      "SELECT * FROM orders",
+    ].join("\n")
+    const plan = planRun(sql, settings())
+    expect(plan.sql).toBe(
+      [
+        "/*!40101 SET NAMES utf8mb4 */;",
+        "-- users first",
+        "SELECT * FROM users LIMIT 1000;",
+        "/* plain */",
+        "/*!40014 SET FOREIGN_KEY_CHECKS=0 */;",
+        "SELECT * FROM orders LIMIT 1000",
+      ].join("\n"),
+    )
+    // Indexes count the executable comments as statements, as the backend does.
+    expect(plan.limited.map((l) => l.index)).toEqual([1, 3])
+  })
+
+  it("limits a SELECT inside an executable comment and confirms a DELETE inside one", () => {
+    expect(planRun("/*!40101 SELECT * FROM t */", settings()).sql).toBe(
+      "/*!40101 SELECT * FROM t LIMIT 1000 */",
+    )
+    const dangers = planRun("SELECT 1;\n/*!50000 DELETE FROM t */", settings()).dangers
+    expect(dangers).toEqual([
+      { statement: "/*!50000 DELETE FROM t */", reason: expect.stringMatching(/DELETE/) },
     ])
   })
 
@@ -64,10 +98,17 @@ describe("confirmDangerousRun", () => {
 })
 
 describe("addedLimitFor", () => {
-  it("finds the LIMIT added to an executed statement", () => {
-    const limited = [{ statement: "SELECT 1 LIMIT 50", limit: 50 }]
-    expect(addedLimitFor(limited, "SELECT 1 LIMIT 50")).toBe(50)
-    expect(addedLimitFor(limited, "SELECT 1")).toBeNull()
-    expect(addedLimitFor(undefined, "SELECT 1")).toBeNull()
+  it("finds the LIMIT added to the statement behind a result index", () => {
+    const limited = [{ index: 1, limit: 50 }]
+    expect(addedLimitFor(limited, 1)).toBe(50)
+    expect(addedLimitFor(limited, 0)).toBeNull()
+    expect(addedLimitFor(undefined, 1)).toBeNull()
+  })
+
+  it("matches a result whose statement text carries a leading comment", () => {
+    // The backend keeps a leading comment in `RowsResult.statement`; the index still matches.
+    const plan = planRun("SELECT 1;\n-- recent\nSELECT * FROM t", settings())
+    expect(addedLimitFor(plan.limited, 1)).toBe(1000)
+    expect(addedLimitFor(plan.limited, 0)).toBe(1000)
   })
 })

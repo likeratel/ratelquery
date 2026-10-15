@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react"
+import { useEffect, useState, type KeyboardEvent } from "react"
 import { TextField } from "../../components/ui"
-import { parseNumericSetting, type NumericSetting } from "../../lib/settings"
+import { numericCommit, parseNumericSetting, type NumericSetting } from "../../lib/settings"
 
 interface NumberSettingProps {
   field: NumericSetting
@@ -11,8 +11,9 @@ interface NumberSettingProps {
 }
 
 /**
- * Numeric setting saved as soon as the text is valid. Invalid text stays in the field with an
- * inline error and is never saved; a rolled-back save puts the stored value back.
+ * Numeric setting. Typing only changes the field; the value is saved on blur or Enter. Invalid
+ * text stays in the field with an inline error and is never saved; a rolled-back save puts the
+ * stored value back.
  */
 export function NumberSetting({ field, label, value, hint, onCommit }: NumberSettingProps) {
   const [text, setText] = useState(String(value))
@@ -23,20 +24,27 @@ export function NumberSetting({ field, label, value, hint, onCommit }: NumberSet
       const shown = parseNumericSetting(field, current)
       return shown.ok && shown.value === value ? current : String(value)
     })
-    // Only an outside change (load, rollback) resyncs the text.
+    // Only an outside change (load, commit, rollback) resyncs the text.
   }, [field, value])
 
-  const onValueChange = (next: string) => {
-    setText(next)
-    const result = parseNumericSetting(field, next)
-    if (result.ok && result.value !== value) onCommit(result.value)
+  const commit = () => {
+    const result = numericCommit(field, text, value)
+    if (result.kind === "commit") onCommit(result.value)
+  }
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    // Enter that confirms an IME composition must not commit.
+    if (event.nativeEvent.isComposing) return
+    if (event.code === "Enter" || event.code === "NumpadEnter") commit()
   }
 
   return (
     <TextField
       label={label}
       value={text}
-      onValueChange={onValueChange}
+      onValueChange={setText}
+      onBlur={commit}
+      onKeyDown={onKeyDown}
       error={parsed.ok ? undefined : parsed.error}
       hint={hint}
       inputMode="numeric"

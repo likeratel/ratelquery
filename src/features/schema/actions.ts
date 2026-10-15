@@ -24,15 +24,24 @@ function ensureSession(connectionId: ConnectionId) {
   return useSessionsStore.getState().connect(connectionId, fallback)
 }
 
-/** Lists a MySQL connection's databases, connecting first. Skips a node that already loaded. */
+const session = (connectionId: ConnectionId) => useSessionsStore.getState().sessions[connectionId]
+
+/**
+ * Lists a MySQL connection's databases, connecting first. Skips a node that already loaded.
+ * Goes through the session store, so the tree and the session share one list (and the request
+ * the session starts on connect); without `force` a list the session already has is reused.
+ */
 export async function loadDatabases(connectionId: ConnectionId, force = false): Promise<void> {
   const key = connectionKey(connectionId)
   if (!force && !needsLoad(tree(), key)) return
   const requestId = tree().begin(key)
   try {
     await ensureSession(connectionId)
-    const names = await mysqlApi.databases(connectionId)
-    tree().resolve(key, requestId, databaseChildren(names))
+    if (force || !session(connectionId)?.databases.length) {
+      const error = await useSessionsStore.getState().loadDatabases(connectionId)
+      if (error) throw error
+    }
+    tree().resolve(key, requestId, databaseChildren(session(connectionId)?.databases ?? []))
   } catch (raw) {
     tree().reject(key, requestId, normalizeError(raw))
   }
@@ -40,7 +49,8 @@ export async function loadDatabases(connectionId: ConnectionId, force = false): 
 
 /**
  * Lists the tables and views of one database. Reuses the session's cached schema snapshot
- * unless `force` asks for a fresh one.
+ * unless `force` asks for a fresh one; a fetch goes through the session store so the cache
+ * (used by completion and editing) and the tree stay the same.
  */
 export async function loadTables(
   connectionId: ConnectionId,
@@ -51,12 +61,13 @@ export async function loadTables(
   if (!force && !needsLoad(tree(), key)) return
   const requestId = tree().begin(key)
   try {
-    const cached = force
-      ? undefined
-      : useSessionsStore.getState().sessions[connectionId]?.schemas[database]
-    if (!cached) await ensureSession(connectionId)
-    const snapshot = cached ?? (await mysqlApi.schema(connectionId, database))
-    tree().resolve(key, requestId, tableChildren(snapshot.tables))
+    if (force || !session(connectionId)?.schemas[database]) {
+      await ensureSession(connectionId)
+      const error = await useSessionsStore.getState().refreshSchema(connectionId, database)
+      if (error) throw error
+    }
+    const snapshot = session(connectionId)?.schemas[database]
+    tree().resolve(key, requestId, tableChildren(snapshot?.tables ?? []))
   } catch (raw) {
     tree().reject(key, requestId, normalizeError(raw))
   }

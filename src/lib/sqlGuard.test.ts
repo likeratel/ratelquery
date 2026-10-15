@@ -9,6 +9,14 @@ describe("maskSql", () => {
     expect(masked).not.toMatch(/limit/i)
     expect(masked).toMatch(/^SELECT '     ', ` {5}`/)
   })
+
+  it("keeps the body of an executable comment as code and blanks only its markers", () => {
+    const sql = "/*!40101 SET x = 'a' */ /* skip */"
+    const masked = maskSql(sql)
+    expect(masked).toHaveLength(sql.length)
+    expect(masked).toBe(`${" ".repeat(9)}SET x = ' '`.padEnd(sql.length))
+    expect(maskSql("/*! SELECT 1")).toBe("    SELECT 1")
+  })
 })
 
 describe("withDefaultLimit", () => {
@@ -90,6 +98,25 @@ describe("withDefaultLimit", () => {
     for (const sql of unchanged) expect(add(sql)).toBe(sql)
   })
 
+  it("puts the LIMIT inside an executable comment, before its closing marker", () => {
+    expect(add("/*!40101 SELECT * FROM t */")).toBe("/*!40101 SELECT * FROM t LIMIT 1000 */")
+    expect(add("/*!40101 SELECT * FROM t */;")).toBe("/*!40101 SELECT * FROM t LIMIT 1000 */;")
+    expect(add("/*!40101 SELECT * FROM t LIMIT 5 */")).toBe("/*!40101 SELECT * FROM t LIMIT 5 */")
+  })
+
+  it("leaves a fully parenthesized query and PROCEDURE alone", () => {
+    const unchanged = [
+      "(SELECT * FROM t)",
+      "(SELECT * FROM t);",
+      "((SELECT a FROM t) UNION (SELECT a FROM u))",
+      "SELECT * FROM t PROCEDURE ANALYSE()",
+    ]
+    for (const sql of unchanged) expect(add(sql)).toBe(sql)
+    expect(add("(SELECT a FROM t) UNION (SELECT a FROM u);")).toBe(
+      "(SELECT a FROM t) UNION (SELECT a FROM u) LIMIT 1000;",
+    )
+  })
+
   it("uses the given limit", () => {
     expect(withDefaultLimit("SELECT 1", 25)).toBe("SELECT 1 LIMIT 25")
   })
@@ -113,7 +140,29 @@ describe("classifyDanger", () => {
     expect(classifyDanger("DROP TABLE users")).toMatch(/DROP/)
     expect(classifyDanger("drop database shop;")).toMatch(/DROP/)
     expect(classifyDanger("TRUNCATE TABLE logs")).toMatch(/TRUNCATE/)
-    expect(classifyDanger("ALTER TABLE t ADD COLUMN c INT")).toMatch(/ALTER/)
+    expect(classifyDanger("ALTER TABLE t ADD COLUMN c INT")).toBe(
+      "ALTER TABLE changes a definition",
+    )
+  })
+
+  it("names the ALTER target and falls back to a general reason", () => {
+    expect(classifyDanger("alter user bob identified by 'x'")).toBe(
+      "ALTER USER changes a definition",
+    )
+    expect(classifyDanger("ALTER VIEW v AS SELECT 1")).toBe("ALTER VIEW changes a definition")
+    expect(classifyDanger("ALTER ONLINE TABLE t ADD c INT")).toBe("ALTER changes a definition")
+  })
+
+  it("flags RENAME TABLE", () => {
+    expect(classifyDanger("RENAME TABLE a TO b, c TO d")).toMatch(/RENAME TABLE/)
+    expect(classifyDanger("rename table a to b;")).toMatch(/RENAME TABLE/)
+    expect(classifyDanger("RENAME USER a TO b")).toBeNull()
+  })
+
+  it("flags a destructive statement inside an executable comment", () => {
+    expect(classifyDanger("/*!50000 DELETE FROM t */")).toMatch(/DELETE without WHERE/)
+    expect(classifyDanger("/*!50000 DROP TABLE t */;")).toMatch(/DROP/)
+    expect(classifyDanger("/* DELETE FROM t */ SELECT 1")).toBeNull()
   })
 
   it("flags a CTE whose main statement is an unbounded DELETE", () => {

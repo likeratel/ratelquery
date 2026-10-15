@@ -398,7 +398,7 @@ interface Settings {
   query: {
     defaultLimit: number                        // 1..100000, default 1000
     addLimitToSelect: boolean                   // append LIMIT when a SELECT has none, default true
-    confirmDestructive: boolean                 // confirm UPDATE/DELETE without WHERE, DROP, TRUNCATE, ALTER; default true
+    confirmDestructive: boolean                 // confirm UPDATE/DELETE without WHERE, DROP, TRUNCATE, ALTER, RENAME TABLE; default true
     maxRows: number                             // rows kept in memory per result, default 1000
   }
   dynamo: {
@@ -410,4 +410,4 @@ interface Settings {
 | command | args | returns |
 | --- | --- | --- |
 | `settings_get` | – | `Settings` (defaults merged over the file) |
-| `settings_set` | `settings: Settings` | saved `Settings`. Out-of-range values → `invalid_input`. |
+| `settings_set` | `settings: Partial<Settings>` (nested groups may be partial too) | saved `Settings`. The input is deep-merged over the stored settings (objects key by key, other values replaced), so a client sends only the fields it changes. A non-object input or an out-of-range merged value → `invalid_input`. |

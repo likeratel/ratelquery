@@ -1,5 +1,5 @@
 import { create } from "zustand"
-import { splitStatements } from "../../lib/sqlContext"
+import { splitStatements, type StatementRange } from "../../lib/sqlContext"
 import { classifyDanger, withDefaultLimit } from "../../lib/sqlGuard"
 import type { QuerySettings } from "../../lib/settings"
 
@@ -11,8 +11,11 @@ export interface DangerousStatement {
 
 /** A statement whose executed text got a LIMIT the editor doesn't show. */
 export interface LimitedStatement {
-  /** The executed text as the backend reports it in `RowsResult.statement`. */
-  statement: string
+  /**
+   * Position of the statement in the run. The backend returns one result per statement in
+   * order, so this is also the index of its result.
+   */
+  index: number
   limit: number
 }
 
@@ -30,24 +33,42 @@ function executedForm(text: string): string {
   return (trimmed.endsWith(";") ? trimmed.slice(0, -1) : trimmed).trim()
 }
 
-/** Applies the query safety settings to `sql` without touching the editor text. */
+/**
+ * Applies the query safety settings to `sql` without touching the editor text. A LIMIT is
+ * spliced into each statement's own range, so everything between statements (comments,
+ * blank lines) reaches the backend as written.
+ */
 export function planRun(sql: string, settings: QuerySettings): RunPlan {
-  const statements = splitStatements(sql).map((s) => s.text)
+  const statements = splitStatements(sql)
   const dangers = settings.confirmDestructive
-    ? statements.flatMap((statement) => {
-        const reason = classifyDanger(statement)
-        return reason ? [{ statement: executedForm(statement), reason }] : []
+    ? statements.flatMap(({ text }) => {
+        const reason = classifyDanger(text)
+        return reason ? [{ statement: executedForm(text), reason }] : []
       })
     : []
   if (!settings.addLimitToSelect) return { sql, changed: false, limited: [], dangers }
-  const rewritten = statements.map((statement) =>
-    withDefaultLimit(statement, settings.defaultLimit),
-  )
-  const limited = rewritten.flatMap((text, i) =>
-    text === statements[i] ? [] : [{ statement: executedForm(text), limit: settings.defaultLimit }],
+  const rewritten = statements.map(({ text }) => withDefaultLimit(text, settings.defaultLimit))
+  const limited = rewritten.flatMap((text, index) =>
+    text === statements[index]?.text ? [] : [{ index, limit: settings.defaultLimit }],
   )
   if (limited.length === 0) return { sql, changed: false, limited, dangers }
-  return { sql: rewritten.join("\n"), changed: true, limited, dangers }
+  return { sql: spliceStatements(sql, statements, rewritten), changed: true, limited, dangers }
+}
+
+/** `sql` with each statement range replaced by its rewritten text. */
+function spliceStatements(
+  sql: string,
+  statements: readonly StatementRange[],
+  rewritten: readonly string[],
+): string {
+  const { out, cursor } = statements.reduce(
+    (acc, range, i) => ({
+      out: acc.out + sql.slice(acc.cursor, range.from) + (rewritten[i] ?? range.text),
+      cursor: range.to,
+    }),
+    { out: "", cursor: 0 },
+  )
+  return out + sql.slice(cursor)
 }
 
 interface PendingConfirm {
@@ -93,10 +114,10 @@ export function answerDangerousRun(run: boolean): void {
   pending.resolve(run)
 }
 
-/** The LIMIT added to `statement` in the tab's last run, if any. */
+/** The LIMIT added to the statement behind result `index` in the tab's last run, if any. */
 export function addedLimitFor(
   limited: readonly LimitedStatement[] | undefined,
-  statement: string,
+  index: number,
 ): number | null {
-  return limited?.find((entry) => entry.statement === statement)?.limit ?? null
+  return limited?.find((entry) => entry.index === index)?.limit ?? null
 }

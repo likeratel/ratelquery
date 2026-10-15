@@ -86,7 +86,7 @@ function SettingsForm() {
         />
         <ToggleSetting
           label="Confirm destructive statements"
-          hint="UPDATE or DELETE without WHERE, DROP, TRUNCATE and ALTER ask first."
+          hint="UPDATE or DELETE without WHERE, DROP, TRUNCATE, ALTER and RENAME TABLE ask first."
           checked={query.confirmDestructive}
           onChange={(confirmDestructive) => save({ query: { confirmDestructive } })}
         />

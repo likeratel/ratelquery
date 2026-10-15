@@ -32,9 +32,7 @@ interface RowsViewProps {
 
 export function RowsView({ tab, index, result, edit }: RowsViewProps) {
   const updateEdits = useTabsStore((s) => s.updateEdits)
-  const addedLimit = useRunGuardStore((s) =>
-    addedLimitFor(s.limitedByTab[tab.id], result.statement),
-  )
+  const addedLimit = useRunGuardStore((s) => addedLimitFor(s.limitedByTab[tab.id], index))
   const edits = tab.edits[index] ?? EMPTY_EDITS
   const rows = useMemo(
     () => displayRows(result.rows, result.columns.length, edits),
