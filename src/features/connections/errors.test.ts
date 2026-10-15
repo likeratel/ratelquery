@@ -9,6 +9,8 @@ const KINDS: AppErrorKind[] = [
   "query",
   "credential",
   "io",
+  "ssh",
+  "ssh_host_key",
   "unknown",
 ]
 
@@ -34,6 +36,18 @@ describe("describeError", () => {
     })
     expect(describeError({ kind: "credential", message: "denied" }, "test").summary).toBe(
       "Connection test failed. Credentials were rejected or couldn't be read from the keychain.",
+    )
+  })
+})
+
+describe("describeError for SSH", () => {
+  it("states SSH failures of a test directly with the backend message", () => {
+    expect(describeError({ kind: "ssh", message: "bastion: connection refused" }, "test")).toEqual({
+      summary: "SSH connection failed.",
+      detail: "bastion: connection refused",
+    })
+    expect(describeError({ kind: "ssh_host_key", message: "changed" }, "test").summary).toBe(
+      "The SSH server's host key isn't trusted.",
     )
   })
 })

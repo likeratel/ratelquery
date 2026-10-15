@@ -10,7 +10,10 @@ import {
   formFromConfig,
   insecureEndpointWarning,
   isFormChanged,
+  KEY_PATH_ABSOLUTE,
+  SSH_NO_VERIFY_IDENTITY,
   MYSQL_SECRET_AGAIN,
+  SSH_PASSWORD_AGAIN,
   mysqlFormSchema,
   parseForm,
   type ConnectionForm,
@@ -348,5 +351,214 @@ describe("isFormChanged", () => {
     const initial = mysqlForm()
     const hidden = { ...initial, dynamodb: { ...initial.dynamodb, name: "typed earlier" } }
     expect(isFormChanged(initial, hidden)).toBe(false)
+  })
+})
+
+describe("SSH tunnel", () => {
+  const tunnel = (patch: Partial<ConnectionForm["mysql"]> = {}) =>
+    mysqlForm({
+      host: "10.0.0.5",
+      sshEnabled: true,
+      sshHost: " bastion.example.com ",
+      sshUser: "ec2-user",
+      ...patch,
+    })
+
+  it("leaves ssh and the SSH secret out when the toggle is off", () => {
+    const result = parseForm(mysqlForm({ sshHost: "ignored", sshSecret: "pw" }), NEW)
+    expect(result).toEqual({
+      ok: true,
+      config: { kind: "mysql", id: "", name: "Local", host: "localhost", port: 3306, user: "root" },
+      secret: null,
+    })
+    if (result.ok) expect(Object.keys(result)).not.toContain("sshSecret")
+  })
+
+  it("sends agent auth with the default port and no SSH secret", () => {
+    const result = parseForm(tunnel(), NEW)
+    expect(result).toEqual({
+      ok: true,
+      config: {
+        kind: "mysql",
+        id: "",
+        name: "Local",
+        host: "10.0.0.5",
+        port: 3306,
+        user: "root",
+        ssh: { host: "bastion.example.com", port: 22, user: "ec2-user", auth: { type: "agent" } },
+      },
+      secret: null,
+    })
+  })
+
+  it("sends the key path and the passphrase as the SSH secret", () => {
+    const result = parseForm(
+      tunnel({ sshAuth: "key", sshKeyPath: "/Users/me/.ssh/id_ed25519", sshSecret: "phrase" }),
+      NEW,
+    )
+    expect(result).toMatchObject({
+      ok: true,
+      config: { ssh: { auth: { type: "key", keyPath: "/Users/me/.ssh/id_ed25519" } } },
+      sshSecret: "phrase",
+    })
+  })
+
+  it("sends password auth and keeps a blank SSH password as null", () => {
+    const typed = parseForm(tunnel({ sshAuth: "password", sshSecret: "pw", sshPort: "2222" }), NEW)
+    expect(typed).toMatchObject({
+      ok: true,
+      config: { ssh: { port: 2222, auth: { type: "password" } } },
+      sshSecret: "pw",
+    })
+    expect(parseForm(tunnel({ sshAuth: "password" }), NEW)).toMatchObject({ sshSecret: null })
+  })
+
+  it("validates the SSH fields only while the toggle is on", () => {
+    const result = parseForm(
+      tunnel({ sshHost: " ", sshUser: "", sshPort: "0", sshAuth: "key", sshKeyPath: "" }),
+      NEW,
+    )
+    expect(result).toEqual({
+      ok: false,
+      errors: {
+        sshHost: "SSH host is required",
+        sshUser: "SSH user is required",
+        sshPort: "Port must be 1 to 65535",
+        sshKeyPath: "Key file is required",
+      },
+    })
+    const off = mysqlForm({ sshHost: " ", sshPort: "x" })
+    expect(parseForm(off, NEW).ok).toBe(true)
+  })
+
+  it("requires an absolute key path", () => {
+    for (const sshKeyPath of ["~/.ssh/id_rsa", "id_rsa", ".ssh/id_rsa"]) {
+      expect(parseForm(tunnel({ sshAuth: "key", sshKeyPath }), NEW)).toEqual({
+        ok: false,
+        errors: { sshKeyPath: KEY_PATH_ABSOLUTE },
+      })
+    }
+    for (const sshKeyPath of ["/home/me/.ssh/id_rsa", "C:\\Users\\me\\id_rsa"]) {
+      expect(parseForm(tunnel({ sshAuth: "key", sshKeyPath }), NEW).ok).toBe(true)
+    }
+  })
+
+  it("refuses identity verification through a tunnel but allows the other TLS modes", () => {
+    expect(parseForm(tunnel({ tls: "verify_identity" }), NEW)).toEqual({
+      ok: false,
+      errors: { tls: `Verify identity: ${SSH_NO_VERIFY_IDENTITY}` },
+    })
+    expect(parseForm(tunnel({ tls: "verify_ca" }), NEW).ok).toBe(true)
+    expect(parseForm(mysqlForm({ tls: "verify_identity" }), NEW).ok).toBe(true)
+  })
+
+  it("reports MySQL and SSH errors together", () => {
+    const result = parseForm(tunnel({ name: "", sshHost: "" }), NEW)
+    expect(result).toEqual({
+      ok: false,
+      errors: { name: "Name is required", sshHost: "SSH host is required" },
+    })
+  })
+
+  const viaKey: ConnectionConfig = {
+    kind: "mysql",
+    id: "m1",
+    name: "Prod",
+    host: "10.0.0.5",
+    port: 3306,
+    user: "app",
+    ssh: {
+      host: "bastion",
+      port: 22,
+      user: "ops",
+      auth: { type: "key", keyPath: "/k/id_ed25519" },
+    },
+  }
+
+  it("round-trips the SSH settings through the form without the secret", () => {
+    const form = formFromConfig(viaKey)
+    expect(form.mysql).toMatchObject({
+      sshEnabled: true,
+      sshHost: "bastion",
+      sshPort: "22",
+      sshUser: "ops",
+      sshAuth: "key",
+      sshKeyPath: "/k/id_ed25519",
+      sshSecret: "",
+    })
+    const context = { original: viaKey, hasStoredSecret: true, hasStoredSshSecret: true }
+    expect(parseForm(form, context)).toEqual({
+      ok: true,
+      config: viaKey,
+      secret: null,
+      sshSecret: null,
+    })
+    expect(isFormChanged(form, form)).toBe(false)
+    const toggled = { ...form, mysql: { ...form.mysql, sshEnabled: false } }
+    expect(isFormChanged(form, toggled)).toBe(true)
+  })
+
+  it("clears the stored SSH secret when SSH is turned off or switched to the agent", () => {
+    const form = formFromConfig(viaKey)
+    const context = { original: viaKey, hasStoredSecret: false, hasStoredSshSecret: true }
+    const off = { ...form, mysql: { ...form.mysql, sshEnabled: false } }
+    expect(parseForm(off, context)).toMatchObject({ ok: true, sshSecret: "" })
+    const agent = { ...form, mysql: { ...form.mysql, sshAuth: "agent" as const } }
+    expect(parseForm(agent, context)).toMatchObject({ ok: true, sshSecret: "" })
+  })
+
+  it("clears a kept passphrase when the key file or bastion changes", () => {
+    const form = formFromConfig(viaKey)
+    const context = { original: viaKey, hasStoredSecret: false, hasStoredSshSecret: true }
+    const newKey = { ...form, mysql: { ...form.mysql, sshKeyPath: "/k/other" } }
+    expect(parseForm(newKey, context)).toMatchObject({ ok: true, sshSecret: "" })
+  })
+
+  it("asks for the database password again when the tunnel changes", () => {
+    const form = formFromConfig(viaKey)
+    const context = { original: viaKey, hasStoredSecret: true, hasStoredSshSecret: false }
+    for (const patch of [
+      { sshEnabled: false },
+      { sshHost: "other-bastion" },
+      { sshPort: "2222" },
+      { sshUser: "root" },
+    ]) {
+      const moved = { ...form, mysql: { ...form.mysql, ...patch } }
+      expect(parseForm(moved, context)).toEqual({
+        ok: false,
+        errors: { password: MYSQL_SECRET_AGAIN },
+      })
+    }
+    const sameBastion = { ...form, mysql: { ...form.mysql, sshHost: "BASTION" } }
+    expect(parseForm(sameBastion, context).ok).toBe(true)
+    const plain: ConnectionConfig = { ...viaKey, ssh: undefined }
+    const turnedOn = formFromConfig(viaKey)
+    expect(parseForm(turnedOn, { original: plain, hasStoredSecret: true })).toEqual({
+      ok: false,
+      errors: { password: MYSQL_SECRET_AGAIN },
+    })
+  })
+
+  it("asks for the SSH password again when the bastion, user or auth changes", () => {
+    const viaPassword: ConnectionConfig = {
+      ...viaKey,
+      ssh: { host: "bastion", port: 22, user: "ops", auth: { type: "password" } },
+    }
+    const form = formFromConfig(viaPassword)
+    const context = { original: viaPassword, hasStoredSecret: false, hasStoredSshSecret: true }
+    const moved = { ...form, mysql: { ...form.mysql, sshUser: "root" } }
+    expect(parseForm(moved, context)).toEqual({
+      ok: false,
+      errors: { sshSecret: SSH_PASSWORD_AGAIN },
+    })
+    const retyped = { ...form, mysql: { ...form.mysql, sshUser: "root", sshSecret: "pw" } }
+    expect(parseForm(retyped, context)).toMatchObject({ ok: true, sshSecret: "pw" })
+    const fromKey = formFromConfig(viaKey)
+    const switched = { ...fromKey, mysql: { ...fromKey.mysql, sshAuth: "password" as const } }
+    expect(
+      parseForm(switched, { original: viaKey, hasStoredSecret: false, hasStoredSshSecret: true }),
+    ).toEqual({ ok: false, errors: { sshSecret: SSH_PASSWORD_AGAIN } })
+    const renamed = { ...form, mysql: { ...form.mysql, name: "Renamed" } }
+    expect(parseForm(renamed, context)).toMatchObject({ ok: true, sshSecret: null })
   })
 })

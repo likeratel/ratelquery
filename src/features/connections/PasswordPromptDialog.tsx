@@ -1,13 +1,7 @@
 import { useId, useState, type FormEvent } from "react"
 import { Button, Dialog, TextField } from "../../components/ui"
-import type { ConnectionConfig } from "../../lib/connections"
 import { connectionSubtitle } from "./filter"
-import { usePasswordPrompt, type PasswordRequest } from "./passwordPrompt"
-
-const promptSubtitle = (config: ConnectionConfig) =>
-  config.kind === "mysql"
-    ? `${config.user}@${config.host}:${config.port}`
-    : connectionSubtitle(config)
+import { promptCopy, usePasswordPrompt, type PasswordRequest } from "./passwordPrompt"
 
 /** Mounts the password prompt while a connect is waiting for one. */
 export function PasswordPromptDialog() {
@@ -22,7 +16,8 @@ function PasswordPrompt({ request }: { request: PasswordRequest }) {
   const [secret, setSecret] = useState("")
   const [remember, setRemember] = useState(true)
   const formId = useId()
-  const { config } = request
+  const copy = promptCopy(request)
+  const subtitle = copy.subtitle || connectionSubtitle(request.config)
   const cancel = () => answer(request.id, null)
 
   const onSubmit = (event: FormEvent) => {
@@ -33,18 +28,20 @@ function PasswordPrompt({ request }: { request: PasswordRequest }) {
 
   return (
     <Dialog
-      title={`Password for ${config.name}`}
-      description={<span className="mono">{promptSubtitle(config)}</span>}
+      title={copy.title}
+      description={<span className="mono">{subtitle}</span>}
       onClose={cancel}
       footer={
         <>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => answer(request.id, { secret: "", remember: false })}
-          >
-            Connect without a password
-          </Button>
+          {copy.skipLabel && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => answer(request.id, { secret: "", remember: false })}
+            >
+              {copy.skipLabel}
+            </Button>
+          )}
           <span className="conn-form__spacer" />
           <Button variant="ghost" onClick={cancel}>
             Cancel
@@ -57,7 +54,7 @@ function PasswordPrompt({ request }: { request: PasswordRequest }) {
     >
       <form id={formId} className="conn-form" onSubmit={onSubmit} noValidate>
         <TextField
-          label="Password"
+          label={copy.fieldLabel}
           type="password"
           value={secret}
           onValueChange={setSecret}
@@ -69,7 +66,7 @@ function PasswordPrompt({ request }: { request: PasswordRequest }) {
             checked={remember}
             onChange={(event) => setRemember(event.target.checked)}
           />
-          Remember password
+          {copy.rememberLabel}
         </label>
       </form>
     </Dialog>

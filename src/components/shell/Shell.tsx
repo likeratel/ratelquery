@@ -1,6 +1,7 @@
 import { useEffect } from "react"
 import {
   ConnectionDialog,
+  HostKeyPromptDialog,
   PasswordPromptDialog,
   useNewConnectionShortcut,
 } from "../../features/connections"
@@ -86,6 +87,7 @@ export function Shell() {
       <SettingsDialog />
       <RunConfirmDialog />
       <PasswordPromptDialog />
+      <HostKeyPromptDialog />
       <Toaster />
     </div>
   )

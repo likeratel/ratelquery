@@ -9,14 +9,18 @@ use crate::mysql::{
 };
 use crate::state::AppState;
 
-/// `secret`, when given, is used for this session only and is not stored.
+/// `secret` / `ssh_secret`, when given, are used for this session only and are not stored.
 #[tauri::command]
 pub async fn mysql_connect(
     state: State<'_, AppState>,
     connection_id: String,
     secret: Option<String>,
+    ssh_secret: Option<String>,
 ) -> AppResult<MysqlSessionInfo> {
-    state.mysql.connect_saved(&state.connections, &connection_id, secret.as_deref()).await
+    state
+        .mysql
+        .connect_saved(&state.connections, &connection_id, secret.as_deref(), ssh_secret.as_deref())
+        .await
 }
 
 #[tauri::command]

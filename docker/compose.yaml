@@ -23,3 +23,13 @@ services:
     command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
     ports:
       - "127.0.0.1:8000:8000"
+
+  # Test-only SSH bastion (dev / dev) for the MySQL tunnel tests; forwards to mysql:3306.
+  ssh:
+    build: ./ssh
+    image: dbclient-ssh:test
+    container_name: dbclient-ssh
+    ports:
+      - "127.0.0.1:2222:22"
+    depends_on:
+      - mysql

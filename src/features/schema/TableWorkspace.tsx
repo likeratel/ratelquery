@@ -1,6 +1,7 @@
 import { CircleAlert, RefreshCw, Rows3 } from "lucide-react"
 import { useEffect } from "react"
 import { Button } from "../../components/ui"
+import { errorLine } from "../../lib/errorHints"
 import type { TableTab } from "../../lib/queryTabs"
 import { selectActiveTableTab, useTabsStore } from "../../state/tabsStore"
 import { loadTableDetails, selectRows } from "./actions"
@@ -72,7 +73,7 @@ export function TableWorkspace() {
             <span>
               {tab.error.kind === "not_found"
                 ? `${tab.database}.${tab.table} no longer exists.`
-                : tab.error.message}
+                : errorLine(tab.error)}
             </span>
           </div>
         )}

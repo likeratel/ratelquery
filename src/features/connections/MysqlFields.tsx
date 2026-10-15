@@ -1,7 +1,14 @@
 import { SegmentedControl, TextField } from "../../components/ui"
 import type { MysqlTlsMode } from "../../lib/connections"
 import { ColorSwatches } from "./ColorSwatches"
-import { verifiesCertificate, type FieldErrors, type MysqlDraft } from "./form"
+import {
+  SSH_NO_VERIFY_IDENTITY,
+  verifiesCertificate,
+  type FieldErrors,
+  type MysqlDraft,
+  type SshAuthType,
+} from "./form"
+import { SshFields } from "./SshFields"
 
 const TLS_OPTIONS = [
   { value: "preferred", label: "Preferred" },
@@ -9,6 +16,18 @@ const TLS_OPTIONS = [
   { value: "verify_ca", label: "Verify CA" },
   { value: "verify_identity", label: "Verify identity" },
 ] as const
+
+/** Through a tunnel the server is reached as 127.0.0.1, so its host name can't be verified. */
+const tlsOptions = (sshEnabled: boolean) =>
+  TLS_OPTIONS.map((option) =>
+    option.value === "verify_identity" && sshEnabled
+      ? {
+          ...option,
+          label: <span title={SSH_NO_VERIFY_IDENTITY}>{option.label}</span>,
+          disabled: true,
+        }
+      : option,
+  )
 
 const TLS_HINTS: Record<MysqlTlsMode, string> = {
   preferred: "Uses TLS when the server offers it, otherwise connects without it.",
@@ -22,6 +41,10 @@ interface MysqlFieldsProps {
   errors: FieldErrors
   editing: boolean
   hasStoredSecret: boolean
+  /** Whether an SSH password or key passphrase is stored for the edited connection. */
+  hasStoredSshSecret: boolean
+  /** SSH auth of the connection as saved, which the stored SSH secret belongs to. */
+  storedSshAuth: SshAuthType | null
   onChange: (patch: Partial<MysqlDraft>) => void
 }
 
@@ -36,6 +59,8 @@ export function MysqlFields({
   errors,
   editing,
   hasStoredSecret,
+  hasStoredSshSecret,
+  storedSshAuth,
   onChange,
 }: MysqlFieldsProps) {
   return (
@@ -56,6 +81,7 @@ export function MysqlFields({
         onValueChange={(host) => onChange({ host })}
         error={errors.host}
         placeholder="localhost"
+        hint={draft.sshEnabled ? "Host as seen from the SSH server" : undefined}
         mono
       />
       <TextField
@@ -89,10 +115,19 @@ export function MysqlFields({
         <SegmentedControl<MysqlTlsMode>
           label="TLS"
           value={draft.tls}
-          options={TLS_OPTIONS}
+          options={tlsOptions(draft.sshEnabled)}
           onChange={(tls) => onChange({ tls })}
         />
-        <p className="ui-field__hint">{TLS_HINTS[draft.tls]}</p>
+        {errors.tls ? (
+          <p className="ui-field__error" role="alert">
+            {errors.tls}
+          </p>
+        ) : (
+          <p className="ui-field__hint">{TLS_HINTS[draft.tls]}</p>
+        )}
+        {draft.sshEnabled && !errors.tls && (
+          <p className="ui-field__hint">Verify identity: {SSH_NO_VERIFY_IDENTITY}</p>
+        )}
       </div>
       {verifiesCertificate(draft.tls) && (
         <TextField
@@ -117,6 +152,24 @@ export function MysqlFields({
         hint="Default schema to use after connecting."
         mono
       />
+      <label className="conn-form__wide conn-remember">
+        <input
+          type="checkbox"
+          checked={draft.sshEnabled}
+          // Naming `tls` too clears its "not through a tunnel" error when SSH is turned off.
+          onChange={(event) => onChange({ sshEnabled: event.target.checked, tls: draft.tls })}
+        />
+        Connect through SSH
+      </label>
+      {draft.sshEnabled && (
+        <SshFields
+          draft={draft}
+          errors={errors}
+          hasStoredSshSecret={hasStoredSshSecret}
+          storedAuth={storedSshAuth}
+          onChange={onChange}
+        />
+      )}
       <div className="conn-form__wide">
         <ColorSwatches value={draft.color} onChange={(color) => onChange({ color })} />
       </div>

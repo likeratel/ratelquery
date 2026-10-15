@@ -9,9 +9,11 @@ use super::model::{ConnectionTestResult, DynamoConnectionConfig, MysqlConnection
 use crate::dynamo::sdk_config;
 use crate::error::{AppError, AppResult};
 use crate::mysql::{connect_options, describe_sqlx_error, fetch_server_version};
+use crate::ssh::{SshTunnel, TunnelRequest};
 use crate::util::elapsed_ms;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const LOOPBACK: &str = "127.0.0.1";
 
 fn timed_out(what: &str) -> AppError {
     AppError::Connection(format!("{what} timed out after {}s", PROBE_TIMEOUT.as_secs()))
@@ -22,8 +24,26 @@ pub async fn probe_mysql(
     config: &MysqlConnectionConfig,
     password: Option<&str>,
 ) -> AppResult<ConnectionTestResult> {
+    probe_mysql_via(config, password, None).await
+}
+
+/// [`probe_mysql`] through the SSH tunnel of `tunnel` (opened for the probe and closed after
+/// it). The tunnel has its own timeout, followed by the probe timeout.
+pub async fn probe_mysql_via(
+    config: &MysqlConnectionConfig,
+    password: Option<&str>,
+    tunnel: Option<&TunnelRequest>,
+) -> AppResult<ConnectionTestResult> {
     let options = connect_options(config, password)?;
     let start = Instant::now();
+    let tunnel = match tunnel {
+        Some(request) => Some(SshTunnel::open(request).await?),
+        None => None,
+    };
+    let options = match &tunnel {
+        Some(tunnel) => options.host(LOOPBACK).port(tunnel.local_addr().port()),
+        None => options,
+    };
     let work = async {
         let mut conn = sqlx::MySqlConnection::connect_with(&options).await?;
         let version = fetch_server_version(&mut conn).await?;
@@ -33,7 +53,12 @@ pub async fn probe_mysql(
     let version = tokio::time::timeout(PROBE_TIMEOUT, work)
         .await
         .map_err(|_| timed_out("MySQL connection"))?
-        .map_err(|e| AppError::Connection(describe_sqlx_error(&e)))?;
+        .map_err(|e| {
+            tunnel
+                .as_ref()
+                .and_then(SshTunnel::take_forward_error)
+                .unwrap_or_else(|| AppError::Connection(describe_sqlx_error(&e)))
+        })?;
     Ok(ConnectionTestResult {
         ok: true,
         server_version: Some(version),

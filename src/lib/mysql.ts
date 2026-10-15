@@ -148,12 +148,16 @@ export interface ExportResult {
 }
 
 export const mysqlApi = {
-  /** A given `secret` is used for this session only; the backend stores nothing. */
-  connect: (connectionId: ConnectionId, secret?: string) =>
-    ipc<MysqlSessionInfo>(
-      "mysql_connect",
-      secret === undefined ? { connectionId } : { connectionId, secret },
-    ),
+  /**
+   * A given `secret` (database password) or `sshSecret` (SSH password or key passphrase) is used
+   * for this session only; the backend stores nothing.
+   */
+  connect: (connectionId: ConnectionId, secret?: string, sshSecret?: string) =>
+    ipc<MysqlSessionInfo>("mysql_connect", {
+      connectionId,
+      ...(secret === undefined ? {} : { secret }),
+      ...(sshSecret === undefined ? {} : { sshSecret }),
+    }),
   disconnect: (connectionId: ConnectionId) => ipc<void>("mysql_disconnect", { connectionId }),
   query: (connectionId: ConnectionId, sql: string, options: QueryOptions = {}) =>
     ipc<QueryResult[]>("mysql_query", { connectionId, sql, options }),

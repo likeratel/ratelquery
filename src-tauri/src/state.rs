@@ -9,6 +9,7 @@ use crate::connections::{
 use crate::dynamo::DynamoClients;
 use crate::mysql::{MysqlSessions, MysqlStateEvent, STATE_EVENT, StateSink};
 use crate::settings::{SettingsService, SettingsStore};
+use crate::ssh::KnownHosts;
 
 /// Managed Tauri state shared by all commands. The services doing file or keyring I/O are
 /// `Arc`s so commands can move them onto the blocking pool.
@@ -18,6 +19,8 @@ pub struct AppState {
     pub mysql: MysqlSessions,
     pub dynamo: DynamoClients,
     pub settings: Arc<SettingsService>,
+    /// `~/.ssh/known_hosts` plus the app's own file, for SSH tunnels.
+    pub known_hosts: KnownHosts,
 }
 
 impl AppState {
@@ -35,15 +38,17 @@ impl AppState {
             Arc::new(FileSecretStore::new(config_dir)),
         ));
         let shared: Arc<dyn SecretStore> = secrets.clone();
+        let known_hosts = KnownHosts::for_app(config_dir);
         Self {
             connections: Arc::new(ConnectionsService::new(
                 ConnectionStore::new(config_dir),
                 shared,
             )),
             secrets,
-            mysql: MysqlSessions::new(sink),
+            mysql: MysqlSessions::new(sink).with_known_hosts(known_hosts.clone()),
             dynamo: DynamoClients::new(),
             settings,
+            known_hosts,
         }
     }
 }

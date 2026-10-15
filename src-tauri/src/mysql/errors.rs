@@ -98,6 +98,11 @@ impl OpError {
         matches!(self, OpError::Sql(e) if is_connection_error(e))
     }
 
+    /// The SSH tunnel could not be (re-)opened. Not retried: the next use tries again.
+    pub fn is_tunnel_failure(&self) -> bool {
+        matches!(self, OpError::App(AppError::Ssh(_) | AppError::SshHostKey(_)))
+    }
+
     /// Final error for the caller; connection-level errors map to `connection`, others to
     /// `query`.
     pub fn into_app_error(self) -> AppError {

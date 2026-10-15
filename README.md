@@ -22,6 +22,7 @@ Most desktop database tools get four everyday things wrong. This one is built ar
 - Edit cells, add and delete rows, then apply them in one transaction guarded to exactly one row per change
 - Export the visible rows or the full result as CSV, JSON or SQL inserts
 - TLS modes from preferred to full identity verification
+- SSH tunnels through a bastion with agent, key file or password auth, and a fingerprint check for unknown host keys
 
 **DynamoDB**
 
@@ -64,7 +65,7 @@ Requirements: Rust stable, Node 22, pnpm, Docker.
 
 ```sh
 pnpm install
-pnpm db:up          # MySQL 8.4 on :3307 and DynamoDB Local on :8000
+pnpm db:up          # MySQL 8.4 on :3307, DynamoDB Local on :8000, SSH bastion on :2222
 pnpm tauri dev
 ```
 
@@ -74,7 +75,7 @@ The seeded MySQL database is `sample` with user `dev` / `dev` (root password `ro
 pnpm verify         # Prettier, TypeScript, Vitest, clippy and cargo test
 ```
 
-Live database tests run only when `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample` and `DBCLIENT_TEST_DYNAMODB_ENDPOINT=http://localhost:8000` are set. An optional `DBCLIENT_TEST_MYSQL_CA=<server ca.pem>` enables the TLS verification test.
+Live database tests run only when `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample` and `DBCLIENT_TEST_DYNAMODB_ENDPOINT=http://localhost:8000` are set. An optional `DBCLIENT_TEST_MYSQL_CA=<server ca.pem>` enables the TLS verification test, and `DBCLIENT_TEST_SSH=127.0.0.1:2222` the SSH tunnel tests against the test-only bastion (user `dev` / `dev`, which reaches MySQL as `mysql:3306`).
 
 On macOS, `tauri dev` re-signs the debug binary (see `scripts/cargo.sh`) so the keychain's "Always allow" on saved passwords survives rebuilds. It uses `DBCLIENT_DEV_SIGN_IDENTITY` when set, otherwise the only code-signing identity in your keychain; with none or several it leaves the ad-hoc signature and says so. Set `DBCLIENT_DEV_SIGN=0` to skip signing.
 

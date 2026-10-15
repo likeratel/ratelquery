@@ -4,12 +4,15 @@ import { onAppEvent } from "../../lib/events"
 import { setTransport, type AppError } from "../../lib/ipc"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { formFromConfig, MYSQL_SECRET_AGAIN, parseForm } from "./form"
+import { resetHostKeyPrompt, useHostKeyPrompt } from "./hostKeyPrompt"
 
 /** In-memory stand-in for the Tauri backend's connections commands. */
 class FakeBackend {
   configs = new Map<string, ConnectionConfig>()
   secrets = new Map<string, string>()
   failures = new Map<string, AppError>()
+  /** Rejection of `connections_test` until `ssh_trust_host` is called. */
+  hostKeyError: AppError | null = null
   calls: { command: string; args?: Record<string, unknown> }[] = []
   private nextId = 1
   private pending: (() => void)[] = []
@@ -38,8 +41,14 @@ class FakeBackend {
         this.secrets.delete(args?.id as string)
         return undefined
       case "connections_has_secret":
-        return this.secrets.has(args?.id as string)
+        return this.secrets.has(
+          args?.which === "ssh" ? `${args.id as string}:ssh` : (args?.id as string),
+        )
+      case "ssh_trust_host":
+        this.hostKeyError = null
+        return undefined
       case "connections_test":
+        if (this.hostKeyError) throw this.hostKeyError
         return { ok: true, serverVersion: "8.0.36", latencyMs: 12 }
       default:
         throw { kind: "unknown", message: `unexpected ${command}` }
@@ -77,7 +86,10 @@ beforeEach(() => {
   useConnectionsStore.setState(initial, true)
 })
 
-afterEach(() => restore())
+afterEach(() => {
+  restore()
+  resetHostKeyPrompt()
+})
 
 describe("load", () => {
   it("loads and sorts connections by name", async () => {
@@ -252,5 +264,71 @@ describe("testConnection", () => {
     backend.release()
     await pending
     expect(useConnectionsStore.getState().test).toEqual({ status: "idle" })
+  })
+})
+
+describe("SSH", () => {
+  const viaSsh = mysql({
+    id: "m1",
+    ssh: { host: "bastion", port: 22, user: "ops", auth: { type: "password" } },
+  } as Partial<ConnectionConfig>)
+
+  it("looks up the stored SSH secret when editing a tunnelled connection", async () => {
+    backend.secrets.set("m1:ssh", "tunnel")
+    useConnectionsStore.getState().openDialog(viaSsh)
+    await flush()
+    expect(useConnectionsStore.getState().dialog).toMatchObject({
+      hasStoredSecret: false,
+      hasStoredSshSecret: true,
+    })
+    const lookups = backend.calls.filter((c) => c.command === "connections_has_secret")
+    expect(lookups.map((c) => c.args)).toEqual([{ id: "m1" }, { id: "m1", which: "ssh" }])
+  })
+
+  it("does not look up an SSH secret for a connection without a tunnel", async () => {
+    useConnectionsStore.getState().openDialog(mysql({ id: "m2" }))
+    await flush()
+    expect(useConnectionsStore.getState().dialog.hasStoredSshSecret).toBe(false)
+    expect(backend.calls.filter((c) => c.command === "connections_has_secret")).toHaveLength(1)
+  })
+
+  it("passes the SSH secret to save and test", async () => {
+    await useConnectionsStore.getState().save(viaSsh, null, "tunnel")
+    expect(backend.calls.at(-1)?.args).toEqual({
+      config: viaSsh,
+      secret: null,
+      sshSecret: "tunnel",
+    })
+    await useConnectionsStore.getState().testConnection(viaSsh, "pw", null)
+    expect(backend.calls.at(-1)?.args).toEqual({ config: viaSsh, secret: "pw", sshSecret: null })
+  })
+
+  it("tests again after the user trusts an unknown host key", async () => {
+    backend.hostKeyError = {
+      kind: "ssh_host_key",
+      message:
+        "ssh-ed25519 SHA256:abcdef is the host key of bastion:22, which is not in known_hosts.\nbastion ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA",
+    }
+    const pending = useConnectionsStore.getState().testConnection(viaSsh, null)
+    for (let i = 0; i < 10 && useHostKeyPrompt.getState().queue.length === 0; i++) await flush()
+    expect(useConnectionsStore.getState().test).toEqual({ status: "testing" })
+    const [request] = useHostKeyPrompt.getState().queue
+    useHostKeyPrompt.getState().answer(request.id, true)
+    await pending
+    expect(useConnectionsStore.getState().test).toMatchObject({ status: "ok" })
+    expect(backend.calls.map((c) => c.command)).toEqual([
+      "connections_test",
+      "ssh_trust_host",
+      "connections_test",
+    ])
+  })
+
+  it("reports SSH failures with a direct summary", async () => {
+    backend.failures.set("connections_test", { kind: "ssh", message: "auth rejected (password)" })
+    await useConnectionsStore.getState().testConnection(viaSsh, null)
+    expect(useConnectionsStore.getState().test).toEqual({
+      status: "fail",
+      error: { summary: "SSH connection failed.", detail: "auth rejected (password)" },
+    })
   })
 })

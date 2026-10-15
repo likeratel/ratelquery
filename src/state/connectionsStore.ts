@@ -8,6 +8,7 @@ import {
   type FriendlyError,
 } from "../features/connections/errors"
 import { sortByName, upsertConnection } from "../features/connections/filter"
+import { withHostKeyTrust } from "../features/connections/hostKeyTrust"
 
 export type LoadStatus = "idle" | "loading" | "ready" | "error"
 
@@ -23,6 +24,8 @@ export interface DialogState {
   editing: ConnectionConfig | null
   /** True once the backend confirms a secret is stored for `editing`. */
   hasStoredSecret: boolean
+  /** True once the backend confirms an SSH password or key passphrase is stored for `editing`. */
+  hasStoredSshSecret: boolean
   /** Increments on every open so stale async results can be ignored. */
   session: number
 }
@@ -41,9 +44,19 @@ interface ConnectionsState {
   load: () => Promise<void>
   openDialog: (existing?: ConnectionConfig) => void
   closeDialog: () => void
-  save: (config: ConnectionConfig, secret: string | null) => Promise<ActionResult<ConnectionConfig>>
+  /** `sshSecret` follows the same rule as `secret`: null keeps, "" clears, omitted keeps. */
+  save: (
+    config: ConnectionConfig,
+    secret: string | null,
+    sshSecret?: string | null,
+  ) => Promise<ActionResult<ConnectionConfig>>
   remove: (id: ConnectionId) => Promise<ActionResult>
-  testConnection: (config: ConnectionConfig, secret: string | null) => Promise<void>
+  /** Tests through the SSH tunnel when the config has one, asking about unknown host keys. */
+  testConnection: (
+    config: ConnectionConfig,
+    secret: string | null,
+    sshSecret?: string | null,
+  ) => Promise<void>
   resetTest: () => void
   byId: (id: ConnectionId) => ConnectionConfig | undefined
 }
@@ -54,12 +67,20 @@ const CLOSED_DIALOG: DialogState = {
   open: false,
   editing: null,
   hasStoredSecret: false,
+  hasStoredSshSecret: false,
   session: 0,
 }
 
 function friendly(raw: unknown, action: ConnectionAction): FriendlyError {
   return describeError(normalizeError(raw), action)
 }
+
+/**
+ * Whether a secret is stored. Unknown keyring state counts as stored (the safe side): moving
+ * the connection to another server then asks for the secret again instead of reusing whatever
+ * is stored. A blank secret for the same server still means "keep".
+ */
+const storedOrUnknown = (lookup: Promise<boolean>) => lookup.catch(() => true)
 
 let loadToken = 0
 let testToken = 0
@@ -90,24 +111,30 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
     const session = get().dialog.session + 1
     testToken++
     set({
-      dialog: { open: true, editing: existing ?? null, hasStoredSecret: false, session },
+      dialog: {
+        open: true,
+        editing: existing ?? null,
+        hasStoredSecret: false,
+        hasStoredSshSecret: false,
+        session,
+      },
       test: IDLE_TEST,
       saving: false,
       saveError: null,
     })
     if (!existing) return
-    connectionsApi
-      .hasSecret(existing.id)
-      // Unknown keyring state counts as a stored secret (the safe side): moving the connection
-      // to another server then asks for the password again instead of reusing whatever is
-      // stored. A blank secret for the same server still means "keep".
-      .catch(() => true)
-      .then((hasStoredSecret) => {
-        const { dialog } = get()
-        if (dialog.open && dialog.session === session) {
-          set({ dialog: { ...dialog, hasStoredSecret } })
-        }
-      })
+    const update = (patch: Partial<DialogState>) => {
+      const { dialog } = get()
+      if (dialog.open && dialog.session === session) set({ dialog: { ...dialog, ...patch } })
+    }
+    void storedOrUnknown(connectionsApi.hasSecret(existing.id)).then((hasStoredSecret) =>
+      update({ hasStoredSecret }),
+    )
+    if (existing.kind === "mysql" && existing.ssh) {
+      void storedOrUnknown(connectionsApi.hasSecret(existing.id, "ssh")).then(
+        (hasStoredSshSecret) => update({ hasStoredSshSecret }),
+      )
+    }
   },
 
   closeDialog: () => {
@@ -120,11 +147,11 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
     }))
   },
 
-  save: async (config, secret) => {
+  save: async (config, secret, sshSecret) => {
     const session = get().dialog.session
     set({ saving: true, saveError: null })
     try {
-      const saved = await connectionsApi.save(config, secret)
+      const saved = await connectionsApi.save(config, secret, sshSecret)
       set((state) => ({ connections: upsertConnection(state.connections, saved) }))
       if (get().dialog.session === session) get().closeDialog()
       return { ok: true, value: saved }
@@ -157,11 +184,15 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
     }
   },
 
-  testConnection: async (config, secret) => {
+  testConnection: async (config, secret, sshSecret) => {
     const token = ++testToken
     set({ test: { status: "testing" } })
+    const ssh = config.kind === "mysql" ? config.ssh : undefined
     try {
-      const result = await connectionsApi.test(config, secret)
+      // An unknown host key asks the user; once trusted, the test runs again.
+      const result = await withHostKeyTrust(ssh, () =>
+        connectionsApi.test(config, secret, sshSecret),
+      )
       if (token !== testToken) return
       set({
         test: { status: "ok", latencyMs: result.latencyMs, serverVersion: result.serverVersion },

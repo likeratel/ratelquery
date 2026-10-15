@@ -37,6 +37,9 @@ futures-util = "0.3"
 url = "2"
 # Same rustls as sqlx; used only to install the process-wide crypto provider (see mysql/options.rs).
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+russh = "0.64.1"
+hmac = "0.13"
+sha1 = "0.11"
 
 [dev-dependencies]
 tempfile = "3"

@@ -465,3 +465,85 @@ secret from both stores.
 When a MySQL connection has no stored secret (`connections_has_secret` is false) the frontend
 shows a password prompt before `mysql_connect`, with a "Remember password" option that saves it
 through `connections_save(config, secret)`.
+
+## SSH tunnels (MySQL)
+
+A MySQL connection can go through an SSH bastion, like MySQL Workbench's "Standard TCP/IP over
+SSH". The backend opens a local listener on `127.0.0.1:<random port>`, forwards every accepted
+connection over the SSH session to `host:port` as seen from the bastion, and points the sqlx pool
+at the local port. The tunnel belongs to the session: `mysql_disconnect` closes it, and the
+reconnect path re-opens it when the SSH session has dropped.
+
+```ts
+interface SshConfig {
+  host: string                 // bastion host or IP
+  port: number                 // default 22
+  user: string
+  auth:
+    | { type: "agent" }                        // SSH agent (SSH_AUTH_SOCK), default
+    | { type: "key"; keyPath: string }          // OpenSSH private key; passphrase in the secret store
+    | { type: "password" }                     // password in the secret store
+}
+
+interface MysqlConnectionConfig {
+  // ...existing fields; `host`/`port` are then the MySQL address as seen from the bastion
+  ssh?: SshConfig
+}
+```
+
+Secrets: the MySQL password keeps the connection id as its key. The SSH password or key
+passphrase is stored under `<connection id>:ssh` in the active secret store. `connections_save`
+and `connections_test` take a second optional argument `sshSecret: string | null` with the same
+null-keeps / empty-clears semantics as `secret`. `connections_has_secret(id, "ssh")` reports it
+(second argument `which: "db" | "ssh"`, default `"db"`).
+
+Validation (`invalid_input`): ssh host and user non-empty, port in range, keyPath absolute and
+readable. `tls: "verify_identity"` is rejected together with `ssh` (sqlx connects to `127.0.0.1`
+and cannot check the certificate against the real host name); use `verify_ca`. A connection id
+must not end with `:ssh`.
+
+Secret reuse: the stored database password is only reused (save with `secret: null`, test) while
+the MySQL target and the bastion host/port/user (or no SSH) stay the same; the SSH auth method or
+key file does not matter for it. The stored SSH secret is only reused while the bastion
+host/port/user, auth type and keyPath stay the same; otherwise `invalid_input` asks for it again.
+Saving a config without `ssh` (when the previous one had it) removes the SSH secret.
+`connections_delete` removes both entries from both stores, and switching the secret store moves
+both.
+
+SSH auth: `password` needs the SSH secret (`ssh`: "The SSH password ... is not set" otherwise).
+`key` loads the OpenSSH/PuTTY key; an unencrypted key needs no secret, an encrypted one without a
+passphrase fails with kind `ssh` and a message starting with `Key passphrase required`. `agent`
+tries every key of the agent at `SSH_AUTH_SOCK` (macOS and Linux only). The tunnel sends a
+keepalive after 15 s without server traffic and counts the SSH session as dropped after 3
+unanswered ones.
+
+Host keys are checked against `~/.ssh/known_hosts` (read only) and the app's own
+`<app config dir>/known_hosts` (mode 0600). Plain, hashed (`|1|...`), `[host]:port`, wildcard
+and negated patterns and `@revoked` are understood; `@cert-authority` lines are ignored, and
+`~/.ssh/config` (aliases, `HostKeyAlias`, `ProxyJump`) is not read. An unknown or changed host
+key rejects with kind `ssh_host_key`. The message starts with `<keytype> SHA256:<fingerprint>`
+and its last line is the known_hosts line `<host or [host]:port> <keytype> <base64>`. When the
+user accepts, the frontend calls `ssh_trust_host(host, port, keyLine)` with that line, which
+appends it to the app's known_hosts, and then retries. A changed (or revoked) key is never
+trusted from the app: its message contains the word `changed`, `ssh_trust_host` refuses it with
+`invalid_input`, and the user has to remove the old entry by hand. An unknown key's message never
+contains `changed`.
+
+`AppErrorKind` gains `"ssh_host_key"` and `"ssh"` (any other SSH failure: unreachable bastion,
+authentication rejected, forward refused; the message names the step).
+
+| command | args | returns |
+| --- | --- | --- |
+| `ssh_trust_host` | `host`, `port`, `keyLine` (the last line of the `ssh_host_key` message) | `void` |
+| `connections_save` | `config`, `secret`, `sshSecret?` | as before |
+| `connections_test` | `config`, `secret`, `sshSecret?` | as before; goes through the tunnel |
+| `connections_has_secret` | `id`, `which?: "db" \| "ssh"` | `boolean` |
+
+`mysql:state` events are unchanged. When the SSH session dropped, the next query or the 30 s
+health check re-opens the tunnel on a new local port with a new pool (`reconnecting`, then
+`connected`; the first result reports `reconnected: true`). A tunnel failure during reconnect
+surfaces as `error` with the SSH message, and the call fails with kind `ssh` / `ssh_host_key`.
+
+The password prompt flow applies to the SSH secret too: when the SSH auth needs a secret that is
+not stored, `mysql_connect` accepts `sshSecret?: string` for the session only
+(`mysql_connect(connectionId, secret?, sshSecret?)`); it is kept in memory to re-open the tunnel.

@@ -4,7 +4,7 @@
 use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -15,6 +15,7 @@ use tokio::task::AbortHandle;
 use super::errors::{OpError, POOL_BUSY, describe_sqlx_error};
 use super::events::StateSink;
 use super::model::{MysqlStateEvent, SessionState};
+use super::tunnel::{SessionTunnel, TUNNEL_DOWN};
 use crate::error::{AppError, AppResult};
 
 const PING_TIMEOUT: Duration = Duration::from_secs(10);
@@ -58,7 +59,13 @@ enum PingOutcome {
 
 pub struct MysqlSession {
     id: String,
-    pool: MySqlPool,
+    /// Replaced when the SSH tunnel is re-opened (the old pool is closed).
+    pool: RwLock<MySqlPool>,
+    /// The SSH tunnel the pool connects through, if the connection uses one.
+    tunnel: Option<SessionTunnel>,
+    /// Set when the tunnel was re-opened; the next successful result reports
+    /// `reconnected: true`.
+    reopened: AtomicBool,
     /// Connections currently checked out through [`MysqlSession::acquire`].
     in_use: Arc<AtomicU32>,
     default_database: Option<String>,
@@ -81,7 +88,9 @@ impl MysqlSession {
     ) -> Self {
         Self {
             id: id.to_string(),
-            pool,
+            pool: RwLock::new(pool),
+            tunnel: None,
+            reopened: AtomicBool::new(false),
             in_use: Arc::new(AtomicU32::new(0)),
             default_database,
             lost: AtomicBool::new(false),
@@ -92,8 +101,74 @@ impl MysqlSession {
         }
     }
 
-    pub fn pool(&self) -> &MySqlPool {
-        &self.pool
+    /// The session owns `tunnel`; the pool must connect through it.
+    pub fn with_tunnel(self, tunnel: SessionTunnel) -> Self {
+        Self { tunnel: Some(tunnel), ..self }
+    }
+
+    /// The current pool (a cheap handle). It changes when the SSH tunnel is re-opened.
+    pub fn pool(&self) -> MySqlPool {
+        self.pool.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// `Some(alive)` for a tunnelled session, `None` for a direct one.
+    pub fn tunnel_alive(&self) -> Option<bool> {
+        self.tunnel.as_ref().map(SessionTunnel::is_alive)
+    }
+
+    /// Closes the SSH tunnel but keeps the session, as if the SSH connection dropped: the next
+    /// use (or health check) re-opens it.
+    pub fn close_tunnel(&self) {
+        if let Some(tunnel) = &self.tunnel {
+            tunnel.close_current();
+        }
+    }
+
+    /// Whether the tunnel was re-opened since the last call (then the result is reported as
+    /// reconnected).
+    pub fn take_reopened(&self) -> bool {
+        self.reopened.swap(false, Ordering::SeqCst)
+    }
+
+    /// Re-opens a dropped SSH tunnel and switches to a new pool through it; a no-op for direct
+    /// sessions and live tunnels. On failure the state becomes `error` with the SSH message.
+    pub async fn restore_tunnel(&self) -> Result<(), OpError> {
+        let Some(tunnel) = &self.tunnel else { return Ok(()) };
+        if tunnel.is_alive() {
+            return Ok(());
+        }
+        let _reopening = tunnel.reopening().await;
+        if tunnel.is_alive() {
+            return Ok(());
+        }
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(OpError::Sql(sqlx::Error::PoolClosed));
+        }
+        self.set_state(SessionState::Reconnecting, Some(TUNNEL_DOWN.into()));
+        let (new_tunnel, new_pool) = match tunnel.open().await {
+            Ok(opened) => opened,
+            Err(err) => {
+                self.mark_lost();
+                self.set_state(SessionState::Error, Some(err.to_string()));
+                return Err(OpError::App(err));
+            }
+        };
+        let old_pool = {
+            let mut current = tunnel.lock();
+            if current.is_none() {
+                // The session closed meanwhile; do not leave the new tunnel behind.
+                drop(current);
+                new_tunnel.close();
+                tauri::async_runtime::spawn(async move { new_pool.close().await });
+                return Err(OpError::Sql(sqlx::Error::PoolClosed));
+            }
+            *current = Some(new_tunnel);
+            let mut pool = self.pool.write().unwrap_or_else(|e| e.into_inner());
+            std::mem::replace(&mut *pool, new_pool)
+        };
+        tauri::async_runtime::spawn(async move { old_pool.close().await });
+        self.reopened.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     pub fn default_database(&self) -> Option<&str> {
@@ -141,14 +216,17 @@ impl MysqlSession {
     }
 
     fn max_connections(&self) -> u32 {
-        self.pool.options().get_max_connections()
+        self.pool().options().get_max_connections()
     }
 
     /// Checks out a connection. An acquire timeout while every connection is held by this
     /// session's own work is [`POOL_BUSY`] (`connection`, never retried, no state change);
     /// otherwise the pool could not open a connection in time, which is a lost connection.
+    ///
+    /// A dropped SSH tunnel is re-opened first.
     pub async fn acquire(&self) -> Result<MysqlConn, OpError> {
-        match self.pool.acquire().await {
+        self.restore_tunnel().await?;
+        match self.pool().acquire().await {
             Ok(conn) => {
                 self.in_use.fetch_add(1, Ordering::SeqCst);
                 Ok(MysqlConn { conn, _lease: Lease(Arc::clone(&self.in_use)) })
@@ -187,7 +265,7 @@ impl MysqlSession {
         match first {
             Ok(value) => {
                 self.mark_healthy();
-                Ok((value, pending))
+                Ok((value, pending || self.take_reopened()))
             }
             Err(err) if err.is_connection_level() => self.retry(&op, err).await,
             Err(err) => {
@@ -220,9 +298,12 @@ impl MysqlSession {
     pub fn finish_retry<T>(&self, outcome: Result<T, OpError>) -> AppResult<T> {
         match outcome {
             Ok(value) => {
+                self.take_reopened();
                 self.set_state(SessionState::Connected, None);
                 Ok(value)
             }
+            // The tunnel could not be re-opened; `restore_tunnel` already reported `error`.
+            Err(err) if err.is_tunnel_failure() => Err(err.into_app_error()),
             Err(err) if err.is_connection_level() => {
                 self.mark_lost();
                 self.set_state(SessionState::Error, Some(op_message(&err)));
@@ -240,10 +321,11 @@ impl MysqlSession {
     /// check is skipped: waiting would only measure the queries, and opening another
     /// connection would grow the pool. Only an empty pool opens a new connection to check.
     async fn check_once(&self) -> PingOutcome {
-        let mut conn = match self.pool.try_acquire() {
+        let pool = self.pool();
+        let mut conn = match pool.try_acquire() {
             Some(conn) => conn,
-            None if self.pool.size() > 0 => return PingOutcome::Busy,
-            None => match self.pool.acquire().await {
+            None if pool.size() > 0 => return PingOutcome::Busy,
+            None => match pool.acquire().await {
                 Ok(conn) => conn,
                 Err(err) => return PingOutcome::Failed(describe_sqlx_error(&err)),
             },
@@ -258,8 +340,12 @@ impl MysqlSession {
         }
     }
 
-    /// Background health check; a busy pool leaves the state unchanged.
+    /// Background health check; a busy pool leaves the state unchanged. A dropped SSH tunnel is
+    /// re-opened first (`reconnecting`, then `connected` or `error`).
     pub async fn ping(&self) {
+        if self.restore_tunnel().await.is_err() {
+            return;
+        }
         let outcome = tokio::time::timeout(PING_TIMEOUT, self.check_once())
             .await
             .unwrap_or_else(|_| PingOutcome::Failed("ping timed out".into()));
@@ -279,25 +365,38 @@ impl MysqlSession {
     ///
     /// Spawned on Tauri's runtime, so it also works outside a Tokio context (e.g. app exit).
     pub fn shutdown(&self) {
-        let pool = self.stop();
-        tauri::async_runtime::spawn(async move { pool.close().await });
+        let (pool, tunnel) = self.stop();
+        tauri::async_runtime::spawn(async move {
+            pool.close().await;
+            drop(tunnel);
+        });
     }
 
     /// Like [`MysqlSession::shutdown`] but waits until the pool is closed, which includes
     /// waiting for checked-out connections; callers bound it with a timeout.
     pub async fn close(&self) {
-        self.stop().close().await;
+        let (pool, tunnel) = self.stop();
+        pool.close().await;
+        drop(tunnel);
     }
 
-    /// Marks the session closed, stops the health check and returns the pool to close.
-    fn stop(&self) -> MySqlPool {
+    /// Marks the session closed, stops the health check and returns the pool to close and the
+    /// tunnel to close after it (so connections can end cleanly through it). Taking the tunnel
+    /// stops any re-open from installing a new one.
+    fn stop(&self) -> (MySqlPool, Option<crate::ssh::SshTunnel>) {
         self.closed.store(true, Ordering::SeqCst);
         if let Ok(mut task) = self.ping_task.lock()
             && let Some(handle) = task.take()
         {
             handle.abort();
         }
-        self.pool.clone()
+        match &self.tunnel {
+            Some(tunnel) => {
+                let mut current = tunnel.lock();
+                (self.pool(), current.take())
+            }
+            None => (self.pool(), None),
+        }
     }
 }
 

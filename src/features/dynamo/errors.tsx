@@ -10,6 +10,8 @@ const HINTS: Record<AppErrorKind, string> = {
   invalid_input: "Fix the highlighted input and run again.",
   not_found: "The table or connection no longer exists.",
   io: "A local file or system operation failed.",
+  ssh: "An SSH tunnel failed.",
+  ssh_host_key: "An SSH host key wasn't trusted.",
   unknown: "Something unexpected happened.",
 }
 

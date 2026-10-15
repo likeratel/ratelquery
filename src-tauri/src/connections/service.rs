@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use super::model::ConnectionConfig;
-use super::secrets::SecretStore;
+use super::secrets::{SecretSlot, SecretStore, StuckSecret};
 use super::store::ConnectionStore;
-use super::validate::{same_target, validate_config};
+use super::validate::{same_ssh_target, same_target, validate_config};
 use crate::error::{AppError, AppResult};
 
 /// Connection config CRUD plus secret handling. A mutex serializes read-modify-write cycles of
@@ -42,6 +42,48 @@ fn retype_message(config: &ConnectionConfig) -> &'static str {
         ConnectionConfig::Dynamodb(_) => {
             "Enter the secret access key again to test a different endpoint or key"
         }
+    }
+}
+
+const SSH_RETARGET_MESSAGE: &str =
+    "Enter the SSH password or key passphrase again for the new SSH server or key";
+const SSH_RETYPE_MESSAGE: &str =
+    "Enter the SSH password or key passphrase again to test a different SSH server or key";
+
+fn has_ssh(config: &ConnectionConfig) -> bool {
+    matches!(config, ConnectionConfig::Mysql(c) if c.ssh.is_some())
+}
+
+/// What to do with the stored SSH secret on save: `None` keeps it, `Some("")` clears it,
+/// otherwise replaces it. A config without SSH keeps no SSH secret: it is cleared when the
+/// previous config had SSH, and a given value is ignored.
+fn ssh_secret_action<'a>(
+    previous: Option<&ConnectionConfig>,
+    saved: &ConnectionConfig,
+    ssh_secret: Option<&'a str>,
+) -> Option<&'a str> {
+    if has_ssh(saved) {
+        ssh_secret
+    } else if previous.is_some_and(has_ssh) {
+        Some("")
+    } else {
+        None
+    }
+}
+
+/// One stored secret entry (db or SSH) and the rules that guard its reuse.
+struct Slot {
+    key: String,
+    same: fn(&ConnectionConfig, &ConnectionConfig) -> bool,
+}
+
+impl Slot {
+    fn db(id: &str) -> Self {
+        Slot { key: SecretSlot::Db.key(id), same: same_target }
+    }
+
+    fn ssh(id: &str) -> Self {
+        Slot { key: SecretSlot::Ssh.key(id), same: same_ssh_target }
     }
 }
 
@@ -105,29 +147,38 @@ impl ConnectionsService {
     }
 
     /// A kept secret (`secret == None`) must not follow the config to another server: when the
-    /// saved config had a stored secret and the destination changed, the secret is asked for
-    /// again.
+    /// saved config had a stored secret in `slot` and its destination changed, the secret is
+    /// asked for again.
     fn check_kept_secret(
         &self,
         previous: Option<&ConnectionConfig>,
         saved: &ConnectionConfig,
+        slot: &Slot,
         secret: Option<&str>,
-    ) -> AppResult<()> {
-        let Some(previous) = previous.filter(|_| secret.is_none()) else { return Ok(()) };
+    ) -> AppResult<bool> {
+        let Some(previous) = previous.filter(|_| secret.is_none()) else { return Ok(true) };
         let previous = validate_config(previous).unwrap_or_else(|_| previous.clone());
-        if same_target(&previous, saved) || self.secrets.get(saved.id())?.is_none() {
-            return Ok(());
-        }
-        Err(AppError::InvalidInput(retarget_message(saved).into()))
+        Ok((slot.same)(&previous, saved) || self.secrets.get(&slot.key)?.is_none())
     }
 
-    /// Validates and stores `config`, generating an id when it is empty.
-    /// `secret`: `None` keeps the stored secret, `Some("")` clears it, otherwise replaces it.
-    /// Keeping a stored secret while pointing the config at another server is rejected.
+    /// [`ConnectionsService::save_with_ssh`] keeping the stored SSH secret.
     pub fn save(
         &self,
         config: &ConnectionConfig,
         secret: Option<&str>,
+    ) -> AppResult<ConnectionConfig> {
+        self.save_with_ssh(config, secret, None)
+    }
+
+    /// Validates and stores `config`, generating an id when it is empty.
+    /// `secret` / `ssh_secret`: `None` keeps the stored secret, `Some("")` clears it, otherwise
+    /// replaces it. Keeping a stored secret while pointing the config at another server (or
+    /// another SSH bastion or key) is rejected. A config without SSH keeps no SSH secret.
+    pub fn save_with_ssh(
+        &self,
+        config: &ConnectionConfig,
+        secret: Option<&str>,
+        ssh_secret: Option<&str>,
     ) -> AppResult<ConnectionConfig> {
         let normalized = validate_config(config)?;
         let saved = if normalized.id().is_empty() {
@@ -138,44 +189,60 @@ impl ConnectionsService {
         let _guard = self.guard()?;
         let existing = self.store.load()?;
         let previous = existing.iter().find(|c| c.id() == saved.id());
-        self.check_kept_secret(previous, &saved, secret)?;
+        let ssh_secret = ssh_secret_action(previous, &saved, ssh_secret);
+        let (db, ssh) = (Slot::db(saved.id()), Slot::ssh(saved.id()));
+        if !self.check_kept_secret(previous, &saved, &db, secret)? {
+            return Err(AppError::InvalidInput(retarget_message(&saved).into()));
+        }
+        if has_ssh(&saved) && !self.check_kept_secret(previous, &saved, &ssh, ssh_secret)? {
+            return Err(AppError::InvalidInput(SSH_RETARGET_MESSAGE.into()));
+        }
         let is_new = previous.is_none();
         self.store.save(&upsert(&existing, &saved))?;
-        if let Err(err) = self.apply_secret(saved.id(), secret) {
+        let applied = self
+            .apply_secret(&db.key, secret)
+            .and_then(|()| self.apply_secret(&ssh.key, ssh_secret));
+        if let Err(err) = applied {
             if is_new {
-                // Do not leave a new connection behind whose secret could not be stored.
+                // Do not leave a new connection behind whose secrets could not be stored.
                 self.store.save(&existing)?;
+                if secret.is_some_and(|s| !s.is_empty())
+                    && let Err(cleanup) = self.secrets.delete(&db.key)
+                {
+                    eprintln!("could not remove the secret of {}: {cleanup}", saved.id());
+                }
             }
             return Err(err);
         }
         Ok(saved)
     }
 
-    fn apply_secret(&self, id: &str, secret: Option<&str>) -> AppResult<()> {
+    fn apply_secret(&self, key: &str, secret: Option<&str>) -> AppResult<()> {
         match secret {
             None => Ok(()),
-            Some("") => self.secrets.delete(id),
-            Some(value) => self.secrets.set(id, value),
+            Some("") => self.secrets.delete(key),
+            Some(value) => self.secrets.set(key, value),
         }
     }
 
-    /// Removes the secret (from every secret store), then the config. Deleting an unknown id
-    /// is a no-op.
+    /// Removes the secrets (database and SSH, from every secret store), then the config.
+    /// Deleting an unknown id is a no-op.
     ///
-    /// The secret is removed first so a failure is known before the config disappears; the
+    /// The secrets are removed first so a failure is known before the config disappears; the
     /// config is removed either way, and a secret left in the active store is reported as
     /// `credential`.
     pub fn delete(&self, id: &str) -> AppResult<()> {
         let id = require_id(id)?;
         let _guard = self.guard()?;
-        let secret_removed = self.secrets.delete_everywhere(id);
+        let db_removed = self.secrets.delete_everywhere(id);
+        let ssh_removed = self.secrets.delete_everywhere(&SecretSlot::Ssh.key(id));
         let existing = self.store.load()?;
         if existing.iter().any(|c| c.id() == id) {
             let remaining: Vec<ConnectionConfig> =
                 existing.into_iter().filter(|c| c.id() != id).collect();
             self.store.save(&remaining)?;
         }
-        secret_removed.map_err(|stuck| {
+        db_removed.and(ssh_removed).map_err(|stuck: StuckSecret| {
             AppError::Credential(format!(
                 "The connection was removed, but its saved secret is still in {}: {}",
                 stuck.location, stuck.error
@@ -183,8 +250,13 @@ impl ConnectionsService {
         })
     }
 
+    /// Whether the database secret of `id` is stored.
     pub fn has_secret(&self, id: &str) -> AppResult<bool> {
-        Ok(self.secrets.get(require_id(id)?)?.is_some())
+        self.has_secret_in(id, SecretSlot::Db)
+    }
+
+    pub fn has_secret_in(&self, id: &str, slot: SecretSlot) -> AppResult<bool> {
+        Ok(self.secrets.get(&slot.key(require_id(id)?))?.is_some())
     }
 
     /// Secret for `connections_test`. An explicit secret is used as is. Without one, the stored
@@ -194,6 +266,30 @@ impl ConnectionsService {
         &self,
         config: &ConnectionConfig,
         secret: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        self.resolve_test(config, secret, &Slot::db(config.id()), retype_message(config))
+    }
+
+    /// Like [`ConnectionsService::resolve_test_secret`] for the SSH secret: the stored one is
+    /// only used for the bastion, user and key it was saved for. `None` for configs without
+    /// SSH.
+    pub fn resolve_test_ssh_secret(
+        &self,
+        config: &ConnectionConfig,
+        ssh_secret: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        if !has_ssh(config) {
+            return Ok(None);
+        }
+        self.resolve_test(config, ssh_secret, &Slot::ssh(config.id()), SSH_RETYPE_MESSAGE)
+    }
+
+    fn resolve_test(
+        &self,
+        config: &ConnectionConfig,
+        secret: Option<&str>,
+        slot: &Slot,
+        retype: &str,
     ) -> AppResult<Option<String>> {
         if let Some(value) = secret {
             return Ok(Some(value.to_string()));
@@ -206,20 +302,32 @@ impl ConnectionsService {
             Err(AppError::NotFound(_)) => return Ok(None),
             Err(err) => return Err(err),
         };
-        let stored = self.secrets.get(config.id())?;
-        if stored.is_some() && !same_target(&saved, config) {
-            return Err(AppError::InvalidInput(retype_message(config).into()));
+        let stored = self.secrets.get(&slot.key)?;
+        if stored.is_some() && !(slot.same)(&saved, config) {
+            return Err(AppError::InvalidInput(retype.into()));
         }
         Ok(stored)
     }
 
-    /// The explicitly passed secret, or the stored one for `id` when `secret` is `None`.
+    /// The explicitly passed secret, or the stored database secret for `id` when `secret` is
+    /// `None`.
     pub fn resolve_secret(&self, id: &str, secret: Option<&str>) -> AppResult<Option<String>> {
+        self.resolve_secret_in(id, SecretSlot::Db, secret)
+    }
+
+    /// The explicitly passed secret, or the one stored in `slot` of `id` when `secret` is
+    /// `None`.
+    pub fn resolve_secret_in(
+        &self,
+        id: &str,
+        slot: SecretSlot,
+        secret: Option<&str>,
+    ) -> AppResult<Option<String>> {
         let id = normalize_id(id);
         match secret {
             Some(value) => Ok(Some(value.to_string())),
             None if id.is_empty() => Ok(None),
-            None => self.secrets.get(id),
+            None => self.secrets.get(&slot.key(id)),
         }
     }
 }
@@ -227,7 +335,7 @@ impl ConnectionsService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connections::model::MysqlConnectionConfig;
+    use crate::connections::model::{MysqlConnectionConfig, SshAuth, SshConfig};
     use crate::connections::secrets::MemorySecretStore;
 
     fn config(id: &str, name: &str) -> ConnectionConfig {
@@ -241,6 +349,7 @@ mod tests {
             color: None,
             tls: None,
             ca_cert_path: None,
+            ssh: None,
         })
     }
 
@@ -423,6 +532,100 @@ mod tests {
         assert_eq!(explicit.as_deref(), Some("typed"));
         assert_eq!(resolve(&config("", "new")).unwrap(), None);
         assert_eq!(resolve(&config("unknown-id", "x")).unwrap(), None);
+    }
+
+    fn ssh_config(id: &str, ssh: Option<SshConfig>) -> ConnectionConfig {
+        let ConnectionConfig::Mysql(m) = config(id, "tunneled") else { unreachable!() };
+        ConnectionConfig::Mysql(MysqlConnectionConfig { ssh, ..m })
+    }
+
+    fn bastion(host: &str, auth: SshAuth) -> SshConfig {
+        SshConfig { host: host.into(), port: 22, user: "ec2-user".into(), auth }
+    }
+
+    #[test]
+    fn ssh_secret_is_stored_beside_the_db_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path());
+        let tunneled = ssh_config("", Some(bastion("b", SshAuth::Password)));
+        let saved = svc.save_with_ssh(&tunneled, Some("db-pw"), Some("ssh-pw")).unwrap();
+        let id = saved.id();
+        assert!(svc.has_secret(id).unwrap());
+        assert!(svc.has_secret_in(id, SecretSlot::Ssh).unwrap());
+        let ssh = svc.resolve_secret_in(id, SecretSlot::Ssh, None).unwrap();
+        assert_eq!(ssh.as_deref(), Some("ssh-pw"));
+        assert_eq!(svc.resolve_secret(id, None).unwrap().as_deref(), Some("db-pw"));
+
+        // null keeps, "" clears, only the SSH entry.
+        svc.save_with_ssh(&saved, None, None).unwrap();
+        assert!(svc.has_secret_in(id, SecretSlot::Ssh).unwrap());
+        svc.save_with_ssh(&saved, None, Some("")).unwrap();
+        assert!(!svc.has_secret_in(id, SecretSlot::Ssh).unwrap());
+        assert!(svc.has_secret(id).unwrap());
+
+        svc.save_with_ssh(&saved, None, Some("again")).unwrap();
+        svc.delete(id).unwrap();
+        assert!(!svc.has_secret(id).unwrap());
+        assert!(!svc.has_secret_in(id, SecretSlot::Ssh).unwrap());
+    }
+
+    #[test]
+    fn removing_ssh_clears_the_ssh_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path());
+        let tunneled = ssh_config("", Some(bastion("b", SshAuth::Password)));
+        let saved = svc.save_with_ssh(&tunneled, Some("db"), Some("ssh")).unwrap();
+        let direct = ssh_config(saved.id(), None);
+        // The MySQL target changed too (no bastion), so the db password must be retyped.
+        let err = svc.save_with_ssh(&direct, None, None).unwrap_err();
+        assert_eq!(err.to_string(), "Enter the password again for the new server");
+        svc.save_with_ssh(&direct, Some("db"), Some("ignored")).unwrap();
+        assert!(!svc.has_secret_in(saved.id(), SecretSlot::Ssh).unwrap());
+    }
+
+    #[test]
+    fn kept_ssh_secret_cannot_follow_a_new_bastion_or_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path());
+        let first = ssh_config("", Some(bastion("b", SshAuth::Password)));
+        let saved = svc.save_with_ssh(&first, None, Some("ssh-pw")).unwrap();
+        let moved = ssh_config(saved.id(), Some(bastion("evil", SshAuth::Password)));
+        let err = svc.save_with_ssh(&moved, None, None).unwrap_err();
+        assert_eq!((err.kind(), err.to_string().as_str()), ("invalid_input", SSH_RETARGET_MESSAGE));
+        assert_eq!(svc.get(saved.id()).unwrap(), saved, "nothing was saved");
+        svc.save_with_ssh(&moved, None, Some("new")).unwrap();
+        // Without a stored SSH secret, switching to the agent needs nothing.
+        svc.save_with_ssh(&moved, None, Some("")).unwrap();
+        let agent = ssh_config(saved.id(), Some(bastion("evil", SshAuth::Agent)));
+        svc.save_with_ssh(&agent, None, None).unwrap();
+    }
+
+    #[test]
+    fn test_ssh_secret_is_only_reused_for_the_saved_bastion() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = service(dir.path());
+        let first = ssh_config("", Some(bastion("b", SshAuth::Password)));
+        let saved = svc.save_with_ssh(&first, Some("db"), Some("ssh-pw")).unwrap();
+        let resolve = |c: &ConnectionConfig| svc.resolve_test_ssh_secret(&validated(c), None);
+        assert_eq!(resolve(&saved).unwrap().as_deref(), Some("ssh-pw"));
+        let ConnectionConfig::Mysql(m) = &saved else { panic!() };
+        let other_db =
+            ConnectionConfig::Mysql(MysqlConnectionConfig { host: "10.0.0.7".into(), ..m.clone() });
+        assert_eq!(resolve(&other_db).unwrap().as_deref(), Some("ssh-pw"));
+        assert_eq!(
+            svc.resolve_test_secret(&validated(&other_db), None).unwrap_err().kind(),
+            "invalid_input"
+        );
+        let moved = ssh_config(saved.id(), Some(bastion("evil", SshAuth::Password)));
+        let err = resolve(&moved).unwrap_err();
+        assert_eq!(err.to_string(), SSH_RETYPE_MESSAGE);
+        assert_eq!(
+            svc.resolve_test_secret(&validated(&moved), None).unwrap_err().kind(),
+            "invalid_input"
+        );
+        let typed = svc.resolve_test_ssh_secret(&validated(&moved), Some("typed")).unwrap();
+        assert_eq!(typed.as_deref(), Some("typed"));
+        assert_eq!(resolve(&ssh_config(saved.id(), None)).unwrap(), None, "no SSH, no secret");
     }
 
     #[test]

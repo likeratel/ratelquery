@@ -258,7 +258,7 @@ async fn session_only_secret_is_used_but_never_stored() {
     // No stored secret: the typed password opens the session and is not saved.
     let saved = connections.save(&ConnectionConfig::Mysql(db.config.clone()), None).unwrap();
     let id = saved.id().to_string();
-    sessions.connect_saved(&connections, &id, Some(&password)).await.expect("connect");
+    sessions.connect_saved(&connections, &id, Some(&password), None).await.expect("connect");
     assert!(sessions.is_open(&id).await);
     assert_eq!(secrets.get(&id).unwrap(), None);
     assert!(!connections.has_secret(&id).unwrap());
@@ -268,15 +268,15 @@ async fn session_only_secret_is_used_but_never_stored() {
 
     // A wrong stored secret stays as it is when the session uses a typed one.
     connections.save(&saved, Some("wrong-password")).unwrap();
-    sessions.connect_saved(&connections, &id, Some(&password)).await.expect("connect");
+    sessions.connect_saved(&connections, &id, Some(&password), None).await.expect("connect");
     assert_eq!(secrets.get(&id).unwrap().as_deref(), Some("wrong-password"));
     sessions.disconnect(&id).await;
 
     // Without a typed secret the stored one is used.
-    let err = sessions.connect_saved(&connections, &id, None).await.unwrap_err();
+    let err = sessions.connect_saved(&connections, &id, None, None).await.unwrap_err();
     assert_eq!(err.kind(), "connection");
     connections.save(&saved, Some(&password)).unwrap();
-    sessions.connect_saved(&connections, &id, None).await.expect("stored secret");
+    sessions.connect_saved(&connections, &id, None, None).await.expect("stored secret");
     sessions.disconnect(&id).await;
 }
 
@@ -361,7 +361,7 @@ async fn reconnecting_an_open_id_replaces_the_session() {
         &c,
         &[SessionState::Disconnected, SessionState::Connecting, SessionState::Connected]
     ));
-    assert!(wait_until_closed(c.session.pool()).await, "the old pool is closed");
+    assert!(wait_until_closed(&c.session.pool()).await, "the old pool is closed");
     let current = c.sessions.get(&c.id).await.unwrap();
     assert!(!Arc::ptr_eq(&current, &c.session));
     assert_eq!(query(&current, "SELECT 1").await.len(), 1);
@@ -378,7 +378,7 @@ async fn failed_reconnect_leaves_no_session_behind() {
         &[SessionState::Disconnected, SessionState::Connecting, SessionState::Error]
     ));
     assert!(!c.sessions.is_open(&c.id).await, "error means no session");
-    assert!(wait_until_closed(c.session.pool()).await, "the old pool is closed");
+    assert!(wait_until_closed(&c.session.pool()).await, "the old pool is closed");
     // A later connect works and owns the state again.
     c.sessions.connect(&c.id, &db.config, db.password.as_deref()).await.expect("connect");
     assert_eq!(states(&c).last(), Some(&SessionState::Connected));

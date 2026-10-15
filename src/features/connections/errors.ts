@@ -16,6 +16,8 @@ const SUMMARY_BY_KIND: Record<AppErrorKind, string> = {
   query: "The server rejected the request.",
   credential: "Credentials were rejected or couldn't be read from the keychain.",
   io: "Couldn't read or write the connection settings file.",
+  ssh: "SSH connection failed.",
+  ssh_host_key: "The SSH server's host key isn't trusted.",
   unknown: "Something went wrong.",
 }
 
@@ -43,10 +45,13 @@ export function errorDetail(error: AppError): string {
   return error.message
 }
 
+/** Kinds a failed connection test states directly, without the "test failed" prefix. */
+const DIRECT_TEST_KINDS: ReadonlySet<AppErrorKind> = new Set(["connection", "ssh", "ssh_host_key"])
+
 /** Maps an AppError to user-facing copy, branching only on `kind`. */
 export function describeError(error: AppError, action: ConnectionAction): FriendlyError {
-  if (action === "test" && error.kind === "connection") {
-    return { summary: SUMMARY_BY_KIND.connection, detail: error.message }
+  if (action === "test" && DIRECT_TEST_KINDS.has(error.kind)) {
+    return { summary: SUMMARY_BY_KIND[error.kind], detail: error.message }
   }
   return {
     summary: `${ACTION_PREFIX[action]} ${SUMMARY_BY_KIND[error.kind]}`,

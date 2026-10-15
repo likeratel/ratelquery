@@ -2,10 +2,16 @@
 
 use serde_json::Value;
 
+use super::secrets::ssh_secret_id;
 use super::service::ConnectionsService;
 use super::switchable_secrets::SwitchableSecretStore;
 use crate::error::AppResult;
 use crate::settings::{Settings, SettingsService};
+
+/// Every secret entry a connection can have: the database secret and the SSH secret.
+fn with_ssh_entries(ids: &[String]) -> Vec<String> {
+    ids.iter().flat_map(|id| [id.clone(), ssh_secret_id(id)]).collect()
+}
 
 /// Saves `patch` over the settings. When `secretStore` changed, every saved connection's
 /// secret is moved from the old store to the new one, best effort: the outcome only shows up
@@ -23,6 +29,7 @@ pub fn update_settings(
         if saved.secret_store != before {
             match saved_ids() {
                 Ok(ids) => {
+                    let ids = with_ssh_entries(&ids);
                     let report = secrets.migrate(&ids, before, saved.secret_store);
                     eprintln!(
                         "secret store switched: {} secrets moved, {} left in the old store",
@@ -58,6 +65,7 @@ mod tests {
             color: None,
             tls: None,
             ca_cert_path: None,
+            ssh: None,
         })
     }
 
@@ -73,6 +81,7 @@ mod tests {
             ConnectionsService::new(ConnectionStore::new(dir.path()), secrets.clone());
         let a = connections.save(&config("a"), Some("pa")).unwrap();
         let b = connections.save(&config("b"), None).unwrap();
+        keychain.set(&ssh_secret_id(a.id()), "ssh-a").unwrap();
 
         let saved =
             update_settings(&settings, &connections, &secrets, &json!({ "secretStore": "file" }))
@@ -80,6 +89,7 @@ mod tests {
         assert_eq!(saved.secret_store, SecretStoreKind::File);
         assert_eq!(file.get(a.id()).unwrap().as_deref(), Some("pa"));
         assert_eq!(keychain.get(a.id()).unwrap(), None, "moved, not copied");
+        assert_eq!(file.get(&ssh_secret_id(a.id())).unwrap().as_deref(), Some("ssh-a"));
         assert!(connections.has_secret(a.id()).unwrap());
         assert!(!connections.has_secret(b.id()).unwrap());
 

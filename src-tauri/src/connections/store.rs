@@ -76,6 +76,7 @@ mod tests {
             color: None,
             tls: None,
             ca_cert_path: None,
+            ssh: None,
         })
     }
 

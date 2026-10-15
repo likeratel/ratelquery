@@ -20,6 +20,42 @@ impl MysqlTlsMode {
     }
 }
 
+pub const DEFAULT_SSH_PORT: i64 = 22;
+
+fn default_ssh_port() -> i64 {
+    DEFAULT_SSH_PORT
+}
+
+/// How the SSH tunnel authenticates. The password (`password`) or key passphrase (`key`) is
+/// kept in the secret store under `<connection id>:ssh`, never in the config.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum SshAuth {
+    /// Every key the SSH agent (`SSH_AUTH_SOCK`) offers.
+    #[default]
+    Agent,
+    /// An OpenSSH private key file.
+    Key {
+        #[serde(rename = "keyPath")]
+        key_path: String,
+    },
+    Password,
+}
+
+/// SSH bastion a MySQL connection is tunnelled through. The MySQL `host`/`port` are then the
+/// address as seen from the bastion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshConfig {
+    pub host: String,
+    /// Kept wide so out-of-range values reach validation instead of failing deserialization.
+    #[serde(default = "default_ssh_port")]
+    pub port: i64,
+    pub user: String,
+    #[serde(default)]
+    pub auth: SshAuth,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MysqlConnectionConfig {
@@ -39,6 +75,9 @@ pub struct MysqlConnectionConfig {
     /// PEM file with the CA certificate(s) for `verify_ca` / `verify_identity`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_cert_path: Option<String>,
+    /// Tunnel through this SSH bastion; absent means a direct connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshConfig>,
 }
 
 impl MysqlConnectionConfig {
@@ -148,6 +187,39 @@ mod tests {
         let bad = json!({ "kind": "mysql", "id": "a", "name": "n", "host": "h", "port": 1,
                           "user": "u", "tls": "sometimes" });
         assert!(serde_json::from_value::<ConnectionConfig>(bad).is_err());
+    }
+
+    #[test]
+    fn mysql_ssh_config_round_trips() {
+        let value = json!({
+            "kind": "mysql", "id": "a", "name": "prod", "host": "10.0.0.5", "port": 3306,
+            "user": "app",
+            "ssh": { "host": "bastion.example.com", "port": 2222, "user": "ec2-user",
+                     "auth": { "type": "key", "keyPath": "/home/me/.ssh/id_ed25519" } }
+        });
+        let config: ConnectionConfig = serde_json::from_value(value.clone()).unwrap();
+        let ConnectionConfig::Mysql(c) = &config else { panic!("expected mysql") };
+        let ssh = c.ssh.as_ref().unwrap();
+        assert_eq!(ssh.auth, SshAuth::Key { key_path: "/home/me/.ssh/id_ed25519".into() });
+        assert_eq!(serde_json::to_value(&config).unwrap(), value);
+
+        for (auth, expected) in [
+            (json!({ "type": "agent" }), SshAuth::Agent),
+            (json!({ "type": "password" }), SshAuth::Password),
+        ] {
+            let ssh: SshConfig = serde_json::from_value(
+                json!({ "host": "b", "port": 22, "user": "u", "auth": auth }),
+            )
+            .unwrap();
+            assert_eq!(ssh.auth, expected);
+        }
+        let defaults: SshConfig =
+            serde_json::from_value(json!({ "host": "b", "user": "u" })).unwrap();
+        assert_eq!((defaults.port, defaults.auth), (DEFAULT_SSH_PORT, SshAuth::Agent));
+        let bad = json!({ "host": "b", "user": "u", "auth": { "type": "kerberos" } });
+        assert!(serde_json::from_value::<SshConfig>(bad).is_err());
+        let no_path = json!({ "host": "b", "user": "u", "auth": { "type": "key" } });
+        assert!(serde_json::from_value::<SshConfig>(no_path).is_err());
     }
 
     #[test]

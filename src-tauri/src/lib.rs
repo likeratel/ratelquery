@@ -7,6 +7,7 @@ mod fsutil;
 mod menu;
 pub mod mysql;
 pub mod settings;
+pub mod ssh;
 mod state;
 mod util;
 
@@ -76,6 +77,7 @@ pub fn run() {
             commands::dynamo::dynamo_export,
             commands::settings::settings_get,
             commands::settings::settings_set,
+            commands::ssh::ssh_trust_host,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

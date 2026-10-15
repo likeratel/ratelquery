@@ -1,6 +1,7 @@
 export { ConnectionDialog } from "./ConnectionDialog"
 export { ConnectionList } from "./ConnectionList"
 export { connectMysql, isPasswordCancelled, PASSWORD_CANCELLED } from "./connectSession"
+export { HostKeyPromptDialog } from "./HostKeyPromptDialog"
 export { PasswordPromptDialog } from "./PasswordPromptDialog"
 export { requestPassword, type PasswordAnswer } from "./passwordPrompt"
 export { describeError, errorDetail, type ConnectionAction, type FriendlyError } from "./errors"

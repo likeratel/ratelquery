@@ -17,6 +17,7 @@ mod schema;
 mod session;
 mod splitter;
 mod table_details;
+mod tunnel;
 mod type_meta;
 
 pub use bind::{BindValue, to_bind_value};
@@ -36,6 +37,7 @@ pub use query::run_query;
 pub use registry::{MysqlSessions, PING_INTERVAL};
 pub use session::MysqlSession;
 pub use splitter::split_statements;
+pub use tunnel::TUNNEL_DOWN;
 
 use schema::{fetch_schema, list_databases};
 use session::boxed;

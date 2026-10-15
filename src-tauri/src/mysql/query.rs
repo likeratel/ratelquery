@@ -268,7 +268,7 @@ pub async fn run_query(
     };
     let pending = session.take_lost();
     let (mut conn, retried) = open_with_retry(session, plan.database).await?;
-    let mut reconnected = pending || retried;
+    let mut reconnected = pending || retried || session.take_reopened();
     let mut replay: Option<&str> = None;
     let mut results = Vec::with_capacity(statements.len());
     for (index, statement) in statements.iter().enumerate() {

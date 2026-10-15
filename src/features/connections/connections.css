@@ -403,3 +403,44 @@
     display: none;
   }
 }
+
+/* SSH host key prompt */
+
+.conn-hostkey {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.conn-hostkey dt {
+  color: var(--text-muted);
+}
+
+.conn-hostkey dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.conn-hostkey__fingerprint {
+  font-weight: 500;
+}
+
+.conn-form__file {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.conn-form__file > .ui-field {
+  flex: 1;
+}
+
+.conn-form__file-action {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}

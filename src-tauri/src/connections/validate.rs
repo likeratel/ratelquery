@@ -1,6 +1,10 @@
 use std::path::Path;
 
-use super::model::{ConnectionConfig, DynamoAuth, DynamoConnectionConfig, MysqlConnectionConfig};
+use super::model::{
+    ConnectionConfig, DynamoAuth, DynamoConnectionConfig, MysqlConnectionConfig, MysqlTlsMode,
+    SshAuth, SshConfig,
+};
+use super::secrets::SSH_SECRET_SUFFIX;
 use crate::error::{AppError, AppResult};
 
 const ENDPOINT_SCHEMES: [&str; 2] = ["http", "https"];
@@ -63,14 +67,65 @@ fn validate_ca_path(c: &MysqlConnectionConfig) -> AppResult<Option<String>> {
     Ok(Some(path))
 }
 
+fn validate_port(port: i64, field: &str) -> AppResult<()> {
+    if !(MIN_PORT..=MAX_PORT).contains(&port) {
+        return Err(AppError::InvalidInput(format!(
+            "{field} must be between {MIN_PORT} and {MAX_PORT}"
+        )));
+    }
+    Ok(())
+}
+
+/// The key file must be an absolute path to a readable file. Only the path is stored.
+fn validate_key_path(path: &str) -> AppResult<String> {
+    let path = path.trim();
+    require(path, "ssh keyPath")?;
+    if !Path::new(path).is_absolute() {
+        return Err(AppError::InvalidInput(format!("ssh keyPath must be absolute: {path}")));
+    }
+    std::fs::File::open(path)
+        .and_then(|file| file.metadata())
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .ok_or_else(|| {
+            AppError::InvalidInput(format!("ssh keyPath is not a readable file: {path}"))
+        })?;
+    Ok(path.to_string())
+}
+
+fn validate_ssh(ssh: &SshConfig) -> AppResult<SshConfig> {
+    require(&ssh.host, "ssh host")?;
+    require(&ssh.user, "ssh user")?;
+    validate_port(ssh.port, "ssh port")?;
+    let auth = match &ssh.auth {
+        SshAuth::Key { key_path } => SshAuth::Key { key_path: validate_key_path(key_path)? },
+        other => other.clone(),
+    };
+    Ok(SshConfig {
+        host: ssh.host.trim().to_string(),
+        port: ssh.port,
+        user: ssh.user.trim().to_string(),
+        auth,
+    })
+}
+
+/// Through a tunnel sqlx connects to `127.0.0.1`, so it cannot check the certificate against
+/// the server's real name.
+fn check_tunnel_tls(c: &MysqlConnectionConfig) -> AppResult<()> {
+    if c.ssh.is_some() && c.tls_mode() == MysqlTlsMode::VerifyIdentity {
+        return Err(AppError::InvalidInput(
+            "tls verify_identity cannot check the host name through an SSH tunnel; use verify_ca"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_mysql(c: &MysqlConnectionConfig) -> AppResult<MysqlConnectionConfig> {
     require(&c.name, "name")?;
     require(&c.host, "host")?;
-    if !(MIN_PORT..=MAX_PORT).contains(&c.port) {
-        return Err(AppError::InvalidInput(format!(
-            "port must be between {MIN_PORT} and {MAX_PORT}"
-        )));
-    }
+    validate_port(c.port, "port")?;
+    check_tunnel_tls(c)?;
     Ok(MysqlConnectionConfig {
         id: c.id.trim().to_string(),
         name: c.name.trim().to_string(),
@@ -81,6 +136,7 @@ fn validate_mysql(c: &MysqlConnectionConfig) -> AppResult<MysqlConnectionConfig>
         color: validate_color(&c.color)?,
         tls: c.tls,
         ca_cert_path: validate_ca_path(c)?,
+        ssh: c.ssh.as_ref().map(validate_ssh).transpose()?,
     })
 }
 
@@ -110,17 +166,57 @@ fn validate_dynamo(c: &DynamoConnectionConfig) -> AppResult<DynamoConnectionConf
     })
 }
 
+/// An id ending in the SSH secret suffix would share its secret entry with another
+/// connection's SSH secret.
+fn check_id(id: &str) -> AppResult<()> {
+    if id.trim().ends_with(SSH_SECRET_SUFFIX) {
+        return Err(AppError::InvalidInput(format!(
+            "connection id must not end with {SSH_SECRET_SUFFIX}"
+        )));
+    }
+    Ok(())
+}
+
 /// Validates a config and returns a normalized copy (trimmed, empty optionals removed).
 pub fn validate_config(config: &ConnectionConfig) -> AppResult<ConnectionConfig> {
+    check_id(config.id())?;
     match config {
         ConnectionConfig::Mysql(c) => validate_mysql(c).map(ConnectionConfig::Mysql),
         ConnectionConfig::Dynamodb(c) => validate_dynamo(c).map(ConnectionConfig::Dynamodb),
     }
 }
 
+/// Same bastion and SSH user (or both direct). The authentication method does not change
+/// where the database secret goes.
+fn same_bastion(a: Option<&SshConfig>, b: Option<&SshConfig>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => {
+            a.host.eq_ignore_ascii_case(&b.host) && a.port == b.port && a.user == b.user
+        }
+        _ => false,
+    }
+}
+
+/// Same bastion, SSH user and authentication (kind and key file).
+fn same_ssh(a: Option<&SshConfig>, b: Option<&SshConfig>) -> bool {
+    same_bastion(a, b) && a.map(|s| &s.auth) == b.map(|s| &s.auth)
+}
+
+/// True when both configs send the stored SSH secret (`<id>:ssh`) to the same bastion with the
+/// same meaning (password, or passphrase of the same key file). Compare validated configs.
+pub fn same_ssh_target(a: &ConnectionConfig, b: &ConnectionConfig) -> bool {
+    match (a, b) {
+        (ConnectionConfig::Mysql(a), ConnectionConfig::Mysql(b)) => {
+            same_ssh(a.ssh.as_ref(), b.ssh.as_ref())
+        }
+        _ => false,
+    }
+}
+
 /// True when both configs send the stored secret to the same place: same kind and
-/// host/port/user/TLS settings (MySQL) or endpoint/region/auth identity (DynamoDB). Compare
-/// validated configs.
+/// host/port/user/TLS settings and SSH bastion (MySQL) or endpoint/region/auth identity
+/// (DynamoDB). Compare validated configs.
 pub fn same_target(a: &ConnectionConfig, b: &ConnectionConfig) -> bool {
     match (a, b) {
         (ConnectionConfig::Mysql(a), ConnectionConfig::Mysql(b)) => {
@@ -129,6 +225,7 @@ pub fn same_target(a: &ConnectionConfig, b: &ConnectionConfig) -> bool {
                 && a.user == b.user
                 && a.tls_mode() == b.tls_mode()
                 && a.ca_cert_path == b.ca_cert_path
+                && same_bastion(a.ssh.as_ref(), b.ssh.as_ref())
         }
         (ConnectionConfig::Dynamodb(a), ConnectionConfig::Dynamodb(b)) => {
             a.endpoint == b.endpoint && a.region == b.region && a.auth == b.auth
@@ -152,6 +249,7 @@ mod tests {
             color: None,
             tls: None,
             ca_cert_path: None,
+            ssh: None,
         }
     }
 
@@ -198,6 +296,8 @@ mod tests {
         for case in cases {
             assert_eq!(kind_of(validate_config(&ConnectionConfig::Mysql(case))), "invalid_input");
         }
+        let clash = MysqlConnectionConfig { id: "abc:ssh".into(), ..mysql() };
+        assert_eq!(kind_of(validate_config(&ConnectionConfig::Mysql(clash))), "invalid_input");
         let edge = MysqlConnectionConfig { port: 65_535, ..mysql() };
         assert_eq!(kind_of(validate_config(&ConnectionConfig::Mysql(edge))), "ok");
     }
@@ -286,6 +386,106 @@ mod tests {
         };
         assert!(!same_target(&dyn_base, &ConnectionConfig::Dynamodb(rekeyed)));
         assert!(!same_target(&dyn_base, &base));
+    }
+
+    fn ssh(auth: SshAuth) -> SshConfig {
+        SshConfig { host: " bastion ".into(), port: 22, user: " ec2-user ".into(), auth }
+    }
+
+    fn with_ssh(ssh: SshConfig) -> ConnectionConfig {
+        ConnectionConfig::Mysql(MysqlConnectionConfig { ssh: Some(ssh), ..mysql() })
+    }
+
+    #[test]
+    fn validates_and_normalizes_ssh() {
+        let ConnectionConfig::Mysql(c) = validate_config(&with_ssh(ssh(SshAuth::Agent))).unwrap()
+        else {
+            panic!("expected mysql");
+        };
+        let ssh_config = c.ssh.unwrap();
+        assert_eq!((ssh_config.host.as_str(), ssh_config.user.as_str()), ("bastion", "ec2-user"));
+
+        let key = tempfile::NamedTempFile::new().unwrap();
+        let key_path = key.path().to_str().unwrap().to_string();
+        let keyed = ssh(SshAuth::Key { key_path: format!(" {key_path} ") });
+        let ConnectionConfig::Mysql(c) = validate_config(&with_ssh(keyed)).unwrap() else {
+            panic!("expected mysql");
+        };
+        assert_eq!(c.ssh.unwrap().auth, SshAuth::Key { key_path });
+
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            SshConfig { host: " ".into(), ..ssh(SshAuth::Agent) },
+            SshConfig { user: String::new(), ..ssh(SshAuth::Agent) },
+            SshConfig { port: 0, ..ssh(SshAuth::Agent) },
+            SshConfig { port: 65_536, ..ssh(SshAuth::Password) },
+            ssh(SshAuth::Key { key_path: "relative/id_ed25519".into() }),
+            ssh(SshAuth::Key { key_path: " ".into() }),
+            ssh(SshAuth::Key { key_path: "/nonexistent/dbclient/id_ed25519".into() }),
+            ssh(SshAuth::Key { key_path: dir.path().to_str().unwrap().into() }),
+        ];
+        for case in cases {
+            let label = format!("{case:?}");
+            assert_eq!(kind_of(validate_config(&with_ssh(case))), "invalid_input", "{label}");
+        }
+    }
+
+    #[test]
+    fn verify_identity_is_rejected_through_a_tunnel() {
+        use crate::connections::MysqlTlsMode;
+        let tunneled = |tls| {
+            ConnectionConfig::Mysql(MysqlConnectionConfig {
+                tls: Some(tls),
+                ssh: Some(ssh(SshAuth::Agent)),
+                ..mysql()
+            })
+        };
+        assert_eq!(
+            kind_of(validate_config(&tunneled(MysqlTlsMode::VerifyIdentity))),
+            "invalid_input"
+        );
+        assert_eq!(kind_of(validate_config(&tunneled(MysqlTlsMode::VerifyCa))), "ok");
+    }
+
+    #[test]
+    fn same_target_includes_the_ssh_bastion() {
+        let base = validate_config(&with_ssh(ssh(SshAuth::Password))).unwrap();
+        let ConnectionConfig::Mysql(m) = &base else { panic!() };
+        let s = m.ssh.clone().unwrap();
+        let upper = SshConfig { host: "BASTION".into(), ..s.clone() };
+        let same = ConnectionConfig::Mysql(MysqlConnectionConfig { ssh: Some(upper), ..m.clone() });
+        assert!(same_target(&base, &same) && same_ssh_target(&base, &same));
+        for changed in [
+            SshConfig { host: "other".into(), ..s.clone() },
+            SshConfig { port: 2222, ..s.clone() },
+            SshConfig { user: "root".into(), ..s.clone() },
+        ] {
+            let moved =
+                ConnectionConfig::Mysql(MysqlConnectionConfig { ssh: Some(changed), ..m.clone() });
+            assert!(!same_target(&base, &moved), "{moved:?}");
+            assert!(!same_ssh_target(&base, &moved), "{moved:?}");
+        }
+        // Another auth method or key only invalidates the SSH secret.
+        for changed in [
+            SshConfig { auth: SshAuth::Agent, ..s.clone() },
+            SshConfig { auth: SshAuth::Key { key_path: "/k".into() }, ..s.clone() },
+        ] {
+            let moved =
+                ConnectionConfig::Mysql(MysqlConnectionConfig { ssh: Some(changed), ..m.clone() });
+            assert!(same_target(&base, &moved), "{moved:?}");
+            assert!(!same_ssh_target(&base, &moved), "{moved:?}");
+        }
+        let direct = ConnectionConfig::Mysql(MysqlConnectionConfig { ssh: None, ..m.clone() });
+        assert!(!same_target(&base, &direct) && !same_ssh_target(&base, &direct));
+        // A changed MySQL host behind the same bastion keeps the SSH target.
+        let db_moved =
+            ConnectionConfig::Mysql(MysqlConnectionConfig { host: "10.0.0.9".into(), ..m.clone() });
+        assert!(!same_target(&base, &db_moved) && same_ssh_target(&base, &db_moved));
+        let key_a = SshConfig { auth: SshAuth::Key { key_path: "/a".into() }, ..s.clone() };
+        let key_b = SshConfig { auth: SshAuth::Key { key_path: "/b".into() }, ..s.clone() };
+        let a = ConnectionConfig::Mysql(MysqlConnectionConfig { ssh: Some(key_a), ..m.clone() });
+        let b = ConnectionConfig::Mysql(MysqlConnectionConfig { ssh: Some(key_b), ..m.clone() });
+        assert!(!same_ssh_target(&a, &b));
     }
 
     #[test]

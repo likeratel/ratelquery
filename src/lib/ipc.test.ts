@@ -9,6 +9,11 @@ describe("normalizeError", () => {
     })
   })
 
+  it("keeps the SSH kinds", () => {
+    expect(normalizeError({ kind: "ssh", message: "x" }).kind).toBe("ssh")
+    expect(normalizeError({ kind: "ssh_host_key", message: "x" }).kind).toBe("ssh_host_key")
+  })
+
   it("maps unknown kinds to unknown", () => {
     expect(normalizeError({ kind: "weird", message: "x" }).kind).toBe("unknown")
   })

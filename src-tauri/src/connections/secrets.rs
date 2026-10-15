@@ -5,6 +5,34 @@ use crate::error::{AppError, AppResult};
 
 const KEYRING_SERVICE: &str = "dbclient";
 pub const KEYCHAIN_LOCATION: &str = "the keychain";
+/// Suffix of the secret entry holding a connection's SSH password or key passphrase.
+pub const SSH_SECRET_SUFFIX: &str = ":ssh";
+
+/// Secret store key of the SSH password or passphrase of connection `id`.
+pub fn ssh_secret_id(id: &str) -> String {
+    format!("{id}{SSH_SECRET_SUFFIX}")
+}
+
+/// Which stored secret of a connection a call refers to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SecretSlot {
+    /// The database password or secret access key, stored under the connection id.
+    #[default]
+    Db,
+    /// The SSH password or key passphrase, stored under `<id>:ssh`.
+    Ssh,
+}
+
+impl SecretSlot {
+    /// Secret store key for connection `id`.
+    pub fn key(self, id: &str) -> String {
+        match self {
+            SecretSlot::Db => id.to_string(),
+            SecretSlot::Ssh => ssh_secret_id(id),
+        }
+    }
+}
 
 /// A secret that could not be removed, and where it is still kept.
 #[derive(Debug)]

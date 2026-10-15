@@ -50,6 +50,7 @@ pub fn test_db() -> Option<TestDb> {
         color: None,
         tls: None,
         ca_cert_path: None,
+        ssh: None,
     };
     Some(TestDb { config, password })
 }

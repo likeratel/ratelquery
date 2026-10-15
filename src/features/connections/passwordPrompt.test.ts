@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest"
 import type { MysqlConnectionConfig } from "../../lib/connections"
-import { requestPassword, resetPasswordPrompt, usePasswordPrompt } from "./passwordPrompt"
+import {
+  promptCopy,
+  requestPassword,
+  resetPasswordPrompt,
+  usePasswordPrompt,
+} from "./passwordPrompt"
 
 const config = (id: string): MysqlConnectionConfig => ({
   kind: "mysql",
@@ -56,5 +61,44 @@ describe("requestPassword", () => {
     void requestPassword(config("a"))
     expect(queue()).toHaveLength(1)
     expect(queue()[0].id).not.toBe(id)
+  })
+})
+
+describe("SSH secrets", () => {
+  const tunnelled = (auth: NonNullable<MysqlConnectionConfig["ssh"]>["auth"]) => ({
+    ...config("s"),
+    ssh: { host: "bastion", port: 2222, user: "ops", auth },
+  })
+
+  it("keeps separate prompts for the database and the SSH secret of one connection", () => {
+    const db = requestPassword(config("a"))
+    const ssh = requestPassword(config("a"), "ssh")
+    expect(ssh).not.toBe(db)
+    expect(requestPassword(config("a"), "ssh")).toBe(ssh)
+    expect(queue().map((r) => r.which)).toEqual(["db", "ssh"])
+  })
+
+  it("labels the prompt for the secret it asks for", () => {
+    expect(promptCopy({ config: config("a"), which: "db" })).toEqual({
+      title: "Password for db a",
+      subtitle: "root@localhost:3306",
+      fieldLabel: "Password",
+      rememberLabel: "Remember password",
+      skipLabel: "Connect without a password",
+    })
+    expect(promptCopy({ config: tunnelled({ type: "password" }), which: "ssh" })).toEqual({
+      title: "SSH password for ops@bastion",
+      subtitle: "ops@bastion:2222",
+      fieldLabel: "SSH password",
+      rememberLabel: "Remember password",
+      skipLabel: null,
+    })
+    expect(
+      promptCopy({ config: tunnelled({ type: "key", keyPath: "/k/id" }), which: "ssh" }),
+    ).toMatchObject({
+      title: "Key passphrase for ops@bastion",
+      subtitle: "/k/id",
+      skipLabel: "Connect without a passphrase",
+    })
   })
 })

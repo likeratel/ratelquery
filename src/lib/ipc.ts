@@ -1,7 +1,15 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core"
 
 export type AppErrorKind =
-  "invalid_input" | "not_found" | "connection" | "query" | "credential" | "io" | "unknown"
+  | "invalid_input"
+  | "not_found"
+  | "connection"
+  | "query"
+  | "credential"
+  | "io"
+  | "ssh"
+  | "ssh_host_key"
+  | "unknown"
 
 export interface AppError {
   kind: AppErrorKind
@@ -17,6 +25,8 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set([
   "query",
   "credential",
   "io",
+  "ssh",
+  "ssh_host_key",
 ])
 
 /** Turns whatever a transport rejected with into a structured AppError. */

@@ -11,8 +11,10 @@ use super::options::{
     ACQUIRE_TIMEOUT, connect_options, fetch_current_database, fetch_server_version, pool_options,
 };
 use super::session::MysqlSession;
-use crate::connections::{ConnectionConfig, ConnectionsService, MysqlConnectionConfig};
+use super::tunnel::{SessionTunnel, through};
+use crate::connections::{ConnectionConfig, ConnectionsService, MysqlConnectionConfig, SecretSlot};
 use crate::error::{AppError, AppResult};
+use crate::ssh::{KnownHosts, SshTunnel, tunnel_request};
 use crate::util::run_blocking;
 
 pub const PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -27,6 +29,7 @@ pub struct MysqlSessions {
     sink: Arc<dyn StateSink>,
     ping_interval: Duration,
     acquire_timeout: Duration,
+    known_hosts: KnownHosts,
 }
 
 fn spawn_ping(session: &Arc<MysqlSession>, period: Duration) {
@@ -55,7 +58,14 @@ impl MysqlSessions {
             sink,
             ping_interval,
             acquire_timeout: ACQUIRE_TIMEOUT,
+            known_hosts: KnownHosts::default(),
         }
+    }
+
+    /// Same registry checking SSH host keys against `known_hosts`. Without it no host key is
+    /// known, so every tunnel fails with `ssh_host_key`.
+    pub fn with_known_hosts(self, known_hosts: KnownHosts) -> Self {
+        Self { known_hosts, ..self }
     }
 
     /// Same registry with a different pool acquire timeout for sessions opened later.
@@ -76,9 +86,21 @@ impl MysqlSessions {
         config: &MysqlConnectionConfig,
         password: Option<&str>,
     ) -> AppResult<MysqlSessionInfo> {
+        self.connect_with_ssh(id, config, password, None).await
+    }
+
+    /// [`MysqlSessions::connect`] with the SSH password or key passphrase for a tunnelled
+    /// config.
+    pub async fn connect_with_ssh(
+        &self,
+        id: &str,
+        config: &MysqlConnectionConfig,
+        password: Option<&str>,
+        ssh_secret: Option<&str>,
+    ) -> AppResult<MysqlSessionInfo> {
         self.disconnect(id).await;
         self.emit(id, SessionState::Connecting, None);
-        match self.open(id, config, password).await {
+        match self.open(id, config, password, ssh_secret).await {
             Ok((session, info)) => {
                 spawn_ping(&session, self.ping_interval);
                 let previous = {
@@ -108,28 +130,38 @@ impl MysqlSessions {
         }
     }
 
-    /// Opens the saved connection `id`. A given `secret` is used for this session only and is
-    /// never stored; without one the stored secret (if any) is used. The config file and the
-    /// secret store are read on the blocking pool.
+    /// Opens the saved connection `id`. A given `secret` / `ssh_secret` is used for this
+    /// session only and is never stored; without one the stored secret (if any) is used. The
+    /// config file and the secret store are read on the blocking pool.
     pub async fn connect_saved(
         &self,
         connections: &Arc<ConnectionsService>,
         id: &str,
         secret: Option<&str>,
+        ssh_secret: Option<&str>,
     ) -> AppResult<MysqlSessionInfo> {
         let connections = Arc::clone(connections);
-        let (owned_id, secret) = (id.to_string(), secret.map(str::to_string));
-        let (config, password) = run_blocking(move || {
+        let owned_id = id.to_string();
+        let (secret, ssh_secret) = (secret.map(str::to_string), ssh_secret.map(str::to_string));
+        let (config, password, ssh_secret) = run_blocking(move || {
             let ConnectionConfig::Mysql(config) = connections.get(&owned_id)? else {
                 return Err(AppError::InvalidInput(format!(
                     "{owned_id} is not a MySQL connection"
                 )));
             };
             let password = connections.resolve_secret(&owned_id, secret.as_deref())?;
-            Ok((config, password))
+            let ssh_secret = match &config.ssh {
+                Some(_) => connections.resolve_secret_in(
+                    &owned_id,
+                    SecretSlot::Ssh,
+                    ssh_secret.as_deref(),
+                )?,
+                None => None,
+            };
+            Ok((config, password, ssh_secret))
         })
         .await?;
-        self.connect(id, &config, password.as_deref()).await
+        self.connect_with_ssh(id, &config, password.as_deref(), ssh_secret.as_deref()).await
     }
 
     async fn open(
@@ -137,12 +169,28 @@ impl MysqlSessions {
         id: &str,
         config: &MysqlConnectionConfig,
         password: Option<&str>,
+        ssh_secret: Option<&str>,
     ) -> AppResult<(Arc<MysqlSession>, MysqlSessionInfo)> {
         let options = connect_options(config, password)?;
+        let request = tunnel_request(config, ssh_secret.map(str::to_string), &self.known_hosts)?;
+        let tunnel = match &request {
+            Some(request) => Some(SshTunnel::open(request).await?),
+            None => None,
+        };
+        let pool_connect = match &tunnel {
+            Some(tunnel) => through(&options, tunnel),
+            None => options.clone(),
+        };
+        let fail = |err: &sqlx::Error| {
+            tunnel
+                .as_ref()
+                .and_then(SshTunnel::take_forward_error)
+                .unwrap_or_else(|| connection_error(err))
+        };
         let pool = pool_options(self.acquire_timeout)
-            .connect_with(options)
+            .connect_with(pool_connect)
             .await
-            .map_err(|e| connection_error(&e))?;
+            .map_err(|e| fail(&e))?;
         let info = async {
             let mut conn = pool.acquire().await?;
             let server_version = fetch_server_version(&mut conn).await?;
@@ -154,11 +202,20 @@ impl MysqlSessions {
             Ok(info) => {
                 let session =
                     MysqlSession::new(id, pool, config.database.clone(), Arc::clone(&self.sink));
+                let session = match (request, tunnel) {
+                    (Some(request), Some(tunnel)) => session.with_tunnel(SessionTunnel::new(
+                        request,
+                        tunnel,
+                        options,
+                        self.acquire_timeout,
+                    )),
+                    _ => session,
+                };
                 Ok((Arc::new(session), info))
             }
             Err(err) => {
                 pool.close().await;
-                Err(connection_error(&err))
+                Err(fail(&err))
             }
         }
     }

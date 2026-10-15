@@ -5,14 +5,18 @@ import type {
   DynamoConnectionConfig,
   MysqlConnectionConfig,
   MysqlTlsMode,
+  SshAuth,
+  SshConfig,
 } from "../../lib/connections"
 import { HEX_COLOR } from "./colors"
 
 export const DEFAULT_MYSQL_PORT = 3306
+export const DEFAULT_SSH_PORT = 22
 export const DEFAULT_REGION = "ap-northeast-2"
 
 export type ConnectionKind = ConnectionConfig["kind"]
 export type DynamoAuthType = "profile" | "keys"
+export type SshAuthType = SshAuth["type"]
 
 /** Raw, string-only form values for each kind. Converted to configs by `parseForm`. */
 export interface MysqlDraft {
@@ -26,6 +30,16 @@ export interface MysqlDraft {
   tls: MysqlTlsMode
   /** CA certificate path; only sent with the verify modes. */
   caCertPath: string
+  /** Reach the server through an SSH bastion; the `ssh*` fields are sent only when on. */
+  sshEnabled: boolean
+  sshHost: string
+  sshPort: string
+  sshUser: string
+  sshAuth: SshAuthType
+  /** Private key file for key authentication. */
+  sshKeyPath: string
+  /** SSH password or key passphrase, depending on `sshAuth`. Blank keeps the stored one. */
+  sshSecret: string
 }
 
 export const DEFAULT_TLS: MysqlTlsMode = "preferred"
@@ -59,12 +73,24 @@ export interface FormContext {
   original?: ConnectionConfig
   /** Whether the keyring already holds a secret for `original`. */
   hasStoredSecret: boolean
+  /** Whether an SSH password or key passphrase is stored for `original`; false when unset. */
+  hasStoredSshSecret?: boolean
 }
 
 export type FieldErrors = Readonly<Record<string, string>>
 
 export type ParseResult =
-  { ok: true; config: ConnectionConfig; secret: string | null } | { ok: false; errors: FieldErrors }
+  | {
+      ok: true
+      config: ConnectionConfig
+      secret: string | null
+      /**
+       * SSH password or key passphrase: `null` keeps the stored one, `""` clears it. Left out
+       * when the connection neither uses nor used an SSH secret.
+       */
+      sshSecret?: string | null
+    }
+  | { ok: false; errors: FieldErrors }
 
 const required = (label: string) => z.string().trim().min(1, `${label} is required`)
 
@@ -136,6 +162,36 @@ export const mysqlFormSchema = z.object({
   caCertPath: optionalText,
 })
 
+export const SSH_NO_VERIFY_IDENTITY = "Not available through an SSH tunnel"
+
+export const KEY_PATH_ABSOLUTE =
+  "Use the full path to the key file, such as /Users/me/.ssh/id_ed25519"
+
+/** POSIX absolute path, or a Windows drive or UNC path. */
+export function isAbsolutePath(value: string): boolean {
+  return /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(value)
+}
+
+const sshBase = {
+  sshHost: required("SSH host"),
+  sshPort: portField,
+  sshUser: required("SSH user"),
+  sshSecret: z.string(),
+}
+
+/** SSH fields of a MySQL draft; only checked while "Connect through SSH" is on. */
+export const sshFormSchema = z.discriminatedUnion("sshAuth", [
+  z.object({ ...sshBase, sshAuth: z.literal("agent") }),
+  z.object({
+    ...sshBase,
+    sshAuth: z.literal("key"),
+    sshKeyPath: required("Key file").refine(isAbsolutePath, KEY_PATH_ABSOLUTE),
+  }),
+  z.object({ ...sshBase, sshAuth: z.literal("password") }),
+])
+
+type SshFormValues = z.infer<typeof sshFormSchema>
+
 const dynamoBase = {
   name: required("Name"),
   region: required("Region").regex(/^[a-z0-9-]+$/, "Use a region code such as us-east-1"),
@@ -168,6 +224,13 @@ export function emptyForm(kind: ConnectionKind = "mysql"): ConnectionForm {
       color: "",
       tls: DEFAULT_TLS,
       caCertPath: "",
+      sshEnabled: false,
+      sshHost: "",
+      sshPort: String(DEFAULT_SSH_PORT),
+      sshUser: "",
+      sshAuth: "agent",
+      sshKeyPath: "",
+      sshSecret: "",
     },
     dynamodb: {
       name: "",
@@ -186,9 +249,11 @@ export function emptyForm(kind: ConnectionKind = "mysql"): ConnectionForm {
 export function formFromConfig(config: ConnectionConfig): ConnectionForm {
   const base = emptyForm(config.kind)
   if (config.kind === "mysql") {
+    const { ssh } = config
     return {
       ...base,
       mysql: {
+        ...base.mysql,
         name: config.name,
         host: config.host,
         port: String(config.port),
@@ -198,6 +263,14 @@ export function formFromConfig(config: ConnectionConfig): ConnectionForm {
         color: config.color ?? "",
         tls: config.tls ?? DEFAULT_TLS,
         caCertPath: config.caCertPath ?? "",
+        ...(ssh && {
+          sshEnabled: true,
+          sshHost: ssh.host,
+          sshPort: String(ssh.port),
+          sshUser: ssh.user,
+          sshAuth: ssh.auth.type,
+          sshKeyPath: ssh.auth.type === "key" ? ssh.auth.keyPath : "",
+        }),
       },
     }
   }
@@ -233,37 +306,75 @@ function idFor(context: FormContext, kind: ConnectionKind): ConnectionId {
  */
 export function isFormChanged(initial: ConnectionForm, current: ConnectionForm): boolean {
   if (initial.kind !== current.kind) return true
-  const before: Readonly<Record<string, string>> = { ...initial[current.kind] }
-  const after: Readonly<Record<string, string>> = { ...current[current.kind] }
+  const before: Readonly<Record<string, unknown>> = { ...initial[current.kind] }
+  const after: Readonly<Record<string, unknown>> = { ...current[current.kind] }
   return Object.keys(after).some((key) => before[key] !== after[key])
 }
 
 export const MYSQL_SECRET_AGAIN = "Enter the password again for the new server"
 export const DYNAMO_SECRET_AGAIN = "Enter the secret access key again for the new endpoint or key"
+export const SSH_PASSWORD_AGAIN = "Enter the SSH password again for the new SSH server or user"
+
+/** Where the tunnel goes; part of the backend's same-target rule for the database password. */
+function sameSshEndpoint(a: SshConfig | undefined, b: SshConfig | undefined): boolean {
+  if (!a || !b) return a === b
+  return a.host.toLowerCase() === b.host.toLowerCase() && a.port === b.port && a.user === b.user
+}
+
+/** Whether a stored SSH secret still belongs to the tunnel: same endpoint, auth and key file. */
+function sameSshCredential(a: SshConfig | undefined, b: SshConfig | undefined): boolean {
+  if (!a || !b || !sameSshEndpoint(a, b) || a.auth.type !== b.auth.type) return false
+  return a.auth.type !== "key" || b.auth.type !== "key" || a.auth.keyPath === b.auth.keyPath
+}
+
+const usesSshSecret = (ssh: SshConfig | undefined) =>
+  ssh?.auth.type === "key" || ssh?.auth.type === "password"
+
+function mysqlReentryErrors(
+  config: MysqlConnectionConfig,
+  original: MysqlConnectionConfig,
+  secret: string | null,
+  sshSecret: string | null | undefined,
+  context: FormContext,
+): FieldErrors | null {
+  // Mirrors the backend's same-target rule: host ignores case, TLS defaults to "preferred",
+  // and the SSH tunnel (or its absence) is part of the target.
+  const moved =
+    config.host.toLowerCase() !== original.host.toLowerCase() ||
+    config.port !== original.port ||
+    config.user !== original.user ||
+    (config.tls ?? DEFAULT_TLS) !== (original.tls ?? DEFAULT_TLS) ||
+    (config.caCertPath ?? "") !== (original.caCertPath ?? "") ||
+    !sameSshEndpoint(config.ssh, original.ssh)
+  const sshMoved =
+    config.ssh?.auth.type === "password" && !sameSshCredential(config.ssh, original.ssh)
+  const errors: FieldErrors = {
+    ...(secret === null && context.hasStoredSecret && moved && { password: MYSQL_SECRET_AGAIN }),
+    ...(sshSecret === null &&
+      context.hasStoredSshSecret &&
+      sshMoved && { sshSecret: SSH_PASSWORD_AGAIN }),
+  }
+  return Object.keys(errors).length > 0 ? errors : null
+}
 
 /**
  * A blank secret (`null`) keeps the stored one. When the edit points the connection somewhere
- * else (another host, port or user; another region, endpoint or access key ID), that stored
- * secret must not travel to the new target, and the backend rejects the request. Returns the
- * field error to show instead of sending it, or null when the request is fine.
+ * else (another host, port, user or SSH tunnel; another region, endpoint or access key ID), that
+ * stored secret must not travel to the new target, and the backend rejects the request. The
+ * same holds for a stored SSH password when the tunnel's server, user or auth changes. Returns
+ * the field errors to show instead of sending it, or null when the request is fine.
  */
 export function secretReentryError(
   config: ConnectionConfig,
   secret: string | null,
   context: FormContext,
+  sshSecret?: string | null,
 ): FieldErrors | null {
   const original = context.original
-  if (secret !== null || !context.hasStoredSecret) return null
   if (config.kind === "mysql" && original?.kind === "mysql") {
-    // Mirrors the backend's same-target rule: host ignores case, TLS defaults to "preferred".
-    const moved =
-      config.host.toLowerCase() !== original.host.toLowerCase() ||
-      config.port !== original.port ||
-      config.user !== original.user ||
-      (config.tls ?? DEFAULT_TLS) !== (original.tls ?? DEFAULT_TLS) ||
-      (config.caCertPath ?? "") !== (original.caCertPath ?? "")
-    return moved ? { password: MYSQL_SECRET_AGAIN } : null
+    return mysqlReentryErrors(config, original, secret, sshSecret, context)
   }
+  if (secret !== null || !context.hasStoredSecret) return null
   if (config.kind === "dynamodb" && original?.kind === "dynamodb") {
     // Only access keys reuse a stored secret; a profile reads credentials from the AWS config.
     if (config.auth.type !== "keys" || original.auth.type !== "keys") return null
@@ -276,10 +387,48 @@ export function secretReentryError(
   return null
 }
 
+function toSshConfig(values: SshFormValues): SshConfig {
+  const auth: SshAuth =
+    values.sshAuth === "key"
+      ? { type: "key", keyPath: values.sshKeyPath }
+      : { type: values.sshAuth }
+  return { host: values.sshHost, port: values.sshPort, user: values.sshUser, auth }
+}
+
+/**
+ * The SSH secret to send. A typed value replaces the stored one and a blank keeps it, except
+ * that a key passphrase is cleared when the tunnel or key file changed (the new key may have
+ * none; the connect prompt asks again). Turning SSH off, or switching to the agent, clears a
+ * secret the old auth used. Undefined when no SSH secret is involved at all.
+ */
+function sshSecretFor(
+  ssh: SshConfig | undefined,
+  typed: string,
+  original: MysqlConnectionConfig | undefined,
+): string | null | undefined {
+  if (!usesSshSecret(ssh)) return usesSshSecret(original?.ssh) ? "" : undefined
+  if (typed !== "") return typed
+  if (ssh?.auth.type === "key" && original && !sameSshCredential(ssh, original.ssh)) return ""
+  return null
+}
+
 function parseMysql(draft: MysqlDraft, context: FormContext): ParseResult {
   const result = mysqlFormSchema.safeParse(draft)
-  if (!result.success) return { ok: false, errors: collectErrors(result.error) }
+  const sshResult = draft.sshEnabled ? sshFormSchema.safeParse(draft) : null
+  // The backend refuses identity verification through a tunnel (the server is 127.0.0.1 then).
+  const tlsBlocked = draft.sshEnabled && draft.tls === "verify_identity"
+  if (!result.success || (sshResult && !sshResult.success) || tlsBlocked) {
+    return {
+      ok: false,
+      errors: {
+        ...(result.error && collectErrors(result.error)),
+        ...(sshResult?.error && collectErrors(sshResult.error)),
+        ...(tlsBlocked && { tls: `Verify identity: ${SSH_NO_VERIFY_IDENTITY}` }),
+      },
+    }
+  }
   const { password, tls, caCertPath, ...values } = result.data
+  const ssh = sshResult?.data ? toSshConfig(sshResult.data) : undefined
   const config: MysqlConnectionConfig = {
     kind: "mysql",
     id: idFor(context, "mysql"),
@@ -287,9 +436,13 @@ function parseMysql(draft: MysqlDraft, context: FormContext): ParseResult {
     // "preferred" is the backend default; leaving it out keeps older configs unchanged.
     tls: tls === DEFAULT_TLS ? undefined : tls,
     caCertPath: verifiesCertificate(tls) ? caCertPath : undefined,
+    ssh,
   }
+  const original = context.original?.kind === "mysql" ? context.original : undefined
+  const sshSecret = sshSecretFor(ssh, draft.sshSecret, original)
   // Blank password keeps whatever is stored (or stores nothing for a new connection).
-  return { ok: true, config, secret: password === "" ? null : password }
+  const secret = password === "" ? null : password
+  return { ok: true, config, secret, ...(sshSecret !== undefined && { sshSecret }) }
 }
 
 function parseDynamo(draft: DynamoDraft, context: FormContext): ParseResult {
@@ -332,7 +485,7 @@ export function parseForm(form: ConnectionForm, context: FormContext): ParseResu
   const result =
     form.kind === "mysql" ? parseMysql(form.mysql, context) : parseDynamo(form.dynamodb, context)
   if (!result.ok) return result
-  const reentry = secretReentryError(result.config, result.secret, context)
+  const reentry = secretReentryError(result.config, result.secret, context, result.sshSecret)
   if (reentry) return { ok: false, errors: reentry }
   // Drop undefined optional keys so the IPC payload matches the contract exactly.
   return { ...result, config: stripUndefined(result.config) }

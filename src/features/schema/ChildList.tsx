@@ -1,5 +1,6 @@
 import { CircleAlert, LoaderCircle, Search } from "lucide-react"
 import type { ReactNode } from "react"
+import { errorLine } from "../../lib/errorHints"
 import type { AppError } from "../../lib/ipc"
 import { useTreeTabIndex } from "./treeKeyboard"
 import { depthStyle } from "./TreeNode"
@@ -125,7 +126,7 @@ export function ChildList({
     <TreeStatus parentKey={parentKey} level={level} tone={tone} message={message} onRetry={retry} />
   )
 
-  if (error) return status("error", error.message, onRetry)
+  if (error) return status("error", errorLine(error), onRetry)
   if (!items) return loading ? status("loading", "Loading…") : null
   if (all.length === 0) return status("empty", `No ${noun}`)
   return (

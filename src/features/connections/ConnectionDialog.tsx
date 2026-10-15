@@ -62,12 +62,13 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
   const [form, setForm] = useState<ConnectionForm>(initialForm)
   const [errors, setErrors] = useState<FieldErrors>({})
   const hasStoredSecret = useConnectionsStore((s) => s.dialog.hasStoredSecret)
+  const hasStoredSshSecret = useConnectionsStore((s) => s.dialog.hasStoredSshSecret)
   const test = useConnectionsStore((s) => s.test)
   const saving = useConnectionsStore((s) => s.saving)
   const saveError = useConnectionsStore((s) => s.saveError)
   const { closeDialog, save, testConnection, resetTest } = useConnectionsStore.getState()
 
-  const context = { original: editing ?? undefined, hasStoredSecret }
+  const context = { original: editing ?? undefined, hasStoredSecret, hasStoredSshSecret }
   const secretOptional =
     editing?.kind === "dynamodb" && editing.auth.type === "keys" && hasStoredSecret
 
@@ -97,14 +98,14 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
 
   const onTest = () => {
     const parsed = validate()
-    if (parsed) void testConnection(parsed.config, parsed.secret)
+    if (parsed) void testConnection(parsed.config, parsed.secret, parsed.sshSecret)
   }
 
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault()
     const parsed = validate()
     if (!parsed || saving) return
-    const result = await save(parsed.config, parsed.secret)
+    const result = await save(parsed.config, parsed.secret, parsed.sshSecret)
     if (result.ok) showToast({ tone: "success", message: `Saved ${result.value.name}` })
   }
 
@@ -142,6 +143,8 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
             errors={errors}
             editing={editing !== null}
             hasStoredSecret={hasStoredSecret}
+            hasStoredSshSecret={hasStoredSshSecret}
+            storedSshAuth={editing?.kind === "mysql" ? (editing.ssh?.auth.type ?? null) : null}
             onChange={updateMysql}
           />
         ) : (

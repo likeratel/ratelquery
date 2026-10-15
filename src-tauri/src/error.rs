@@ -16,6 +16,14 @@ pub enum AppError {
     Credential(String),
     #[error("{0}")]
     Io(String),
+    /// SSH tunnel failure other than the host key: unreachable bastion, authentication
+    /// rejected, forward refused. The message names the step.
+    #[error("{0}")]
+    Ssh(String),
+    /// The bastion's host key is unknown or changed. See `ssh::known_hosts` for the message
+    /// format.
+    #[error("{0}")]
+    SshHostKey(String),
 }
 
 #[derive(Serialize)]
@@ -33,6 +41,8 @@ impl AppError {
             AppError::Query(_) => "query",
             AppError::Credential(_) => "credential",
             AppError::Io(_) => "io",
+            AppError::Ssh(_) => "ssh",
+            AppError::SshHostKey(_) => "ssh_host_key",
         }
     }
 }
@@ -67,5 +77,7 @@ mod tests {
         let json = serde_json::to_value(AppError::Query("boom".into())).unwrap();
         assert_eq!(json["kind"], "query");
         assert_eq!(json["message"], "boom");
+        assert_eq!(AppError::Ssh("x".into()).kind(), "ssh");
+        assert_eq!(AppError::SshHostKey("x".into()).kind(), "ssh_host_key");
     }
 }

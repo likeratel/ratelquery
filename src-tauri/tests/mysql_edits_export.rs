@@ -308,7 +308,7 @@ async fn call_with_an_empty_first_set_keeps_later_sets_out() {
         "CREATE PROCEDURE `{procedure}`() BEGIN \
          SELECT 1 AS a FROM DUAL WHERE 1 = 0; SELECT 2 AS b; END"
     ))
-    .execute(c.session.pool())
+    .execute(&c.session.pool())
     .await
     .expect("create procedure");
     let call = format!("CALL `{procedure}`()");
