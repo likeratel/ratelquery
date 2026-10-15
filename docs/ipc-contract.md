@@ -346,3 +346,68 @@ kind means the profile is missing, expired (SSO) or rejected; the message tells 
 run (e.g. `aws sso login --profile <name>`). `AccessDeniedException` (IAM denied this operation
 for otherwise valid credentials) is `kind: "query"` with a message starting "Access denied by
 IAM for this operation:" and keeps the cached credentials.
+
+## Schema browser
+
+```ts
+interface IndexInfo {
+  name: string
+  unique: boolean
+  columns: string[]           // in sequence order
+  type: string                // "BTREE", "FULLTEXT", ...
+}
+interface ForeignKeyInfo {
+  name: string
+  columns: string[]
+  referencedTable: string
+  referencedColumns: string[]
+  onUpdate: string
+  onDelete: string
+}
+interface TableDetails {
+  database: string
+  table: string
+  kind: "table" | "view"
+  engine: string | null
+  rowEstimate: number | null  // information_schema.TABLES.TABLE_ROWS
+  dataLength: number | null
+  collation: string | null
+  comment: string
+  columns: SchemaColumn[]     // same shape as SchemaSnapshot columns, plus `comment`
+  indexes: IndexInfo[]
+  foreignKeys: ForeignKeyInfo[]
+  ddl: string                 // SHOW CREATE TABLE / VIEW
+}
+```
+
+| command | args | returns |
+| --- | --- | --- |
+| `mysql_table_details` | `connectionId`, `database`, `table` | `TableDetails`. Unknown table → `not_found`. |
+
+`SchemaColumn` gains an optional `comment?: string` (COLUMN_COMMENT). `mysql_schema` keeps its shape.
+
+## Settings
+
+Persisted as JSON at `<app config dir>/settings.json`, written atomically. Unknown keys are kept so
+older builds don't drop newer settings.
+
+```ts
+interface Settings {
+  theme: "system" | "light" | "dark"           // default "system"
+  editorFontSize: number                        // px, 11..20, default 13
+  query: {
+    defaultLimit: number                        // 1..100000, default 1000
+    addLimitToSelect: boolean                   // append LIMIT when a SELECT has none, default true
+    confirmDestructive: boolean                 // confirm UPDATE/DELETE without WHERE, DROP, TRUNCATE, ALTER; default true
+    maxRows: number                             // rows kept in memory per result, default 1000
+  }
+  dynamo: {
+    pageSize: number                            // 1..1000, default 100
+  }
+}
+```
+
+| command | args | returns |
+| --- | --- | --- |
+| `settings_get` | – | `Settings` (defaults merged over the file) |
+| `settings_set` | `settings: Settings` | saved `Settings`. Out-of-range values → `invalid_input`. |
