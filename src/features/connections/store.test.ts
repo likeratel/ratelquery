@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { ConnectionConfig } from "../../lib/connections"
+import { onAppEvent } from "../../lib/events"
 import { setTransport, type AppError } from "../../lib/ipc"
 import { useConnectionsStore } from "../../state/connectionsStore"
 
@@ -178,6 +179,26 @@ describe("remove", () => {
       },
     })
     expect(useConnectionsStore.getState().connections).toHaveLength(1)
+  })
+
+  it("removes the connection but warns when the keychain keeps the secret", async () => {
+    backend.failures.set("connections_delete", { kind: "credential", message: "keychain locked" })
+    useConnectionsStore.setState({ connections: [mysql({ id: "m1" }), mysql({ id: "m2" })] })
+    const removed: string[] = []
+    const stop = onAppEvent("connection-removed", (id) => removed.push(id))
+    const result = await useConnectionsStore.getState().remove("m1")
+    stop()
+    expect(result).toEqual({
+      ok: true,
+      value: undefined,
+      warning: {
+        summary:
+          "Could not delete the connection. Credentials were rejected or could not be read from the keychain.",
+        detail: "keychain locked",
+      },
+    })
+    expect(useConnectionsStore.getState().connections.map((c) => c.id)).toEqual(["m2"])
+    expect(removed).toEqual(["m1"])
   })
 })
 

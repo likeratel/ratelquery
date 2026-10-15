@@ -198,15 +198,28 @@ impl MysqlSession {
     /// Stops the health check and closes the pool in the background: `pool.close()` waits for
     /// checked-out connections, and a disconnect must not block on a running query. New
     /// acquires fail immediately with `PoolClosed`.
+    ///
+    /// Spawned on Tauri's runtime, so it also works outside a Tokio context (e.g. app exit).
     pub fn shutdown(&self) {
+        let pool = self.stop();
+        tauri::async_runtime::spawn(async move { pool.close().await });
+    }
+
+    /// Like [`MysqlSession::shutdown`] but waits until the pool is closed, which includes
+    /// waiting for checked-out connections; callers bound it with a timeout.
+    pub async fn close(&self) {
+        self.stop().close().await;
+    }
+
+    /// Marks the session closed, stops the health check and returns the pool to close.
+    fn stop(&self) -> MySqlPool {
         self.closed.store(true, Ordering::SeqCst);
         if let Ok(mut task) = self.ping_task.lock()
             && let Some(handle) = task.take()
         {
             handle.abort();
         }
-        let pool = self.pool.clone();
-        tokio::spawn(async move { pool.close().await });
+        self.pool.clone()
     }
 }
 

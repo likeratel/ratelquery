@@ -35,6 +35,9 @@ const description: TableDescription = {
 class FakeDynamo {
   items = new Map<string, Item>()
   calls: { command: string; args?: Record<string, unknown> }[] = []
+  /** While true, scans wait in `held` until the test answers them. */
+  holdScans = false
+  held: (() => void)[] = []
 
   constructor(names: string[]) {
     for (const name of names) this.items.set(name, { pk: { S: name }, n: { N: "1" } })
@@ -47,8 +50,11 @@ class FakeDynamo {
         return ["users"]
       case "dynamo_describe_table":
         return description
-      case "dynamo_scan":
-        return this.scan(args?.request as ScanRequest)
+      case "dynamo_scan": {
+        const page = this.scan(args?.request as ScanRequest)
+        if (this.holdScans) await new Promise<void>((resolve) => this.held.push(resolve))
+        return page
+      }
       case "dynamo_put_item":
         return this.put(args?.item as Item, args?.expect as PutExpectation)
       case "dynamo_delete_item":
@@ -88,6 +94,8 @@ class FakeDynamo {
 
 let fake: FakeDynamo
 let restore: () => void = () => {}
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 const tab = (id: string) => {
   const found = useTabsStore.getState().tabs.find((t) => t.id === id)
@@ -129,6 +137,22 @@ describe("browsing", () => {
       startKey: { pk: { S: "b" } },
     })
     await runDynamo(id, "previous")
+    expect(tab(id).page?.items.map((i) => i.pk.S)).toEqual(["a", "b"])
+  })
+
+  it("ignores a page that arrives after the tab moved to another table", async () => {
+    const id = await openUsers()
+    fake.holdScans = true
+    const stale = runDynamo(id, "next")
+    const switching = chooseTable(id, "orders")
+    await flush()
+    expect(fake.held).toHaveLength(2)
+    const [answerStale, answerFresh] = fake.held
+    answerFresh()
+    await switching
+    answerStale()
+    await stale
+    expect(tab(id)).toMatchObject({ table: "orders", startKeys: [null], running: false })
     expect(tab(id).page?.items.map((i) => i.pk.S)).toEqual(["a", "b"])
   })
 
@@ -224,6 +248,48 @@ describe("editing", () => {
     })
     await discardEditorChanges(id)
     expect(tab(id)).toMatchObject({ table: "orders", editor: null })
+  })
+
+  it("asks before Edit item or New item replaces unsaved text", async () => {
+    const id = await openUsers()
+    const [first, second] = tab(id).page?.items ?? []
+    openItemEditor(id, first)
+    setEditorText(id, '{ "pk": "a", "n": 9 }')
+    openItemEditor(id, second)
+    expect(tab(id).editor).toMatchObject({
+      original: first,
+      text: '{ "pk": "a", "n": 9 }',
+      discard: { kind: "open", item: second },
+    })
+    escapeEditor(id)
+    expect(tab(id).editor).toMatchObject({ original: first, discard: null })
+
+    openItemEditor(id, null)
+    expect(tab(id).editor?.discard).toEqual({ kind: "open", item: null })
+    await discardEditorChanges(id)
+    expect(tab(id).editor).toMatchObject({ original: null, text: '{\n  "pk": ""\n}' })
+    expect(tab(id).editor?.discard).toBeNull()
+
+    openItemEditor(id, second)
+    expect(tab(id).editor).toMatchObject({ original: second, discard: null })
+  })
+
+  it("keeps the dirty marker right across a mode switch", async () => {
+    const id = await openUsers()
+    openItemEditor(id, tab(id).page?.items[0] ?? null)
+    switchEditorMode(id, "wire")
+    expect(tab(id).editor?.text).toBe(tab(id).editor?.initialText)
+
+    setEditorText(id, '{ "pk": { "S": "a" }, "n": { "N": "2" } }')
+    switchEditorMode(id, "plain")
+    const editor = tab(id).editor
+    expect(editor?.initialText).toBe('{\n  "pk": "a",\n  "n": 1\n}')
+    expect(editor?.text).not.toBe(editor?.initialText)
+
+    // Changing only the layout and switching back leaves nothing to save.
+    setEditorText(id, '{"pk":"a","n":1}')
+    switchEditorMode(id, "wire")
+    expect(tab(id).editor?.text).toBe(tab(id).editor?.initialText)
   })
 
   it("deletes by table key and refreshes the page", async () => {

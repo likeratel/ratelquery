@@ -23,8 +23,12 @@ export function attributesEqual(a: AttributeValue, b: AttributeValue): boolean {
   const left = a[tag]
   const right = b[tag]
   switch (tag) {
-    case "N":
-      return canonicalDecimal(String(left)) === canonicalDecimal(String(right))
+    case "N": {
+      const l = canonicalDecimal(String(left))
+      const r = canonicalDecimal(String(right))
+      // Two values that aren't decimals at all are only equal when written the same way.
+      return l === null && r === null ? String(left) === String(right) : l === r
+    }
     case "SS":
     case "BS":
       return sameList(sortedStrings(left), sortedStrings(right))

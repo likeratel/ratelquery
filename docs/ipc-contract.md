@@ -165,7 +165,8 @@ and sqlx does not expose the collation. For such columns:
    others `str` with the text `typeName` (`VARCHAR`, `TEXT`, `LONGTEXT`, ...). Columns are
    matched by result name, so an alias reusing another column's name can be misattributed.
 2. Otherwise the values decide: if every value is valid UTF-8 the column is `str` with the text
-   `typeName`; if any value is not, every value of the column is `bytes` with the binary name.
+   `typeName` (also when the column has no rows or only `NULL`s); if any value is not, every
+   value of the column is `bytes` with the binary name.
    `mysql_export` streams rows and decides per value in this case.
 
 | command | args | returns |
@@ -329,6 +330,19 @@ interface Page {
 | `dynamo_delete_item` | `connectionId`, `table`, `key: Item` | `void` |
 | `dynamo_export` | `connectionId`, `request: { scan: ScanRequest } \| { query: QueryRequest }`, `options: { format: "json" \| "jsonl" \| "csv"; path: string }` | `ExportResult` – follows `lastKey` until exhausted. CSV flattens top-level attributes; nested values are written as JSON text. |
 
+Known limitation (`dynamo_export` CSV): cells are written verbatim, so a value starting with `=`,
+`+`, `-` or `@` can be interpreted as a formula by spreadsheet applications (CSV formula
+injection).
+
+`N` values (including `NS` members and keys/values in requests) must use DynamoDB number
+syntax: optional sign, digits with an optional fraction (`5`, `5.`, `.5`), optional exponent
+(`1e+21`, `1e-7`). Anything else (`""`, `abc`, `1..2`, `--1`) rejects with `kind: "invalid_input"`.
+
 Credentials are resolved per connection through `aws-config` (profile or stored keys) once on
-first use and cached. A `credential` error kind means the profile is missing, expired (SSO) or
-rejected; the message tells the user what to run (e.g. `aws sso login --profile <name>`).
+first use and cached. A `profile` connection uses only that `~/.aws` profile (static keys, SSO,
+`credential_process`, assume-role); `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` in the
+environment do not override it. The connection's `region` is always used. A `credential` error
+kind means the profile is missing, expired (SSO) or rejected; the message tells the user what to
+run (e.g. `aws sso login --profile <name>`). `AccessDeniedException` (IAM denied this operation
+for otherwise valid credentials) is `kind: "query"` with a message starting "Access denied by
+IAM for this operation:" and keeps the cached credentials.

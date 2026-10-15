@@ -225,10 +225,13 @@ export function secretReentryError(
   const original = context.original
   if (secret !== null || !context.hasStoredSecret) return null
   if (config.kind === "mysql" && original?.kind === "mysql") {
+    // Mirrors the backend's same-target rule: host ignores case, TLS defaults to "preferred".
     const moved =
-      config.host !== original.host ||
+      config.host.toLowerCase() !== original.host.toLowerCase() ||
       config.port !== original.port ||
-      config.user !== original.user
+      config.user !== original.user ||
+      (config.tls ?? DEFAULT_TLS) !== (original.tls ?? DEFAULT_TLS) ||
+      (config.caCertPath ?? "") !== (original.caCertPath ?? "")
     return moved ? { password: MYSQL_SECRET_AGAIN } : null
   }
   if (config.kind === "dynamodb" && original?.kind === "dynamodb") {

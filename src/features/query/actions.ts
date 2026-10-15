@@ -61,9 +61,30 @@ export function newTabFromActive(): void {
   else useTabsStore.getState().open(active.connectionId, active.database)
 }
 
-export function closeQueryTab(id: string): void {
+/** Drops a tab and its cached editor state without asking. */
+function removeTab(id: string): void {
   useTabsStore.getState().close(id)
   forgetEditorState(id)
+}
+
+/**
+ * Closes a tab (Mod+W, middle click, the X). A tab with unsaved work stays open behind a
+ * confirmation; `confirmCloseTab` finishes the close.
+ */
+export function closeQueryTab(id: string): void {
+  const store = useTabsStore.getState()
+  store.requestClose(id)
+  if (useTabsStore.getState().closing !== id) forgetEditorState(id)
+}
+
+/** Confirms the pending close and throws the unsaved work away. */
+export function confirmCloseTab(): void {
+  const id = useTabsStore.getState().closing
+  if (id) removeTab(id)
+}
+
+export function cancelCloseTab(): void {
+  useTabsStore.getState().cancelClose()
 }
 
 export function closeActiveTab(): void {
@@ -73,7 +94,8 @@ export function closeActiveTab(): void {
 
 /** Closes every tab of a deleted connection and drops its session and table catalog. */
 export function forgetConnection(connectionId: ConnectionId): void {
-  for (const id of tabsForConnection(useTabsStore.getState(), connectionId)) closeQueryTab(id)
+  // The connection is gone, so its tabs close without asking.
+  for (const id of tabsForConnection(useTabsStore.getState(), connectionId)) removeTab(id)
   useSessionsStore.getState().forget(connectionId)
   useDynamoCatalog.getState().forget(connectionId)
 }

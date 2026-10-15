@@ -1,13 +1,14 @@
 import { X } from "lucide-react"
 import { useEffect, useMemo, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react"
+import { isFromEditorPanel } from "../../components/editor/editorPanel"
 import { JsonEditor } from "../../components/editor/JsonEditor"
 import { SegmentedControl } from "../../components/ui"
 import type { KeySchema } from "../../lib/dynamo"
 import { diffItems, keyChanged, putExpectation, type AttributeChange } from "../../lib/dynamoDiff"
 import { findLossyAttributes, parseItem, type JsonMode } from "../../lib/dynamoJson"
-import type { DynamoTab, ItemEditorState } from "../../lib/dynamoTabs"
+import type { DiscardIntent, DynamoTab, ItemEditorState } from "../../lib/dynamoTabs"
 import { attributeSummary } from "../../lib/dynamoView"
-import { formatShortcut, matchesShortcut, type KeyLike } from "../../lib/shortcuts"
+import { formatShortcut, matchesShortcut } from "../../lib/shortcuts"
 import { APP_SHORTCUTS, handleAppShortcut } from "../query/appShortcuts"
 import {
   backToEdit,
@@ -95,15 +96,27 @@ function Confirmation({ tabId, editor, schema }: ConfirmationProps) {
   )
 }
 
-/** Inline "Discard changes?" prompt shown when closing or switching tables with unsaved text. */
-function DiscardPrompt({ tabId, switching }: { tabId: string; switching: string | null }) {
+/** Why the editor would close, added to the "Discard changes?" prompt. */
+function discardDetail(intent: DiscardIntent): string {
+  switch (intent.kind) {
+    case "close":
+      return ""
+    case "table":
+      return ` Switching to ${intent.table} closes the editor.`
+    case "open":
+      return intent.item
+        ? " Editing another item closes this one."
+        : " Starting a new item closes this one."
+  }
+}
+
+/** Inline "Discard changes?" prompt shown before unsaved text would be thrown away. */
+function DiscardPrompt({ tabId, intent }: { tabId: string; intent: DiscardIntent }) {
   const keepRef = useRef<HTMLButtonElement>(null)
   useEffect(() => keepRef.current?.focus(), [])
   return (
     <div className="dyn-note dyn-note--warn dyn-discard" role="alert">
-      <span className="dyn-discard__text">
-        Discard changes?{switching ? ` Switching to ${switching} closes the editor.` : ""}
-      </span>
+      <span className="dyn-discard__text">Discard changes?{discardDetail(intent)}</span>
       <button
         ref={keepRef}
         type="button"
@@ -142,8 +155,10 @@ export function ItemEditor({ tab, editor, schema }: ItemEditorProps) {
   )
   const error = editor.error ?? (parsed.ok ? null : parsed.error)
 
-  const onShortcut = (event: KeyLike): boolean => {
+  const onShortcut = (event: KeyboardEvent): boolean => {
     if (matchesShortcut(event, DYNAMO_SHORTCUTS.closeEditor)) {
+      // Esc in the search panel closes the panel, not the editor.
+      if (isFromEditorPanel(event.target)) return false
       escapeEditor(tab.id)
       return true
     }
@@ -151,6 +166,8 @@ export function ItemEditor({ tab, editor, schema }: ItemEditorProps) {
   }
 
   const onPanelKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    // CodeMirror marks keys it handled (such as Esc closing its search panel) as default-prevented.
+    if (event.defaultPrevented || isFromEditorPanel(event.target)) return
     if (matchesShortcut(event, DYNAMO_SHORTCUTS.closeEditor)) {
       event.preventDefault()
       event.stopPropagation()
@@ -198,12 +215,7 @@ export function ItemEditor({ tab, editor, schema }: ItemEditorProps) {
           {lossy.length > 1 ? ` (and ${lossy.length - 1} more)` : ""}.
         </p>
       )}
-      {editor.discard && (
-        <DiscardPrompt
-          tabId={tab.id}
-          switching={editor.discard.kind === "table" ? editor.discard.table : null}
-        />
-      )}
+      {editor.discard && <DiscardPrompt tabId={tab.id} intent={editor.discard} />}
       {keyMoved && (
         <p className="dyn-note dyn-note--warn">
           The key changed, so this saves as a new item. The original item stays.

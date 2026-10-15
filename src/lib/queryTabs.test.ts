@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest"
+import { createDynamoTab, openEditor, updateEditor } from "./dynamoTabs"
 import { EMPTY_EDITS, toggleRowDelete } from "./gridEdits"
 import type { QueryResult } from "./mysql"
 import {
   activateTab,
+  cancelCloseTab,
   closeTab,
+  confirmCloseTab,
   failRun,
   finishRun,
   INITIAL_TABS,
@@ -11,6 +14,7 @@ import {
   openTab,
   preferredResultIndex,
   replaceResult,
+  requestCloseTab,
   setTabEdits,
   startRun,
   tabPendingCount,
@@ -116,5 +120,51 @@ describe("run lifecycle", () => {
   it("updates only the targeted tab", () => {
     const state = updateTab(three(), "b", (t) => ({ ...t, sql: "x" }))
     expect(state.tabs.map((t) => (t as QueryTab).sql)).toEqual(["", "x", ""])
+  })
+})
+
+describe("closing tabs with unsaved work", () => {
+  const withEdits = () =>
+    updateTab(three(), "b", (t) => setTabEdits(t, 0, toggleRowDelete(EMPTY_EDITS, 0)))
+
+  it("closes clean tabs at once, even with unrun SQL", () => {
+    const state = requestCloseTab(
+      updateTab(three(), "b", (t) => ({ ...t, sql: "select 1" })),
+      "b",
+    )
+    expect(state.tabs.map((t) => t.id)).toEqual(["a", "c"])
+    expect(state.closing).toBeNull()
+  })
+
+  it("asks before closing a tab with pending grid edits", () => {
+    const asked = requestCloseTab(withEdits(), "b")
+    expect(asked.tabs.map((t) => t.id)).toEqual(["a", "b", "c"])
+    expect(asked.closing).toBe("b")
+    const kept = cancelCloseTab(asked)
+    expect(kept).toMatchObject({ closing: null })
+    expect(kept.tabs).toHaveLength(3)
+    const closed = confirmCloseTab(asked)
+    expect(closed.tabs.map((t) => t.id)).toEqual(["a", "c"])
+    expect(closed.closing).toBeNull()
+  })
+
+  it("asks before closing a DynamoDB tab whose item editor has unsaved text", () => {
+    const editing = updateEditor(
+      openEditor(createDynamoTab("d", "conn", "DynamoDB 1"), null, "plain"),
+      {
+        text: '{ "pk": "x" }',
+      },
+    )
+    const state = { ...three(), tabs: [...three().tabs, editing] }
+    expect(requestCloseTab(state, "d").closing).toBe("d")
+    const clean = { ...state, tabs: [...three().tabs, openEditor(editing, null, "plain")] }
+    expect(requestCloseTab(clean, "d").tabs.map((t) => t.id)).toEqual(["a", "b", "c"])
+  })
+
+  it("ignores unknown tabs and confirmations with nothing pending", () => {
+    const state = three()
+    expect(requestCloseTab(state, "zz")).toBe(state)
+    expect(confirmCloseTab(state)).toBe(state)
+    expect(cancelCloseTab(state)).toBe(state)
   })
 })

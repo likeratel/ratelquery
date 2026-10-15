@@ -1,4 +1,4 @@
-import { selectedItem } from "../../lib/dynamoTabs"
+import { editorIdentity, selectedItem } from "../../lib/dynamoTabs"
 import { selectActiveDynamoTab, useTabsStore } from "../../state/tabsStore"
 import { openItemEditor, selectRow } from "./actions"
 import { useDynamoCatalog } from "./catalogStore"
@@ -31,7 +31,7 @@ export function DynamoWorkspace() {
               <ItemsPanel tab={tab} schema={schema} />
               {tab.editor ? (
                 <ItemEditor
-                  key={tab.editor.original ? "edit" : "new"}
+                  key={editorIdentity(tab.editor, schema)}
                   tab={tab}
                   editor={tab.editor}
                   schema={schema}

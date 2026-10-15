@@ -112,30 +112,52 @@ const withoutKey = <T>(record: Readonly<Record<string, T>>, key: string): Record
 
 const inflight = new Map<ConnectionId, Promise<MysqlSessionInfo>>()
 
+/**
+ * Deleted connections. Responses and events that arrive after `forget` must not bring the
+ * session back, so async work remembers the epoch it started in and drops its result once the
+ * epoch moved on. Only an explicit `connect` takes a connection off the forgotten list again.
+ */
+const forgotten = new Set<ConnectionId>()
+const epochs = new Map<ConnectionId, number>()
+const epochOf = (id: ConnectionId) => epochs.get(id) ?? 0
+
 export const useSessionsStore = create<SessionsState>((set, get) => {
-  const patch = (id: ConnectionId, update: (s: MysqlSession) => MysqlSession) =>
+  /** Applies `update` unless the connection was forgotten since `epoch`. */
+  const patch = (
+    id: ConnectionId,
+    update: (s: MysqlSession) => MysqlSession,
+    epoch: number = epochOf(id),
+  ) => {
+    if (forgotten.has(id) || epochOf(id) !== epoch) return
     set((state) => ({
       sessions: { ...state.sessions, [id]: update(state.sessions[id] ?? emptySession()) },
     }))
+  }
 
   const doConnect = async (id: ConnectionId, fallbackDatabase: string | null) => {
-    patch(id, (s) => ({ ...s, state: "connecting", lastError: null }))
+    const epoch = epochOf(id)
+    patch(id, (s) => ({ ...s, state: "connecting", lastError: null }), epoch)
     try {
       const info = await mysqlApi.connect(id)
       const currentDatabase = info.currentDatabase ?? fallbackDatabase
-      patch(id, (s) => ({
-        ...s,
-        state: "connected",
-        serverVersion: info.serverVersion,
-        currentDatabase,
-        lastError: null,
-      }))
+      if (epochOf(id) !== epoch) return { ...info, currentDatabase }
+      patch(
+        id,
+        (s) => ({
+          ...s,
+          state: "connected",
+          serverVersion: info.serverVersion,
+          currentDatabase,
+          lastError: null,
+        }),
+        epoch,
+      )
       void get().loadDatabases(id)
       void get().ensureSchema(id, currentDatabase)
       return { ...info, currentDatabase }
     } catch (raw) {
       const error = normalizeError(raw)
-      patch(id, (s) => ({ ...s, state: "error", lastError: error }))
+      patch(id, (s) => ({ ...s, state: "error", lastError: error }), epoch)
       throw error
     }
   }
@@ -144,6 +166,7 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     sessions: {},
 
     connect: (id, fallbackDatabase = null) => {
+      forgotten.delete(id)
       const session = get().sessions[id]
       if (session?.state === "connected" || session?.state === "reconnecting") {
         return Promise.resolve({
@@ -153,37 +176,49 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
       }
       const pending = inflight.get(id)
       if (pending) return pending
-      const request = doConnect(id, fallbackDatabase).finally(() => inflight.delete(id))
+      const request: Promise<MysqlSessionInfo> = doConnect(id, fallbackDatabase).finally(() => {
+        if (inflight.get(id) === request) inflight.delete(id)
+      })
       inflight.set(id, request)
       return request
     },
 
     loadDatabases: async (id) => {
+      const epoch = epochOf(id)
       try {
         const databases = await mysqlApi.databases(id)
-        patch(id, (s) => ({ ...s, databases }))
+        patch(id, (s) => ({ ...s, databases }), epoch)
       } catch (raw) {
-        patch(id, (s) => ({ ...s, lastError: normalizeError(raw) }))
+        patch(id, (s) => ({ ...s, lastError: normalizeError(raw) }), epoch)
       }
     },
 
     refreshSchema: async (id, database) => {
       const target = database ?? get().sessions[id]?.currentDatabase ?? null
       if (!target) return
-      patch(id, (s) => ({ ...s, schemaLoading: { ...s.schemaLoading, [target]: true } }))
+      const epoch = epochOf(id)
+      patch(id, (s) => ({ ...s, schemaLoading: { ...s.schemaLoading, [target]: true } }), epoch)
       try {
         const snapshot = await mysqlApi.schema(id, target)
-        patch(id, (s) => ({
-          ...s,
-          schemaLoading: withoutKey(s.schemaLoading, target),
-          schemas: { ...s.schemas, [target]: snapshot },
-        }))
+        patch(
+          id,
+          (s) => ({
+            ...s,
+            schemaLoading: withoutKey(s.schemaLoading, target),
+            schemas: { ...s.schemas, [target]: snapshot },
+          }),
+          epoch,
+        )
       } catch (raw) {
-        patch(id, (s) => ({
-          ...s,
-          schemaLoading: withoutKey(s.schemaLoading, target),
-          lastError: normalizeError(raw),
-        }))
+        patch(
+          id,
+          (s) => ({
+            ...s,
+            schemaLoading: withoutKey(s.schemaLoading, target),
+            lastError: normalizeError(raw),
+          }),
+          epoch,
+        )
       }
     },
 
@@ -202,11 +237,14 @@ export const useSessionsStore = create<SessionsState>((set, get) => {
     markReconnected: (id) => patch(id, (s) => noteRecovery(s, "result", Date.now())),
 
     disconnect: async (id) => {
+      const epoch = epochOf(id)
       await mysqlApi.disconnect(id)
-      patch(id, () => emptySession())
+      patch(id, () => emptySession(), epoch)
     },
 
     forget: (id) => {
+      forgotten.add(id)
+      epochs.set(id, epochOf(id) + 1)
       inflight.delete(id)
       set((state) => ({ sessions: withoutKey(state.sessions, id) }))
     },

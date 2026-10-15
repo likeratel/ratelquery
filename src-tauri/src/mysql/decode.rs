@@ -138,15 +138,15 @@ fn column_has(rows: &[Vec<Cell>], index: usize, test: fn(&Cell) -> bool) -> bool
     rows.iter().any(|row| row.get(index).is_some_and(test))
 }
 
-/// Final metadata for a column once its decoded values are known: a binary-flagged column
-/// whose values all decoded as text is a text column; a TINYINT(1) is only boolean when every
-/// value was 0 or 1.
+/// Final metadata for a column once its decoded values are known: a binary-flagged column is
+/// binary when any value was not UTF-8 and otherwise a text column, including when it has no
+/// non-null values at all (every value is then vacuously valid UTF-8, as the contract says).
+/// A TINYINT(1) is only boolean when every value was 0 or 1.
 fn settled_meta(meta: &TypeMeta, rows: &[Vec<Cell>], index: usize) -> TypeMeta {
-    let has_str = column_has(rows, index, |c| matches!(c, Cell::Str(_)));
     let has_bytes = column_has(rows, index, |c| matches!(c, Cell::Bytes(_)));
     match meta.category {
         Category::MaybeText if has_bytes => meta.as_binary(),
-        Category::MaybeText if has_str => meta.as_text(),
+        Category::MaybeText => meta.as_text(),
         _ => meta.clone(),
     }
 }
@@ -232,10 +232,20 @@ mod tests {
         ];
         let (columns, rows) = settle_columns(&names, &metas, rows);
         let types: Vec<&str> = columns.iter().map(|c| c.type_name.as_str()).collect();
-        assert_eq!(types, ["VARCHAR", "BLOB", "LONGBLOB"]);
+        assert_eq!(types, ["VARCHAR", "BLOB", "LONGTEXT"], "all-null column settles as text");
         assert_eq!(rows[0][1], Cell::Bytes("QUI=".into()), "text cell re-encoded as bytes");
         assert_eq!(rows[1][1], Cell::Bytes("/w==".into()));
         assert_eq!(rows[0][0], Cell::Str("a".into()));
+    }
+
+    #[test]
+    fn maybe_text_columns_without_rows_settle_as_text() {
+        let names = vec!["v".to_string(), "b".to_string()];
+        let metas = vec![meta("VARBINARY"), meta("BLOB")];
+        let (columns, rows) = settle_columns(&names, &metas, Vec::new());
+        let types: Vec<&str> = columns.iter().map(|c| c.type_name.as_str()).collect();
+        assert_eq!(types, ["VARCHAR", "TEXT"]);
+        assert!(rows.is_empty());
     }
 
     #[test]

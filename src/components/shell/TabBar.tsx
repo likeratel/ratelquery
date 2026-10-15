@@ -1,7 +1,13 @@
 import { Cloud, Database, PanelLeft, Plus, X } from "lucide-react"
 import type { MouseEvent } from "react"
-import { closeQueryTab, newTabFromActive } from "../../features/query"
+import {
+  cancelCloseTab,
+  closeQueryTab,
+  confirmCloseTab,
+  newTabFromActive,
+} from "../../features/query"
 import { isWorkspaceTabDirty, type WorkspaceTab } from "../../lib/queryTabs"
+import { Button, Dialog } from "../ui"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useTabsStore } from "../../state/tabsStore"
 import { useUiStore } from "../../state/uiStore"
@@ -65,6 +71,35 @@ function TabItem({ tab, active }: { tab: WorkspaceTab; active: boolean }) {
   )
 }
 
+const UNSAVED_DETAIL: Record<WorkspaceTab["kind"], string> = {
+  query: "Its pending grid changes haven't been applied and will be lost.",
+  dynamo: "Its item editor has unsaved changes that will be lost.",
+}
+
+/** Confirmation for closing a tab that holds unsaved work. */
+function CloseTabDialog() {
+  const tab = useTabsStore((s) => s.tabs.find((t) => t.id === s.closing) ?? null)
+  if (!tab) return null
+  return (
+    <Dialog
+      title={`Close ${tab.title}?`}
+      onClose={cancelCloseTab}
+      footer={
+        <>
+          <Button variant="ghost" onClick={cancelCloseTab} autoFocus>
+            Keep open
+          </Button>
+          <Button variant="danger" onClick={confirmCloseTab}>
+            Close tab
+          </Button>
+        </>
+      }
+    >
+      {UNSAVED_DETAIL[tab.kind]}
+    </Dialog>
+  )
+}
+
 export function TabBar() {
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
   const toggleSidebar = useUiStore((s) => s.toggleSidebar)
@@ -101,6 +136,7 @@ export function TabBar() {
           <PanelLeft size={15} strokeWidth={2} />
         </button>
       </div>
+      <CloseTabDialog />
     </div>
   )
 }

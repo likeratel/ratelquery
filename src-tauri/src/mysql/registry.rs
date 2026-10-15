@@ -115,6 +115,13 @@ impl MysqlSessions {
         self.sessions.read().await.contains_key(id)
     }
 
+    /// Removes every session and waits for their pools to close (app exit). No state events
+    /// are emitted. Waits for running queries, so the caller bounds it with a timeout.
+    pub async fn shutdown_all(&self) {
+        let sessions = std::mem::take(&mut *self.sessions.write().await);
+        futures_util::future::join_all(sessions.values().map(|session| session.close())).await;
+    }
+
     /// Closes the session if open without waiting for running queries (they finish on their
     /// own connection; the pool closes afterwards). Closing an unknown id is a no-op.
     pub async fn disconnect(&self, id: &str) {

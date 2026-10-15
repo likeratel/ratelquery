@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use aws_config::BehaviorVersion;
+use aws_config::profile::ProfileFileCredentialsProvider;
+use aws_config::provider_config::ProviderConfig;
 use aws_credential_types::provider::ProvideCredentials;
 use aws_sdk_dynamodb::Client;
 use aws_sdk_dynamodb::config::{Credentials, Region};
@@ -52,6 +54,20 @@ impl DynamoHandle {
     }
 }
 
+/// Credentials of exactly the named `~/.aws` profile (static keys, SSO, `credential_process`,
+/// assume-role chains). Unlike the default chain it never consults `AWS_ACCESS_KEY_ID` /
+/// `AWS_SECRET_ACCESS_KEY` first, so environment keys cannot replace the chosen profile.
+/// `region` is the connection's region, used by STS calls in assume-role chains (SSO uses the
+/// profile's `sso_region`).
+pub fn profile_credentials(profile: &str, region: &str) -> ProfileFileCredentialsProvider {
+    let provider_config =
+        ProviderConfig::without_region().with_region(Some(Region::new(region.to_string())));
+    ProfileFileCredentialsProvider::builder()
+        .configure(&provider_config)
+        .profile_name(profile)
+        .build()
+}
+
 async fn sdk_config(
     config: &DynamoConnectionConfig,
     secret: Option<&str>,
@@ -63,7 +79,9 @@ async fn sdk_config(
         None => loader,
     };
     let loader = match &config.auth {
-        DynamoAuth::Profile { profile } => loader.profile_name(profile),
+        DynamoAuth::Profile { profile } => loader
+            .profile_name(profile)
+            .credentials_provider(profile_credentials(profile, &config.region)),
         DynamoAuth::Keys { access_key_id } => {
             let secret = secret.filter(|s| !s.is_empty()).ok_or_else(|| {
                 credential_error(&config.auth, "the secret access key is not set")
@@ -130,5 +148,60 @@ impl DynamoClients {
     /// Drops the cached handle. Removing an unknown id is a no-op.
     pub async fn remove(&self, id: &str) {
         self.handles.write().await.remove(id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CHILD_VAR: &str = "DBCLIENT_TEST_PROFILE_CHILD";
+    const TEST_NAME: &str = "dynamo::registry::tests::profile_auth_ignores_environment_keys";
+
+    fn profile_config() -> DynamoConnectionConfig {
+        DynamoConnectionConfig {
+            id: "test".into(),
+            name: "test".into(),
+            region: "ap-northeast-2".into(),
+            endpoint: Some("http://127.0.0.1:1".into()),
+            auth: DynamoAuth::Profile { profile: "picked".into() },
+            color: None,
+        }
+    }
+
+    /// Environment variables are process-wide, so the check runs in a child test process that
+    /// gets environment keys plus a temp credentials file defining the `picked` profile.
+    #[test]
+    fn profile_auth_ignores_environment_keys() {
+        if std::env::var_os(CHILD_VAR).is_some() {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let credentials = runtime.block_on(async {
+                let sdk = sdk_config(&profile_config(), None).await.unwrap();
+                sdk.credentials_provider().unwrap().provide_credentials().await.unwrap()
+            });
+            assert_eq!(credentials.access_key_id(), "PROFILEKEY");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = dir.path().join("credentials");
+        std::fs::write(
+            &credentials,
+            "[picked]\naws_access_key_id = PROFILEKEY\naws_secret_access_key = profile-secret\n",
+        )
+        .unwrap();
+        let config = dir.path().join("config");
+        std::fs::write(&config, "").unwrap();
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST_NAME, "--test-threads=1"])
+            .env(CHILD_VAR, "1")
+            .env("AWS_ACCESS_KEY_ID", "ENVKEY")
+            .env("AWS_SECRET_ACCESS_KEY", "env-secret")
+            .env("AWS_SHARED_CREDENTIALS_FILE", &credentials)
+            .env("AWS_CONFIG_FILE", &config)
+            .env_remove("AWS_SESSION_TOKEN")
+            .env_remove("AWS_PROFILE")
+            .status()
+            .unwrap();
+        assert!(status.success(), "child test failed: {status}");
     }
 }

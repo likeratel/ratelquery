@@ -32,6 +32,12 @@ describe("attributesEqual", () => {
       false,
     )
   })
+
+  it("compares numbers that aren't decimals by their text", () => {
+    expect(attributesEqual({ N: "abc" }, { N: "xyz" })).toBe(false)
+    expect(attributesEqual({ N: "abc" }, { N: "abc" })).toBe(true)
+    expect(attributesEqual({ N: "abc" }, { N: "1" })).toBe(false)
+  })
 })
 
 describe("diffItems", () => {

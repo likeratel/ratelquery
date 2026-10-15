@@ -204,3 +204,34 @@ async fn tls_modes_against_a_self_signed_server() {
         "the auto-generated certificate does not name the host"
     );
 }
+
+#[tokio::test]
+async fn shutdown_works_outside_a_tokio_context() {
+    let Some(db) = test_db() else { return };
+    let c = connect(&db).await;
+    let session = c.session.clone();
+    std::thread::spawn(move || session.shutdown()).join().expect("shutdown must not panic");
+    for _ in 0..100 {
+        if c.session.pool().is_closed() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(c.session.pool().is_closed());
+}
+
+#[tokio::test]
+async fn shutdown_all_closes_every_pool() {
+    let Some(db) = test_db() else { return };
+    let c = connect(&db).await;
+    let other = unique("second");
+    c.sessions.connect(&other, &db.config, db.password.as_deref()).await.expect("connect");
+    let second = c.sessions.get(&other).await.expect("session");
+    let before = c.sink.events().len();
+    tokio::time::timeout(Duration::from_secs(5), c.sessions.shutdown_all())
+        .await
+        .expect("shutdown_all finishes");
+    assert!(c.session.pool().is_closed() && second.pool().is_closed());
+    assert!(!c.sessions.is_open(&c.id).await && !c.sessions.is_open(&other).await);
+    assert_eq!(c.sink.events().len(), before, "no state events on exit");
+}

@@ -1,5 +1,6 @@
 import type { ConnectionId } from "./connections"
-import type { DynamoExportRequest, Item, Page } from "./dynamo"
+import type { DynamoExportRequest, Item, KeySchema, Page } from "./dynamo"
+import { itemKey } from "./dynamoDiff"
 import { formatItem, type JsonMode } from "./dynamoJson"
 import { EMPTY_FORM, type DynamoForm, type DynamoMode } from "./dynamoRequest"
 import type { AppError } from "./ipc"
@@ -7,7 +8,11 @@ import type { AppError } from "./ipc"
 export type ItemView = "table" | "json"
 
 /** What the user asked for while the editor had unsaved changes, awaiting "Discard changes?". */
-export type DiscardIntent = { kind: "close" } | { kind: "table"; table: string }
+export type DiscardIntent =
+  | { kind: "close" }
+  | { kind: "table"; table: string }
+  /** Open the editor on another item, or on a new one when `item` is null. */
+  | { kind: "open"; item: Item | null }
 
 export interface ItemEditorState {
   /** Item being edited; null for a new item. */
@@ -188,6 +193,16 @@ export function updateEditor(tab: DynamoTab, patch: Partial<ItemEditorState>): D
 
 export function closeEditor(tab: DynamoTab): DynamoTab {
   return { ...tab, editor: null }
+}
+
+/**
+ * Identifies the item an editor is open on: "new", or the item's table key. A different identity
+ * means a different document, so the view starts over (fresh undo history).
+ */
+export function editorIdentity(editor: ItemEditorState, schema: KeySchema | null): string {
+  if (!editor.original) return "new"
+  const key = schema ? itemKey(editor.original, schema) : null
+  return `edit:${JSON.stringify(key ?? editor.original)}`
 }
 
 export function isEditorDirty(editor: ItemEditorState | null): boolean {

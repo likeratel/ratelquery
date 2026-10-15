@@ -154,7 +154,8 @@ export function parseValues(text: string): Result<Record<string, AttributeValue>
 export function parseLimit(text: string): Result<number> {
   const trimmed = text.trim()
   if (trimmed === "") return ok(DEFAULT_LIMIT)
-  const value = Number(trimmed)
+  // Digits only: Number() would also accept "1e2", "0x10" or "1.0".
+  const value = /^\d+$/.test(trimmed) ? Number(trimmed) : Number.NaN
   if (!Number.isInteger(value) || value < 1 || value > MAX_LIMIT) {
     return fail(`Limit must be a whole number from 1 to ${MAX_LIMIT}`)
   }

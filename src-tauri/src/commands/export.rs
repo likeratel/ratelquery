@@ -24,7 +24,5 @@ pub async fn export_rows(
     options: ExportOptions,
 ) -> AppResult<ExportResult> {
     authorize_export_path(&app, &options.path)?;
-    tauri::async_runtime::spawn_blocking(move || export::export_rows(&columns, &rows, &options))
-        .await
-        .map_err(|e| crate::AppError::Io(format!("export task failed: {e}")))?
+    export::run_blocking(move || export::export_rows(&columns, &rows, &options)).await
 }

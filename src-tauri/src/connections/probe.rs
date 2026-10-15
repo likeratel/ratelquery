@@ -10,6 +10,7 @@ use sqlx::Connection;
 use super::model::{
     ConnectionTestResult, DynamoAuth, DynamoConnectionConfig, MysqlConnectionConfig,
 };
+use crate::dynamo::profile_credentials;
 use crate::error::{AppError, AppResult};
 use crate::mysql::{connect_options, describe_sqlx_error, fetch_server_version};
 
@@ -59,7 +60,9 @@ async fn dynamo_sdk_config(
         None => loader,
     };
     let loader = match &config.auth {
-        DynamoAuth::Profile { profile } => loader.profile_name(profile),
+        DynamoAuth::Profile { profile } => loader
+            .profile_name(profile)
+            .credentials_provider(profile_credentials(profile, &config.region)),
         DynamoAuth::Keys { access_key_id } => {
             let secret = secret.filter(|s| !s.is_empty()).ok_or_else(|| {
                 AppError::Connection("the AWS secret access key is not set".into())

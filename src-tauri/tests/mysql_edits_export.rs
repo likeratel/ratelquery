@@ -267,3 +267,27 @@ async fn export_streams_past_max_rows_and_validates_input() {
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "no temp files left");
     drop_table(&c.session, &t).await;
 }
+
+/// Rows are written in blocking batches of 1024; exact multiples and order must survive.
+#[tokio::test]
+async fn export_batches_keep_every_row_in_order() {
+    let Some(db) = test_db() else { return };
+    let c = connect(&db).await;
+    let dir = tempfile::tempdir().unwrap();
+    for total in [1024u64, 2048, 2049] {
+        let path = dir.path().join(format!("rows_{total}.json"));
+        let sql = format!(
+            "WITH RECURSIVE s(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM s WHERE n < 99) \
+             SELECT a.n * 100 + b.n + 1 AS n FROM s a JOIN s b \
+             WHERE a.n * 100 + b.n < {total} ORDER BY n"
+        );
+        let result =
+            run_export(&c.session, &sql, &export_options(ExportFormat::Json, &path)).await.unwrap();
+        assert_eq!(result.rows, total);
+        let parsed: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let numbers: Vec<u64> = parsed.iter().map(|v| v["n"].as_u64().unwrap()).collect();
+        assert_eq!(numbers, (1..=total).collect::<Vec<_>>());
+    }
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 3, "no temp files left");
+}

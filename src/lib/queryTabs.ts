@@ -43,9 +43,11 @@ export interface TabsState {
   activeId: string | null
   /** Monotonic counter used for "Query N" titles. */
   seq: number
+  /** Tab whose close waits for confirmation because it holds unsaved work. */
+  closing: string | null
 }
 
-export const INITIAL_TABS: TabsState = { tabs: [], activeId: null, seq: 0 }
+export const INITIAL_TABS: TabsState = { tabs: [], activeId: null, seq: 0, closing: null }
 
 export function createTab(
   id: string,
@@ -81,7 +83,7 @@ export function openTab(
 ): TabsState {
   const seq = state.seq + 1
   const tab = createTab(params.id, params.connectionId, `Query ${seq}`, params.database)
-  return { tabs: [...state.tabs, tab], activeId: tab.id, seq }
+  return { ...state, tabs: [...state.tabs, tab], activeId: tab.id, seq }
 }
 
 /** Appends a DynamoDB tab titled "DynamoDB N" and activates it. */
@@ -91,7 +93,7 @@ export function openDynamoTab(
 ): TabsState {
   const seq = state.seq + 1
   const tab = createDynamoTab(params.id, params.connectionId, `DynamoDB ${seq}`)
-  return { tabs: [...state.tabs, tab], activeId: tab.id, seq }
+  return { ...state, tabs: [...state.tabs, tab], activeId: tab.id, seq }
 }
 
 /** Ids of every tab, of any kind, opened on `connectionId`. */
@@ -104,9 +106,35 @@ export function closeTab(state: TabsState, id: string): TabsState {
   const index = state.tabs.findIndex((t) => t.id === id)
   if (index === -1) return state
   const tabs = state.tabs.filter((t) => t.id !== id)
-  if (state.activeId !== id) return { ...state, tabs }
+  const closing = state.closing === id ? null : state.closing
+  if (state.activeId !== id) return { ...state, tabs, closing }
   const neighbour = tabs[index] ?? tabs[index - 1] ?? null
-  return { ...state, tabs, activeId: neighbour ? neighbour.id : null }
+  return { ...state, tabs, closing, activeId: neighbour ? neighbour.id : null }
+}
+
+/**
+ * Closing would lose work: a DynamoDB item editor with unsaved text, or grid edits not yet
+ * applied. Unrun SQL alone doesn't count; it only drives the dirty marker.
+ */
+export function hasUnsavedWork(tab: WorkspaceTab): boolean {
+  return tab.kind === "query" ? tabPendingCount(tab) > 0 : isDynamoTabDirty(tab)
+}
+
+/** Closes the tab, or asks first (sets `closing`) when it holds unsaved work. */
+export function requestCloseTab(state: TabsState, id: string): TabsState {
+  const tab = state.tabs.find((t) => t.id === id)
+  if (!tab) return state
+  return hasUnsavedWork(tab) ? { ...state, closing: id } : closeTab(state, id)
+}
+
+/** Confirms the pending close. */
+export function confirmCloseTab(state: TabsState): TabsState {
+  return state.closing ? closeTab(state, state.closing) : state
+}
+
+/** Keeps the tab open and dismisses the confirmation. */
+export function cancelCloseTab(state: TabsState): TabsState {
+  return state.closing ? { ...state, closing: null } : state
 }
 
 export function activateTab(state: TabsState, id: string): TabsState {

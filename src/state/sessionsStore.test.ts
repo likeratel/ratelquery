@@ -147,6 +147,34 @@ describe("forget", () => {
     useSessionsStore.getState().forget("c1")
     expect(Object.keys(useSessionsStore.getState().sessions)).toEqual(["c2"])
   })
+
+  it("ignores responses and events that arrive after the connection is deleted", async () => {
+    let answer: (info: unknown) => void = () => {}
+    const backend = fakeBackend({
+      mysql_connect: () => new Promise((resolve) => (answer = resolve)),
+    })
+    restore = backend.restore
+    const store = useSessionsStore.getState()
+    const connecting = store.connect("gone")
+    await flush()
+    store.forget("gone")
+    answer({ serverVersion: "8", currentDatabase: "app" })
+    await connecting
+    await flush()
+    store.applyStateEvent({ connectionId: "gone", state: "disconnected" })
+    store.markReconnected("gone")
+    expect(useSessionsStore.getState().sessions.gone).toBeUndefined()
+    expect(backend.calls.map((c) => c.command)).toEqual(["mysql_connect"])
+  })
+
+  it("tracks the connection again once it connects anew", async () => {
+    const backend = fakeBackend()
+    restore = backend.restore
+    const store = useSessionsStore.getState()
+    store.forget("again")
+    await store.connect("again")
+    expect(useSessionsStore.getState().sessions.again?.state).toBe("connected")
+  })
 })
 
 describe("state events", () => {

@@ -10,7 +10,9 @@
 //!   empty); `M`, `L` and sets are written as plain JSON text (see [`plain_json`]).
 //!
 //! Every file is written through [`AtomicFile`], so a failed export removes its temp files and
-//! never leaves a partial target behind.
+//! never leaves a partial target behind. All file I/O (open, each page, the spool-to-CSV pass
+//! and the final commit) runs on the blocking pool via [`run_blocking`]; the sink moves into
+//! each blocking task and back, and is dropped there (removing its temp files) on failure.
 
 use std::collections::BTreeSet;
 use std::fs::File;
@@ -28,7 +30,7 @@ use super::registry::DynamoHandle;
 use super::schema::table_info;
 use super::wire::WireItem;
 use crate::error::{AppError, AppResult};
-use crate::export::{AtomicFile, CountingWriter, ExportResult, validate_target};
+use crate::export::{AtomicFile, CountingWriter, ExportResult, run_blocking, validate_target};
 
 const BUFFER_SIZE: usize = 64 * 1024;
 
@@ -225,22 +227,34 @@ pub async fn run_export(
     let keys: Vec<String> = std::iter::once(description.key_schema.hash.name.clone())
         .chain(description.key_schema.range.as_ref().map(|r| r.name.clone()))
         .collect();
-    let mut sink = Sink::open(options.format, &target)?;
+    let format = options.format;
+    let open_target = target.clone();
+    let mut sink = run_blocking(move || Sink::open(format, &open_target)).await?;
     let mut rows: u64 = 0;
     let mut next = initial_start_key(request);
     loop {
         let page = fetch(handle, request, next.take()).await?;
-        for item in &page.items {
-            sink.write(item, rows)?;
-            rows += 1;
-        }
+        (sink, rows) = write_page(sink, page.items, rows).await?;
         match page.last_key {
             Some(key) => next = Some(key),
             None => break,
         }
     }
-    let bytes = sink.finish(rows, &target, &keys)?;
+    let bytes = run_blocking(move || sink.finish(rows, &target, &keys)).await?;
     Ok(ExportResult { rows, bytes, elapsed_ms: elapsed_ms(start) })
+}
+
+/// Writes one page on the blocking pool; returns the sink and the new row count.
+async fn write_page(mut sink: Sink, items: Vec<WireItem>, rows: u64) -> AppResult<(Sink, u64)> {
+    run_blocking(move || {
+        let mut index = rows;
+        for item in &items {
+            sink.write(item, index)?;
+            index += 1;
+        }
+        Ok((sink, index))
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -310,6 +324,27 @@ mod tests {
         sink.write(&WireItem::new(), 0).unwrap();
         drop(sink);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    /// The sink moves through blocking tasks page by page and still produces the same file.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pages_are_written_on_the_blocking_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out.jsonl");
+        let open_target = target.clone();
+        let sink = run_blocking(move || Sink::open(DynamoExportFormat::Jsonl, &open_target))
+            .await
+            .unwrap();
+        let item =
+            |v: &str| -> WireItem { serde_json::from_value(json!({ "pk": { "S": v } })).unwrap() };
+        let (sink, rows) = write_page(sink, vec![item("a"), item("b")], 0).await.unwrap();
+        let (sink, rows) = write_page(sink, vec![item("c")], rows).await.unwrap();
+        assert_eq!(rows, 3);
+        let finish_target = target.clone();
+        let bytes = run_blocking(move || sink.finish(rows, &finish_target, &[])).await.unwrap();
+        let text = std::fs::read_to_string(&target).unwrap();
+        assert_eq!(text.lines().count(), 3);
+        assert_eq!(bytes, text.len() as u64);
     }
 
     #[test]

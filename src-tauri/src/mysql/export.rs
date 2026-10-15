@@ -7,6 +7,7 @@ use sqlx::mysql::MySqlConnection;
 use sqlx::{Either, Executor, Row, Statement};
 
 use super::binary_hint::{self, BinaryHint};
+use super::cell::Cell;
 use super::classify::is_read_statement;
 use super::decode::{column_metas, column_names, decode_row};
 use super::errors::{OpError, UNKNOWN_OUTCOME, describe_sqlx_error, is_connection_error};
@@ -15,7 +16,7 @@ use super::session::{MysqlSession, boxed};
 use super::splitter::split_statements;
 use crate::error::{AppError, AppResult};
 use crate::export::{
-    ExportOptions, ExportResult, FileRowWriter, open_file_writer, validate_target,
+    ExportOptions, ExportResult, FileRowWriter, open_file_writer, run_blocking, validate_target,
 };
 
 async fn columns_without_rows(conn: &mut MySqlConnection, statement: &str) -> Vec<String> {
@@ -25,6 +26,30 @@ async fn columns_without_rows(conn: &mut MySqlConnection, statement: &str) -> Ve
     }
 }
 
+/// Rows decoded before they are handed to the blocking pool in one write.
+const WRITE_BATCH_ROWS: usize = 1024;
+
+/// Writes a batch of rows on the blocking pool and hands the writer back. On failure the writer
+/// is dropped there, which removes its temp file.
+async fn write_batch(mut writer: FileRowWriter, rows: Vec<Vec<Cell>>) -> AppResult<FileRowWriter> {
+    run_blocking(move || {
+        for row in &rows {
+            writer.write_row(row)?;
+        }
+        Ok(writer)
+    })
+    .await
+}
+
+async fn open_writer(names: Vec<String>, options: &ExportOptions) -> AppResult<FileRowWriter> {
+    let options = options.clone();
+    run_blocking(move || open_file_writer(&names, &options)).await
+}
+
+/// Streams the first result set to the file. Rows are decoded on the async side and written
+/// in batches of [`WRITE_BATCH_ROWS`] on the blocking pool (file open, writes and the final
+/// fsync/rename included), so file I/O never runs on an async worker; the stream stays open
+/// and idle while a batch is written.
 async fn stream_to_file(
     conn: &mut MySqlConnection,
     statement: &str,
@@ -33,6 +58,7 @@ async fn stream_to_file(
 ) -> Result<(u64, u64), OpError> {
     // Declared before the stream so an error drops the writer (then its temp file) cleanly.
     let mut output: Option<FileRowWriter> = None;
+    let mut pending: Vec<Vec<Cell>> = Vec::new();
     let mut metas = Vec::new();
     let mut first_set_done = false;
     {
@@ -45,21 +71,23 @@ async fn stream_to_file(
                     if output.is_none() {
                         let names = column_names(row.columns());
                         metas = binary_hint::apply(&names, &column_metas(row.columns()), hint);
-                        output = Some(open_file_writer(&names, options)?);
+                        output = Some(open_writer(names, options).await?);
                     }
-                    let cells = decode_row(&row, &metas)?;
-                    if let Some(writer) = output.as_mut() {
-                        writer.write_row(&cells)?;
+                    pending.push(decode_row(&row, &metas)?);
+                    if pending.len() >= WRITE_BATCH_ROWS
+                        && let Some(writer) = output.take()
+                    {
+                        output = Some(write_batch(writer, std::mem::take(&mut pending)).await?);
                     }
                 }
             }
         }
     }
     let writer = match output {
-        Some(opened) => opened,
-        None => open_file_writer(&columns_without_rows(conn, statement).await, options)?,
+        Some(opened) => write_batch(opened, pending).await?,
+        None => open_writer(columns_without_rows(conn, statement).await, options).await?,
     };
-    Ok(writer.commit()?)
+    Ok(run_blocking(move || writer.commit()).await?)
 }
 
 /// A non-read statement whose connection dropped mid-run is not retried (see `run_query`).

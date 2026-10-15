@@ -5,7 +5,7 @@ mod format;
 mod model;
 mod writer;
 
-pub use file::{AtomicFile, PathPolicy, authorize_target, validate_target};
+pub use file::{AtomicFile, PathPolicy, authorize_target, run_blocking, validate_target};
 pub use format::{csv_field, json_value, sql_literal};
 pub use model::{ExportFormat, ExportOptions, ExportResult};
 pub use writer::{

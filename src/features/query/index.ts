@@ -1,6 +1,8 @@
 // Public surface of the MySQL query feature.
 export {
+  cancelCloseTab,
   closeQueryTab,
+  confirmCloseTab,
   newTabFromActive,
   openConnection,
   openQueryTabFor,

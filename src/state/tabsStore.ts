@@ -6,13 +6,16 @@ import { normalizeError } from "../lib/ipc"
 import { mysqlApi, type ApplyChangesResult, type QueryResult, type RowChange } from "../lib/mysql"
 import {
   activateTab,
+  cancelCloseTab,
   closeTab,
+  confirmCloseTab,
   failRun,
   finishRun,
   INITIAL_TABS,
   openDynamoTab,
   openTab,
   replaceResult,
+  requestCloseTab,
   setTabEdits,
   startRun,
   tabPendingCount,
@@ -34,7 +37,12 @@ interface TabsStore extends TabsState {
   /** Opens a DynamoDB tab; its requests run from the dynamo feature through `updateDynamo`. */
   openDynamo: (connectionId: ConnectionId) => string
   updateDynamo: (id: string, update: (tab: DynamoTab) => DynamoTab) => void
+  /** Closes the tab at once, even with unsaved work. */
   close: (id: string) => void
+  /** Closes the tab, or asks first (`closing`) when it holds unsaved work. */
+  requestClose: (id: string) => void
+  confirmClose: () => void
+  cancelClose: () => void
   activate: (id: string) => void
   setSql: (id: string, sql: string) => void
   setActiveResult: (id: string, index: number) => void
@@ -116,6 +124,12 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     updateDynamo: (id, update) => set((state) => updateDynamoTab(state, id, update)),
 
     close: (id) => set((state) => closeTab(state, id)),
+
+    requestClose: (id) => set((state) => requestCloseTab(state, id)),
+
+    confirmClose: () => set((state) => confirmCloseTab(state)),
+
+    cancelClose: () => set((state) => cancelCloseTab(state)),
 
     activate: (id) => set((state) => activateTab(state, id)),
 

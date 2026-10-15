@@ -18,8 +18,11 @@ const CREDENTIAL_CODES: &[&str] = &[
     "MissingAuthenticationToken",
     "ExpiredTokenException",
     "ExpiredToken",
-    "AccessDeniedException",
 ];
+
+/// IAM denied the operation: the credentials are valid, so this is not a `credential` error
+/// (which would also drop the cached handle) but a `query` error for this call.
+const ACCESS_DENIED_CODE: &str = "AccessDeniedException";
 
 const NETWORK_CODES: &[&str] = &["ServiceUnavailable", "InternalServerError"];
 
@@ -91,6 +94,9 @@ fn service_error(code: &str, message: &str, auth: &DynamoAuth, table: Option<&st
             None => detail,
         }),
         CodeClass::Network => AppError::Connection(detail),
+        CodeClass::Query if code == ACCESS_DENIED_CODE => {
+            AppError::Query(format!("Access denied by IAM for this operation: {detail}"))
+        }
         CodeClass::Query if code == "ConditionalCheckFailedException" => {
             AppError::Query(format!("the condition check failed: {detail}"))
         }
@@ -144,6 +150,17 @@ mod tests {
         assert_eq!(classify_code("ProvisionedThroughputExceededException"), CodeClass::Query);
         assert_eq!(classify_code("ConditionalCheckFailedException"), CodeClass::Query);
         assert_eq!(classify_code("ServiceUnavailable"), CodeClass::Network);
+        assert_eq!(classify_code("AccessDeniedException"), CodeClass::Query);
+    }
+
+    #[test]
+    fn access_denied_is_a_query_error() {
+        let err = service_error("AccessDeniedException", "not authorized", &profile(), None);
+        assert_eq!(err.kind(), "query");
+        assert_eq!(
+            err.to_string(),
+            "Access denied by IAM for this operation: AccessDeniedException: not authorized"
+        );
     }
 
     #[test]

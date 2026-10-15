@@ -77,6 +77,10 @@ describe("names and values", () => {
     expect(parseLimit("1000")).toEqual({ ok: true, value: 1000 })
     expect(parseLimit("1001")).toMatchObject({ ok: false })
     expect(parseLimit("2.5")).toMatchObject({ ok: false })
+    expect(parseLimit(" 25 ")).toEqual({ ok: true, value: 25 })
+    for (const text of ["1e2", "0x10", "1.0", "+5", "-1", "0"]) {
+      expect(parseLimit(text)).toMatchObject({ ok: false })
+    }
   })
 })
 

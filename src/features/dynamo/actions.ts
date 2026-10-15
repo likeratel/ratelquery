@@ -28,6 +28,7 @@ import {
   startDynamoRun,
   updateEditor,
   type DynamoTab,
+  type ItemEditorState,
   type ItemView,
   type PageMove,
 } from "../../lib/dynamoTabs"
@@ -162,8 +163,22 @@ function keyTemplate(schema: KeySchema | null): Item {
   )
 }
 
-/** Opens the editor for an existing item, or for a new one when `item` is null. */
+/**
+ * Opens the editor for an existing item, or for a new one when `item` is null. With unsaved
+ * editor changes it asks "Discard changes?" first and opens only once the user confirms.
+ */
 export function openItemEditor(tabId: string, item: Item | null): void {
+  const tab = findTab(tabId)
+  if (!tab?.table || tab.editor?.saving) return
+  const guarded = guardDiscard(tab, { kind: "open", item })
+  if (guarded) {
+    patch(tabId, () => guarded)
+    return
+  }
+  replaceEditor(tabId, item)
+}
+
+function replaceEditor(tabId: string, item: Item | null): void {
   const tab = findTab(tabId)
   if (!tab?.table) return
   const schema = tableKeySchema(tab)
@@ -199,8 +214,19 @@ export function switchEditorMode(tabId: string, mode: JsonMode): void {
     return
   }
   const text = formatItem(parsed.value, mode)
-  const initialText = isEditorDirty(editor) ? editor.initialText : text
-  patch(tabId, (t) => updateEditor(t, { mode, text, initialText, error: null }))
+  patch(tabId, (t) =>
+    updateEditor(t, { mode, text, initialText: reformatInitial(editor, mode, text), error: null }),
+  )
+}
+
+/**
+ * The editor's starting text in the new mode, so the dirty marker compares like with like.
+ * A clean editor stays clean; an unparseable start (never expected) keeps the old text.
+ */
+function reformatInitial(editor: ItemEditorState, mode: JsonMode, text: string): string {
+  if (!isEditorDirty(editor)) return text
+  const initial = parseItem(editor.initialText, editor.mode)
+  return initial.ok ? formatItem(initial.value, mode) : editor.initialText
 }
 
 /** Mod+S: validates the editor text and moves to the diff confirmation. */
@@ -250,6 +276,7 @@ export async function discardEditorChanges(tabId: string): Promise<void> {
   if (!intent) return
   patch(tabId, closeEditor)
   if (intent.kind === "table") await switchTable(tabId, intent.table)
+  else if (intent.kind === "open") replaceEditor(tabId, intent.item)
 }
 
 /**

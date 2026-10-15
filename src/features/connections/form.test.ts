@@ -236,6 +236,8 @@ describe("re-entering a secret for a new target", () => {
     ["host", { host: "evil.example" }],
     ["port", { port: "3307" }],
     ["user", { user: "root" }],
+    ["TLS mode", { tls: "required" as const }],
+    ["CA certificate", { tls: "verify_ca" as const, caCertPath: "/other.pem" }],
   ])("asks for the password when the %s changes", (_field, patch) => {
     const form = formFromConfig(mysql)
     const moved = { ...form, mysql: { ...form.mysql, ...patch } }
@@ -257,6 +259,10 @@ describe("re-entering a secret for a new target", () => {
     const form = formFromConfig(mysql)
     const renamed = { ...form, mysql: { ...form.mysql, name: "Renamed", host: " db " } }
     expect(parseForm(renamed, stored)).toMatchObject({ ok: true, secret: null })
+    const upper = { ...form, mysql: { ...form.mysql, host: "DB" } }
+    expect(parseForm(upper, stored)).toMatchObject({ ok: true, secret: null })
+    const preferred = { ...form, mysql: { ...form.mysql, tls: "preferred" as const } }
+    expect(parseForm(preferred, stored)).toMatchObject({ ok: true, secret: null })
   })
 
   it("asks for the secret access key when region, endpoint or key ID changes", () => {

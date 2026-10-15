@@ -4,6 +4,7 @@ import {
   canGoNext,
   canGoPrevious,
   createDynamoTab,
+  editorIdentity,
   failDynamoRun,
   finishDynamoRun,
   isDynamoTabDirty,
@@ -119,5 +120,27 @@ describe("mixed tab list", () => {
       ["dynamo", "DynamoDB 2"],
     ])
     expect(closeTab(activateTab(state, "d"), "d").activeId).toBe("q")
+  })
+})
+
+describe("editorIdentity", () => {
+  const schema = { hash: { name: "pk", type: "S" as const }, range: null }
+  const editorOn = (item: Item | null) => {
+    const editor = openEditor(fresh(), item, "plain").editor
+    if (!editor) throw new Error("no editor")
+    return editor
+  }
+
+  it("tells new items and items with different keys apart", () => {
+    expect(editorIdentity(editorOn(null), schema)).toBe("new")
+    const a = editorIdentity(editorOn({ pk: { S: "a" }, n: { N: "1" } }), schema)
+    expect(editorIdentity(editorOn({ pk: { S: "a" }, n: { N: "2" } }), schema)).toBe(a)
+    expect(editorIdentity(editorOn({ pk: { S: "b" } }), schema)).not.toBe(a)
+  })
+
+  it("falls back to the whole item before the key schema is known", () => {
+    expect(editorIdentity(editorOn({ pk: { S: "a" } }), null)).not.toBe(
+      editorIdentity(editorOn({ pk: { S: "b" } }), null),
+    )
   })
 })

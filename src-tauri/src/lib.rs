@@ -9,13 +9,30 @@ pub mod mysql;
 mod state;
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use tauri::Manager;
+use tauri::{AppHandle, Manager, RunEvent};
 
 pub use error::{AppError, AppResult};
 
 use connections::KeyringSecretStore;
 use state::{AppState, TauriStateSink};
+
+/// Upper bound for closing MySQL pools on exit; running queries are not waited for longer.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Closes open MySQL sessions so their connections end cleanly instead of being dropped.
+fn close_sessions_on_exit(app: &AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else { return };
+    tauri::async_runtime::block_on(async {
+        if tokio::time::timeout(SHUTDOWN_TIMEOUT, state.mysql.shutdown_all()).await.is_err() {
+            eprintln!(
+                "MySQL sessions did not close within {}s; exiting anyway",
+                SHUTDOWN_TIMEOUT.as_secs()
+            );
+        }
+    });
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -55,6 +72,11 @@ pub fn run() {
             commands::dynamo::dynamo_delete_item,
             commands::dynamo::dynamo_export,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let RunEvent::Exit = event {
+                close_sessions_on_exit(app);
+            }
+        });
 }
