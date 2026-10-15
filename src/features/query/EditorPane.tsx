@@ -4,6 +4,7 @@ import { useCallback } from "react"
 import { SqlEditor } from "../../components/editor/lazyEditors"
 import type { SchemaSnapshot } from "../../lib/mysql"
 import type { QueryTab } from "../../lib/queryTabs"
+import { dialectFor } from "../../lib/sqlDialect"
 import { formatShortcut } from "../../lib/shortcuts"
 import { useAthenaStore } from "../../state/athenaStore"
 import { useSessionsStore } from "../../state/sessionsStore"
@@ -53,6 +54,7 @@ export function EditorPane({ tab }: EditorPaneProps) {
           value={tab.sql}
           onChange={onChange}
           completionSources={completionSources}
+          dialect={dialectFor(tab.engine).editor}
           placeholderText={`Write SQL. ${formatShortcut(APP_SHORTCUTS.run)} runs everything, ${formatShortcut(APP_SHORTCUTS.runStatement)} runs the statement at the cursor.`}
           onKeyDownCapture={onKeyDownCapture}
           onViewChange={onViewChange}

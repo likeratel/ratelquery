@@ -295,7 +295,7 @@ default. Sessions with `sql_mode` `NO_BACKSLASH_ESCAPES` are not supported: a st
 - `src/state/connectionsStore.ts` – configs, dialog open state, test status. Owned by the connections feature.
 - `src/state/sessionsStore.ts` – per connection: `state`, `serverVersion`, `currentDatabase`, `schema` cache. Owned by the query feature.
 - `src/state/tabsStore.ts` – open tabs, active tab, per-tab sql text and last result. Owned by the query feature.
-- `src/state/athenaStore.ts` – per Athena connection: `databases`, `schemas` cache (same `SchemaSnapshot` shape as MySQL), `currentDatabase`, loading flags. Owned by the athena feature; the query feature reads it for completion and the database switcher.
+- `src/state/athenaStore.ts` – per Athena connection: `databases`, `schemas` cache (same `SchemaSnapshot` shape as MySQL), `currentDatabase`, loading flags. Owned by the query feature (filled by the schema tree and the query tab); completion and the database switcher read it.
 
 ## DynamoDB
 
@@ -590,12 +590,13 @@ on `connections_test`, in this order:
 2. `config.outputLocation` when set;
 3. the workgroup's `OutputLocation` when set;
 4. the console's default bucket `s3://aws-athena-query-results-<account id>-<region>/`, with
-   the account id from `sts:GetCallerIdentity`. When that bucket does not exist (`HeadBucket`
-   → 404) nothing is created: `connections_test` reports it in `missingBucket` and `athena_start`
+   the account id from `sts:GetCallerIdentity`. `HeadBucket` is sent with
+   `x-amz-expected-bucket-owner` set to that account, so only a bucket the account owns counts
+   as existing; a 404 or 403 (missing, or owned by someone else, since the name is global and
+   can be squatted) means nothing is created: `connections_test` reports it in `missingBucket` and `athena_start`
    rejects with `kind: "invalid_input"` naming the bucket (`athena_databases` / `athena_schema`
    need no location and still work; the check runs again on the next `athena_start`, so a bucket
-   created elsewhere is picked up). Any other `HeadBucket` outcome (403 included) counts as
-   existing.
+   created elsewhere is picked up). Any other `HeadBucket` failure is reported as is.
 
 ```ts
 interface AthenaTestInfo {
@@ -630,19 +631,30 @@ interface AthenaRowsResult extends RowsResult { athena: AthenaStats }
 | `athena_schema` | `connectionId`, `database` | `SchemaSnapshot` (`mysql_schema` shape) from `ListTableMetadata` across all pages. `kind` is `"view"` for `TableType` `VIRTUAL_VIEW`, else `"table"`. Columns are the table's columns followed by its partition keys; `typeName` is the Athena/Glue type as returned (e.g. `varchar`, `bigint`, `array<string>`), `nullable` true, `isPrimary` / `isAutoIncrement` false, `defaultValue` null, `comment` from the column comment. An unknown database rejects with `not_found` (Athena's `MetadataException`). |
 | `athena_start` | `connectionId`, `sql: string`, `options: AthenaQueryOptions` | `{ executionId: string }` from `StartQueryExecution` in the config's workgroup with the resolved output location. `sql` is **one** statement (Athena rejects several); the frontend splits scripts and runs statements one after another. An empty statement rejects with `invalid_input`. |
 | `athena_wait` | `connectionId`, `executionId`, `maxRows?: number` | `AthenaRowsResult`. Polls `GetQueryExecution` (0.5 s, growing to 2 s) until the state is terminal, then pages through `GetQueryResults` (1000 per page) until `maxRows` rows are kept; `truncated` is true when more existed. `FAILED` rejects with `kind: "query"` and `AthenaError.ErrorMessage` (else `StateChangeReason`); `CANCELLED` rejects with `kind: "query"` and the message "The query was cancelled". The first result row is dropped when it repeats the column names (Athena returns a header row for `SELECT`-like statements only). Metadata statements (`SHOW ...`, DDL) return their text rows as `str` cells; a statement with no result set returns `columns: []`, `rows: []`. |
-| `athena_cancel` | `connectionId`, `executionId` | `void`. `StopQueryExecution`; already finished executions are a no-op. |
+| `athena_cancel` | `connectionId`, `executionId` | `void`. `StopQueryExecution`; already finished executions are a no-op. The execution is no longer tracked for the stop on delete or edit below. |
+
+When `maxRows` rows are kept and Athena still reports a next page, one more page of one row is read and `truncated` is set only when it holds a row.
 
 `athena_start` and `athena_wait` are two calls so a running statement can be cancelled: the tab
 keeps the `executionId` while it runs.
 
+Frontend rules for Athena tabs: a script is split on `;` outside `'…'` strings, `"…"`
+identifiers (`""` escapes a quote; a backslash does not escape) and comments, and each statement
+goes to `athena_start` on its own. Statements that write to S3 or the Glue catalog (`CREATE TABLE
+… AS`, `INSERT`, `UNLOAD`, `MSCK REPAIR`) go through the same confirmation as `DROP` / `ALTER`.
+The default `LIMIT` is not added to a `SELECT` with a top-level `FETCH FIRST|NEXT … ROWS ONLY`.
+`athena_workgroups` with access keys is called only once the secret field loses focus (or with a
+stored secret that may be reused), never with a half-typed secret.
+
 **Cells**: Athena returns every value as text with a column type; `athena_wait` maps them to
 `Cell` by the column's type (case-insensitive, parameters ignored, e.g. `decimal(10,2)` →
 `decimal`). A missing `VarCharValue` is `null`. `boolean` → `bool`; `tinyint` / `smallint` /
-`integer` / `int` / `bigint` → `int`; `real` / `float` / `double` → `float` (`NaN`, `Infinity`
+`integer` / `int` / `bigint` → `int` (an optional leading `-` and digits; anything else, a leading `+`
+included, stays `str`); `real` / `float` / `double` → `float` (`NaN`, `Infinity`
 and anything that is not a finite number stay `str`); `decimal` → `decimal`; `date` → `date`;
 `time` → `time`; `timestamp` (with or without time zone) → `datetime`; `json` → `json`;
-`varbinary` → `bytes` (Athena prints bytes as space-separated hex pairs, decoded to base64; text
-that is not hex pairs stays `str`); every other type (`varchar`, `char`, `string`, `array<…>`,
+`varbinary` → `bytes` (Athena prints bytes as space-separated hex pairs, decoded to base64; each pair
+must be exactly two hex digits, otherwise the value stays `str`); every other type (`varchar`, `char`, `string`, `array<…>`,
 `map<…>`, `row(…)`, `interval …`, `ipaddress`, `uuid`, unknown) → `str`. `ColumnInfo.typeName`
 is the Athena type upper-cased and cut at the first `(` or `<` (`VARCHAR`, `BIGINT`, `DECIMAL`,
 `ARRAY`, `TIMESTAMP WITH TIME ZONE`),
@@ -655,5 +667,10 @@ throttling, service and HTTP failures are `connection`; `InvalidRequestException
 `invalid_input`; `MetadataException` / `ResourceNotFoundException` are `not_found`; anything else
 is `query`.
 
-`connections_delete` of an Athena connection drops its client; running executions are not
-stopped (they finish or fail on the AWS side).
+`connections_delete` (and saving an edit of) an Athena connection drops its client and sends
+`StopQueryExecution` for every execution the client started and has not yet waited to the end
+(best effort, failures are only logged and the command does not wait for them), so a deleted
+connection does not keep scanning. Dropping the client after a `credential` error or after
+`athena_create_output_bucket` stops nothing. The frontend
+also cancels the running Athena tabs of a connection when its config is saved, so a script's
+remaining statements never start under the new region or workgroup.

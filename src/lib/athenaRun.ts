@@ -2,7 +2,7 @@
  * Pure helpers for running SQL on Athena, which takes one statement per query execution: the
  * frontend splits a script and runs its statements one after another.
  */
-import { splitStatements } from "./sqlContext"
+import { ANSI_SYNTAX, splitStatements } from "./sqlContext"
 
 /** A statement as Athena should get it: trimmed, without its terminating `;`. */
 export function executedStatement(text: string): string {
@@ -12,11 +12,11 @@ export function executedStatement(text: string): string {
 
 /**
  * Every non-empty statement of `sql`, in order, ready for `athena_start`. Splits on `;` outside
- * strings, quoted identifiers and comments, with the same rule as the MySQL editor, so the
- * result index of a statement matches its position here.
+ * strings, quoted identifiers and comments, with the same rule as the Athena editor (`"..."` is
+ * an identifier), so the result index of a statement matches its position here.
  */
 export function athenaStatements(sql: string): string[] {
-  return splitStatements(sql)
+  return splitStatements(sql, ANSI_SYNTAX)
     .map(({ text }) => executedStatement(text))
     .filter((text) => text !== "")
 }

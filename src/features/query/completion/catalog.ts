@@ -1,12 +1,13 @@
 /**
  * Completion options built from cached schema snapshots. Options for a database are built once
  * per snapshot (a refetch replaces the snapshot and its `fetchedAt`) so a completion request with
- * hundreds of tables and thousands of columns only concatenates ready-made arrays.
+ * hundreds of tables and thousands of columns only concatenates ready-made arrays. Names that
+ * need quoting are inserted with the dialect's quotes (backticks for MySQL, `"` for Athena).
  */
 
 import type { Completion } from "@codemirror/autocomplete"
 import type { SchemaSnapshot, SchemaTable } from "../../../lib/mysql"
-import { identifierText, needsQuoting } from "../../../lib/sqlIdentifiers"
+import { dialectIdentifierText, MYSQL_DIALECT, type SqlDialect } from "../../../lib/sqlDialect"
 
 /** What completion needs from the session: the database names and the schemas loaded so far. */
 export interface SchemaCatalog {
@@ -30,16 +31,32 @@ interface SchemaIndex {
   columnOptions: Map<SchemaTable, readonly Completion[]>
 }
 
-const schemaIndexes = new WeakMap<SchemaSnapshot, SchemaIndex>()
-const databaseOptionLists = new WeakMap<readonly string[], readonly Completion[]>()
+/** Per-dialect caches; there are only two dialects, each keeping its own quoted `apply` text. */
+const schemaIndexes = new Map<SqlDialect, WeakMap<SchemaSnapshot, SchemaIndex>>()
+const databaseOptionLists = new Map<SqlDialect, WeakMap<readonly string[], readonly Completion[]>>()
 
-function nameOption(name: string, rest: Omit<Completion, "label" | "apply">): Completion {
-  return needsQuoting(name)
-    ? { label: name, apply: identifierText(name), ...rest }
+function cacheFor<K extends object, V>(
+  caches: Map<SqlDialect, WeakMap<K, V>>,
+  dialect: SqlDialect,
+): WeakMap<K, V> {
+  const existing = caches.get(dialect)
+  if (existing) return existing
+  const created = new WeakMap<K, V>()
+  caches.set(dialect, created)
+  return created
+}
+
+function nameOption(
+  dialect: SqlDialect,
+  name: string,
+  rest: Omit<Completion, "label" | "apply">,
+): Completion {
+  return dialect.needsQuoting(name)
+    ? { label: name, apply: dialectIdentifierText(dialect, name), ...rest }
     : { label: name, ...rest }
 }
 
-function buildIndex(snapshot: SchemaSnapshot): SchemaIndex {
+function buildIndex(snapshot: SchemaSnapshot, dialect: SqlDialect): SchemaIndex {
   const byLowerName = new Map<string, SchemaTable>()
   for (const table of snapshot.tables) {
     const key = table.name.toLowerCase()
@@ -48,7 +65,7 @@ function buildIndex(snapshot: SchemaSnapshot): SchemaIndex {
   return {
     fetchedAt: snapshot.fetchedAt,
     tableOptions: snapshot.tables.map((table) =>
-      nameOption(table.name, { type: "type", detail: table.kind, boost: BOOST.table }),
+      nameOption(dialect, table.name, { type: "type", detail: table.kind, boost: BOOST.table }),
     ),
     byName: new Map(snapshot.tables.map((table) => [table.name, table])),
     byLowerName,
@@ -56,32 +73,44 @@ function buildIndex(snapshot: SchemaSnapshot): SchemaIndex {
   }
 }
 
-function indexFor(snapshot: SchemaSnapshot): SchemaIndex {
-  const cached = schemaIndexes.get(snapshot)
+function indexFor(snapshot: SchemaSnapshot, dialect: SqlDialect): SchemaIndex {
+  const indexes = cacheFor(schemaIndexes, dialect)
+  const cached = indexes.get(snapshot)
   if (cached && cached.fetchedAt === snapshot.fetchedAt) return cached
-  const index = buildIndex(snapshot)
-  schemaIndexes.set(snapshot, index)
+  const index = buildIndex(snapshot, dialect)
+  indexes.set(snapshot, index)
   return index
 }
 
 /** Tables and views of `snapshot` as completion options. */
-export function tableOptions(snapshot: SchemaSnapshot): readonly Completion[] {
-  return indexFor(snapshot).tableOptions
+export function tableOptions(
+  snapshot: SchemaSnapshot,
+  dialect: SqlDialect = MYSQL_DIALECT,
+): readonly Completion[] {
+  return indexFor(snapshot, dialect).tableOptions
 }
 
 /** The table called `name`: an exact match first, then one that differs only in case. */
-export function findTable(snapshot: SchemaSnapshot, name: string): SchemaTable | null {
-  const index = indexFor(snapshot)
+export function findTable(
+  snapshot: SchemaSnapshot,
+  name: string,
+  dialect: SqlDialect = MYSQL_DIALECT,
+): SchemaTable | null {
+  const index = indexFor(snapshot, dialect)
   return index.byName.get(name) ?? index.byLowerName.get(name.toLowerCase()) ?? null
 }
 
 /** Columns of `table` (from `snapshot`), with the column type and table name as detail. */
-export function columnOptions(snapshot: SchemaSnapshot, table: SchemaTable): readonly Completion[] {
-  const index = indexFor(snapshot)
+export function columnOptions(
+  snapshot: SchemaSnapshot,
+  table: SchemaTable,
+  dialect: SqlDialect = MYSQL_DIALECT,
+): readonly Completion[] {
+  const index = indexFor(snapshot, dialect)
   const cached = index.columnOptions.get(table)
   if (cached) return cached
   const options = table.columns.map((column) =>
-    nameOption(column.name, {
+    nameOption(dialect, column.name, {
       type: "property",
       detail: `${column.typeName} · ${table.name}`,
       boost: BOOST.column,
@@ -91,13 +120,17 @@ export function columnOptions(snapshot: SchemaSnapshot, table: SchemaTable): rea
   return options
 }
 
-export function databaseOptions(databases: readonly string[]): readonly Completion[] {
-  const cached = databaseOptionLists.get(databases)
+export function databaseOptions(
+  databases: readonly string[],
+  dialect: SqlDialect = MYSQL_DIALECT,
+): readonly Completion[] {
+  const lists = cacheFor(databaseOptionLists, dialect)
+  const cached = lists.get(databases)
   if (cached) return cached
   const options = databases.map((name) =>
-    nameOption(name, { type: "namespace", detail: "database", boost: BOOST.database }),
+    nameOption(dialect, name, { type: "namespace", detail: "database", boost: BOOST.database }),
   )
-  databaseOptionLists.set(databases, options)
+  lists.set(databases, options)
   return options
 }
 

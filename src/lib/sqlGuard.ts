@@ -2,23 +2,31 @@
  * Safety rewrites and checks applied before a statement runs: a default LIMIT for unbounded
  * SELECTs and a danger classification for statements that change many rows or the schema.
  * Matching runs on a masked copy (strings, quoted identifiers and comments blanked, same
- * length) so keywords inside literals or comments never count.
+ * length) so keywords inside literals or comments never count. The dialect (MySQL by default)
+ * decides how quotes are read and adds Athena's own rules.
  */
-import { executableComment, skipComment, skipQuoted } from "./sqlContext"
+import {
+  executableComment,
+  MYSQL_SYNTAX,
+  skipComment,
+  skipQuoted,
+  type SqlSyntax,
+} from "./sqlContext"
+import { MYSQL_DIALECT, type SqlDialect } from "./sqlDialect"
 
 /**
  * Same-length copy of `sql` with comment text and the inside of quoted runs (strings and
  * backtick identifiers) replaced by spaces. Quote characters stay so tokens stay separated.
  * An executable comment (`/*!NNNNN ... *\/`) is code: only its markers become spaces.
  */
-export function maskSql(sql: string): string {
+export function maskSql(sql: string, syntax: SqlSyntax = MYSQL_SYNTAX): string {
   let out = ""
   let i = 0
   while (i < sql.length) {
     const executable = executableComment(sql, i)
     if (executable) {
       const { bodyFrom, bodyTo, end } = executable
-      out += " ".repeat(bodyFrom - i) + maskSql(sql.slice(bodyFrom, bodyTo))
+      out += " ".repeat(bodyFrom - i) + maskSql(sql.slice(bodyFrom, bodyTo), syntax)
       out += " ".repeat(end - bodyTo)
       i = end
       continue
@@ -31,7 +39,7 @@ export function maskSql(sql: string): string {
     }
     const ch = sql[i] as string
     if (ch === "'" || ch === '"' || ch === "`") {
-      const end = skipQuoted(sql, i)
+      const end = skipQuoted(sql, i, syntax)
       const closed = end - i >= 2 && sql[end - 1] === ch
       out += closed ? ch + " ".repeat(end - i - 2) + ch : ch + " ".repeat(end - i - 1)
       i = end
@@ -84,6 +92,8 @@ function codeEnd(masked: string): number {
 }
 
 const LOCKING_CLAUSE = /\b(FOR\s+(UPDATE|SHARE)|LOCK\s+IN\s+SHARE\s+MODE)\b/i
+/** Trino's row limit besides LIMIT: `FETCH FIRST n ROWS ONLY`, also after `OFFSET n`. */
+const FETCH_CLAUSE = /\bFETCH\s+(FIRST|NEXT)\b/i
 
 /** True when the whole statement is one parenthesized query, like `(SELECT ...)`. */
 function isParenthesized(masked: string, end: number): boolean {
@@ -105,13 +115,19 @@ function isParenthesized(masked: string, end: number): boolean {
  * has no top-level LIMIT. The LIMIT goes before a locking clause (`FOR UPDATE`, `FOR SHARE`,
  * `LOCK IN SHARE MODE`) and before a trailing `;` or comment. Statements with a top-level INTO
  * (`INTO OUTFILE`, `INTO @var`) or PROCEDURE, a statement wrapped whole in parentheses, and
- * anything that is not a SELECT, including SHOW and EXPLAIN, are returned unchanged.
+ * anything that is not a SELECT, including SHOW and EXPLAIN, are returned unchanged. On Athena a
+ * top-level `FETCH FIRST|NEXT` already limits the rows, so it is left alone too.
  */
-export function withDefaultLimit(statement: string, limit: number): string {
-  const masked = maskSql(statement)
+export function withDefaultLimit(
+  statement: string,
+  limit: number,
+  dialect: SqlDialect = MYSQL_DIALECT,
+): string {
+  const masked = maskSql(statement, dialect.syntax)
   const top = topLevel(masked)
   if (statementVerb(masked, top) !== "SELECT") return statement
   if (/\b(LIMIT|INTO|PROCEDURE)\b/i.test(top)) return statement
+  if (dialect.engine === "athena" && FETCH_CLAUSE.test(top)) return statement
   const end = codeEnd(masked)
   if (isParenthesized(masked, end)) return statement
   const clause = `LIMIT ${limit}`
@@ -150,6 +166,14 @@ const DANGER_REASONS = {
   DELETE: "DELETE without WHERE removes every row",
 } as const
 
+/** Athena statements that write files to S3 or change the Glue catalog. */
+const ATHENA_WRITE_REASONS = {
+  CTAS: "CREATE TABLE AS writes the query result to S3 and adds a table to the catalog",
+  INSERT: "INSERT writes new data files to the table's S3 location",
+  UNLOAD: "UNLOAD writes the query result to S3",
+  MSCK: "MSCK REPAIR TABLE adds the partitions it finds in S3 to the catalog",
+} as const
+
 /** The word after the leading keyword, upper-cased (`TABLE` in `ALTER TABLE t`). */
 function secondKeyword(masked: string): string {
   const match = /^[\s(]*[A-Za-z_]+\s+([A-Za-z_]+)/.exec(masked)
@@ -162,14 +186,34 @@ function alterReason(masked: string): string {
   return ALTER_TARGETS.has(target) ? `ALTER ${target} changes a definition` : DANGER_REASONS.ALTER
 }
 
+/** Why an Athena statement writes to S3 or the catalog, or null when it only reads. */
+function athenaWriteReason(masked: string, top: string, verb: string): string | null {
+  const second = secondKeyword(masked)
+  if (verb === "CREATE" && second === "TABLE" && /\bAS\b/i.test(top)) {
+    return ATHENA_WRITE_REASONS.CTAS
+  }
+  if (verb === "INSERT") return ATHENA_WRITE_REASONS.INSERT
+  if (verb === "UNLOAD") return ATHENA_WRITE_REASONS.UNLOAD
+  if (verb === "MSCK" && second === "REPAIR") return ATHENA_WRITE_REASONS.MSCK
+  return null
+}
+
 /**
  * Why `statement` deserves a confirmation before it runs, or null when it doesn't. Flags
- * UPDATE/DELETE without a top-level WHERE, DROP, TRUNCATE, ALTER and RENAME TABLE.
+ * UPDATE/DELETE without a top-level WHERE, DROP, TRUNCATE, ALTER and RENAME TABLE; on Athena
+ * also `CREATE TABLE ... AS`, INSERT, UNLOAD and MSCK REPAIR, which write to S3 or the catalog.
  */
-export function classifyDanger(statement: string): string | null {
-  const masked = maskSql(statement)
+export function classifyDanger(
+  statement: string,
+  dialect: SqlDialect = MYSQL_DIALECT,
+): string | null {
+  const masked = maskSql(statement, dialect.syntax)
   const top = topLevel(masked)
   const verb = statementVerb(masked, top)
+  if (dialect.engine === "athena") {
+    const reason = athenaWriteReason(masked, top, verb)
+    if (reason) return reason
+  }
   if (verb === "DROP" || verb === "TRUNCATE") return DANGER_REASONS[verb]
   if (verb === "ALTER") return alterReason(masked)
   if (verb === "RENAME" && secondKeyword(masked) === "TABLE") return DANGER_REASONS.RENAME

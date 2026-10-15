@@ -45,3 +45,16 @@ describe("formatDataSize", () => {
     expect(formatDataSize(Number.NaN)).toBe("0 B")
   })
 })
+
+describe("athenaStatements quoting", () => {
+  it("reads double quotes as identifiers, where a backslash doesn't escape", () => {
+    expect(athenaStatements('SELECT "dir\\" FROM t; SELECT 2')).toEqual([
+      'SELECT "dir\\" FROM t',
+      "SELECT 2",
+    ])
+    expect(athenaStatements('SELECT "a"";b" FROM t; SELECT 2')).toEqual([
+      'SELECT "a"";b" FROM t',
+      "SELECT 2",
+    ])
+  })
+})

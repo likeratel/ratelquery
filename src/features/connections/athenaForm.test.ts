@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { AthenaConnectionConfig } from "../../lib/connections"
-import { workgroupOptions, workgroupRequest } from "./athenaWorkgroups"
+import { secretFingerprint, workgroupOptions, workgroupRequest } from "./athenaWorkgroups"
 import { connectionSubtitle } from "./filter"
 import {
   ATHENA_SECRET_AGAIN,
@@ -194,10 +194,26 @@ describe("workgroupRequest", () => {
     expect(request?.secret).toBeNull()
   })
 
-  it("needs a typed secret for new access keys", () => {
+  it("needs a typed secret for new access keys, once its field lost focus", () => {
     const draft = athenaForm({ authType: "keys", accessKeyId: "AKIA" }).athena
     expect(workgroupRequest(draft, NEW)).toBeNull()
-    expect(workgroupRequest({ ...draft, secretAccessKey: "s" }, NEW)?.secret).toBe("s")
+    const typed = { ...draft, secretAccessKey: "s3cr3t" }
+    // Still typing: nothing is sent.
+    expect(workgroupRequest(typed, NEW)).toBeNull()
+    expect(workgroupRequest(typed, NEW, secretFingerprint("s3cr"))).toBeNull()
+    const request = workgroupRequest(typed, NEW, secretFingerprint("s3cr3t"))
+    expect(request?.secret).toBe("s3cr3t")
+    expect(request?.key).not.toContain("s3cr3t")
+    // Typing again after the blur stops the listing until the next blur.
+    const committed = secretFingerprint("s3cr3t")
+    expect(workgroupRequest({ ...typed, secretAccessKey: "s3cr3tX" }, NEW, committed)).toBeNull()
+  })
+
+  it("fingerprints a secret by length and hash, not by its text", () => {
+    expect(secretFingerprint("abc")).toBe(secretFingerprint("abc"))
+    expect(secretFingerprint("abc")).not.toBe(secretFingerprint("abd"))
+    expect(secretFingerprint("abc")).toMatch(/^3:[0-9a-f]+$/)
+    expect(secretFingerprint("abc")).not.toContain("abc")
   })
 
   it("reuses a stored secret only for the saved region and key", () => {

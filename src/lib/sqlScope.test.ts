@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { ANSI_SYNTAX } from "./sqlContext"
 import { analyzeStatement, cursorContext, type CursorContext } from "./sqlScope"
 
 /** Context at the `|` marker. */
@@ -177,5 +178,42 @@ describe("cursor position", () => {
       kind: "column",
       word: { from: 32, to: 35, text: "bay" },
     })
+  })
+})
+
+describe("ANSI quotes (Athena)", () => {
+  const ansiAt = (marked: string): CursorContext => {
+    const pos = marked.indexOf("|")
+    return cursorContext(marked.slice(0, pos) + marked.slice(pos + 1), pos, ANSI_SYNTAX)
+  }
+
+  it("reads double-quoted tables, as the tree's SELECT writes them", () => {
+    expect(ansiAt('SELECT | FROM "sales"."orders" LIMIT 1000')).toEqual({
+      kind: "column",
+      word: { from: 7, to: 7, text: "", quoted: false },
+      tables: [{ database: "sales", table: "orders", alias: null }],
+    })
+    expect(ansiAt('SELECT o.| FROM "sales"."my ""t""" o')).toMatchObject({
+      kind: "member",
+      parents: ["o"],
+      tables: [{ database: "sales", table: 'my "t"', alias: "o" }],
+    })
+  })
+
+  it("completes inside a double-quoted word, unescaping doubled quotes", () => {
+    expect(ansiAt('SELECT "a""b|" FROM t')).toMatchObject({
+      kind: "column",
+      word: { from: 7, to: 13, text: 'a"b', quoted: true },
+    })
+    expect(ansiAt('SELECT * FROM "sales".|')).toMatchObject({ kind: "member", parents: ["sales"] })
+  })
+
+  it("still treats single quotes as strings", () => {
+    expect(ansiAt("SELECT 'a|'").kind).toBe("none")
+  })
+
+  it("reads double quotes as strings in MySQL", () => {
+    expect(at('SELECT | FROM "sales"."orders"', true)).toMatchObject({ kind: "column", tables: [] })
+    expect(at('SELECT "a|" FROM t').kind).toBe("none")
   })
 })

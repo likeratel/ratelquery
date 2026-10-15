@@ -49,7 +49,7 @@ where
 {
     let result = op(handle(state, connection_id).await?).await;
     if matches!(result, Err(AppError::Credential(_))) {
-        state.athena.remove(connection_id).await;
+        state.athena.invalidate(connection_id).await;
     }
     result
 }
@@ -92,7 +92,7 @@ pub async fn athena_create_output_bucket(
     let (sdk, _) = connect_sdk(&config, secret.as_deref()).await?;
     let output_location = athena::create_output_bucket(&sdk, &config, &bucket).await?;
     // A cached handle may still remember the bucket as missing.
-    state.athena.remove(&config.id).await;
+    state.athena.invalidate(&config.id).await;
     Ok(AthenaBucketCreated { output_location })
 }
 

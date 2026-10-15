@@ -13,10 +13,11 @@ import {
   type CompletionResult,
   type CompletionSource,
 } from "@codemirror/autocomplete"
-import { keywordCompletionSource, MySQL } from "@codemirror/lang-sql"
+import { keywordCompletionSource, MySQL, PostgreSQL, type SQLDialect } from "@codemirror/lang-sql"
 import type { EditorState, Text } from "@codemirror/state"
 import type { SchemaSnapshot } from "../../../lib/mysql"
-import { quoteIdentifier } from "../../../lib/sqlIdentifiers"
+import { MYSQL_SYNTAX, type SqlSyntax } from "../../../lib/sqlContext"
+import { MYSQL_DIALECT, type EditorDialect, type SqlDialect } from "../../../lib/sqlDialect"
 import {
   cursorContext,
   type CompletionWord,
@@ -35,6 +36,8 @@ import {
 } from "./catalog"
 
 export interface CompletionEnv {
+  /** Tokenizing and quoting rules of the editor's engine; MySQL when absent. */
+  dialect?: SqlDialect
   catalog(): SchemaCatalog
   /**
    * Starts loading the schema of `database` and resolves once it settled (loaded or failed).
@@ -54,15 +57,25 @@ export interface SchemaSourceOptions {
 type NamedContext = Exclude<CursorContext, { kind: "none" }>
 type SchemaLookup = (database: string) => SchemaSnapshot | null
 
-let lastAnalysis: { doc: Text; pos: number; context: CursorContext } | null = null
+let lastAnalysis: {
+  doc: Text
+  pos: number
+  syntax: SqlSyntax
+  context: CursorContext
+} | null = null
 
 /** Cursor context of `state` at `pos`; both sources ask for it on every keystroke. */
-export function contextAt(state: EditorState, pos: number): CursorContext {
-  if (lastAnalysis && lastAnalysis.doc === state.doc && lastAnalysis.pos === pos) {
-    return lastAnalysis.context
+export function contextAt(
+  state: EditorState,
+  pos: number,
+  syntax: SqlSyntax = MYSQL_SYNTAX,
+): CursorContext {
+  const last = lastAnalysis
+  if (last && last.doc === state.doc && last.pos === pos && last.syntax === syntax) {
+    return last.context
   }
-  const context = cursorContext(state.doc.toString(), pos)
-  lastAnalysis = { doc: state.doc, pos, context }
+  const context = cursorContext(state.doc.toString(), pos, syntax)
+  lastAnalysis = { doc: state.doc, pos, syntax, context }
   return context
 }
 
@@ -77,52 +90,51 @@ function scopeRefFor(tables: readonly TableRef[], name: string): TableRef | null
   )
 }
 
+/** What option builders read: the catalog, a schema lookup and the dialect's quoting. */
+interface Lookup {
+  catalog: SchemaCatalog
+  schemaOf: SchemaLookup
+  dialect: SqlDialect
+}
+
 /** Columns of the table `ref` points at; null when unknown or still loading. */
-function refColumns(
-  ref: TableRef,
-  catalog: SchemaCatalog,
-  schemaOf: SchemaLookup,
-): readonly Completion[] | null {
+function refColumns(ref: TableRef, lookup: Lookup): readonly Completion[] | null {
+  const { catalog, schemaOf, dialect } = lookup
   if (ref.table === null) return null
   const database = ref.database ? resolveDatabase(catalog, ref.database) : catalog.currentDatabase
   const snapshot = database ? schemaOf(database) : null
-  const table = snapshot ? findTable(snapshot, ref.table) : null
-  return snapshot && table ? columnOptions(snapshot, table) : null
+  const table = snapshot ? findTable(snapshot, ref.table, dialect) : null
+  return snapshot && table ? columnOptions(snapshot, table, dialect) : null
 }
 
 function memberOptions(
   parents: readonly string[],
   tables: readonly TableRef[],
-  catalog: SchemaCatalog,
-  schemaOf: SchemaLookup,
+  lookup: Lookup,
 ): readonly Completion[] | null {
   if (parents.length === 2) {
     const [db, table] = parents as [string, string]
-    return refColumns({ database: db, table, alias: null }, catalog, schemaOf)
+    return refColumns({ database: db, table, alias: null }, lookup)
   }
   if (parents.length !== 1) return null
   const name = parents[0] as string
   const ref = scopeRefFor(tables, name)
-  if (ref) return refColumns(ref, catalog, schemaOf)
-  const database = resolveDatabase(catalog, name)
+  if (ref) return refColumns(ref, lookup)
+  const database = resolveDatabase(lookup.catalog, name)
   if (database) {
-    const snapshot = schemaOf(database)
-    return snapshot ? tableOptions(snapshot) : null
+    const snapshot = lookup.schemaOf(database)
+    return snapshot ? tableOptions(snapshot, lookup.dialect) : null
   }
   // A table of the current database that the statement doesn't mention (yet).
-  return refColumns({ database: null, table: name, alias: null }, catalog, schemaOf)
+  return refColumns({ database: null, table: name, alias: null }, lookup)
 }
 
 /** Columns of every table the statement reads, each table once. */
-function scopeColumns(
-  tables: readonly TableRef[],
-  catalog: SchemaCatalog,
-  schemaOf: SchemaLookup,
-): Completion[] {
+function scopeColumns(tables: readonly TableRef[], lookup: Lookup): Completion[] {
   const seen = new Set<readonly Completion[]>()
   const lists: (readonly Completion[])[] = []
   for (const ref of tables) {
-    const columns = refColumns(ref, catalog, schemaOf)
+    const columns = refColumns(ref, lookup)
     if (columns && !seen.has(columns)) {
       seen.add(columns)
       lists.push(columns)
@@ -148,12 +160,12 @@ function aliasOptions(tables: readonly TableRef[]): Completion[] {
 
 function positionOptions(
   context: Exclude<NamedContext, { kind: "member" }>,
-  catalog: SchemaCatalog,
-  schemaOf: SchemaLookup,
+  lookup: Lookup,
 ): readonly Completion[] | null {
+  const { catalog, schemaOf, dialect } = lookup
   const current = catalog.currentDatabase ? schemaOf(catalog.currentDatabase) : null
-  const tables = current ? tableOptions(current) : []
-  const databases = databaseOptions(catalog.databases)
+  const tables = current ? tableOptions(current, dialect) : []
+  const databases = databaseOptions(catalog.databases, dialect)
   switch (context.kind) {
     case "keyword":
       return null
@@ -164,7 +176,7 @@ function positionOptions(
       return [...tables, ...databases]
     case "column":
       return [
-        ...scopeColumns(context.tables, catalog, schemaOf),
+        ...scopeColumns(context.tables, lookup),
         ...aliasOptions(context.tables),
         ...tables,
         ...databases,
@@ -172,17 +184,22 @@ function positionOptions(
   }
 }
 
-/** Exact-match boost, and backtick labels when the word was started with a backtick. */
-function finalize(options: readonly Completion[], word: CompletionWord): Completion[] {
+/** Exact-match boost, and quoted labels when the word was started with an identifier quote. */
+function finalize(
+  options: readonly Completion[],
+  word: CompletionWord,
+  dialect: SqlDialect,
+): Completion[] {
   return options.map((option) => {
     const boosted = withExactMatchBoost(option, word.text)
     return word.quoted
-      ? { ...boosted, label: quoteIdentifier(boosted.label), apply: undefined }
+      ? { ...boosted, label: dialect.quoteIdentifier(boosted.label), apply: undefined }
       : boosted
   })
 }
 
-const IDENTIFIER_RUN = /^[\p{L}\p{N}_$`.]*$/u
+/** Characters of a (possibly qualified, possibly quoted) name in either dialect. */
+const IDENTIFIER_RUN = /^[\p{L}\p{N}_$`".]*$/u
 const MAX_WORD_LENGTH = 256
 
 /** Reopens the list when the cursor is still on the word the loaded schema was needed for. */
@@ -223,8 +240,9 @@ export function schemaCompletionSource(
     }
   }
 
+  const dialect = env.dialect ?? MYSQL_DIALECT
   return (context): CompletionResult | null => {
-    const cursor = contextAt(context.state, context.pos)
+    const cursor = contextAt(context.state, context.pos, dialect.syntax)
     if (cursor.kind === "none" || cursor.kind === "keyword") return null
     const { word } = cursor
     if (cursor.kind !== "member" && word.text === "" && !word.quoted && !context.explicit) {
@@ -237,25 +255,28 @@ export function schemaCompletionSource(
       if (!snapshot) missing.add(database)
       return snapshot ?? null
     }
+    const lookup: Lookup = { catalog, schemaOf, dialect }
     const options =
       cursor.kind === "member"
-        ? memberOptions(cursor.parents, cursor.tables, catalog, schemaOf)
-        : positionOptions(cursor, catalog, schemaOf)
+        ? memberOptions(cursor.parents, cursor.tables, lookup)
+        : positionOptions(cursor, lookup)
     awaitSchemas(missing, context, word.from)
     if (!options || options.length === 0) return null
     return {
       from: word.from,
       ...(word.to > context.pos ? { to: word.to } : {}),
-      options: finalize(options, word),
+      options: finalize(options, word, dialect),
     }
   }
 }
 
-/** lang-sql's MySQL keywords, kept out of `x.` members, strings and comments. */
-export function keywordSource(): CompletionSource {
-  const keywords = keywordCompletionSource(MySQL, true)
+const EDITOR_DIALECTS: Record<EditorDialect, SQLDialect> = { mysql: MySQL, postgresql: PostgreSQL }
+
+/** lang-sql's keywords for `dialect`, kept out of `x.` members, strings and comments. */
+export function keywordSource(dialect: SqlDialect = MYSQL_DIALECT): CompletionSource {
+  const keywords = keywordCompletionSource(EDITOR_DIALECTS[dialect.editor], true)
   return (context) => {
-    const cursor = contextAt(context.state, context.pos)
+    const cursor = contextAt(context.state, context.pos, dialect.syntax)
     if (cursor.kind === "none" || cursor.kind === "member") return null
     return keywords(context)
   }
@@ -266,5 +287,5 @@ export function sqlCompletionSources(
   env: CompletionEnv,
   options?: SchemaSourceOptions,
 ): readonly CompletionSource[] {
-  return [schemaCompletionSource(env, options), keywordSource()]
+  return [schemaCompletionSource(env, options), keywordSource(env.dialect)]
 }

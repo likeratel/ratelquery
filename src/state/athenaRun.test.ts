@@ -152,6 +152,29 @@ describe("Athena run", () => {
     expect(calls[1].args).toEqual({ connectionId: "a1", executionId: "late" })
   })
 
+  it("stops an execution whose id arrives after its tab closed", async () => {
+    let releaseStart: () => void = () => {}
+    restore()
+    restore = setTransport(async (command, args) => {
+      calls.push({ command, args })
+      if (command === "athena_start") {
+        await new Promise<void>((resolve) => (releaseStart = resolve))
+        return { executionId: "orphan" }
+      }
+      if (command === "athena_cancel") return undefined
+      throw { kind: "not_found", message: command }
+    })
+    const id = openAthena("SELECT 1; SELECT 2")
+    const run = useTabsStore.getState().run(id)
+    await flush()
+    // Closed without a cancel (the store alone): the run notices the tab is gone.
+    useTabsStore.getState().close(id)
+    releaseStart()
+    await expect(run).resolves.toBe("failed")
+    expect(calls.map((c) => c.command)).toEqual(["athena_start", "athena_cancel"])
+    expect(calls[1].args).toEqual({ connectionId: "a1", executionId: "orphan" })
+  })
+
   it("reports an empty script without calling Athena", async () => {
     const id = openAthena(" ;; -- nothing")
     await expect(useTabsStore.getState().run(id)).resolves.toBe("empty")

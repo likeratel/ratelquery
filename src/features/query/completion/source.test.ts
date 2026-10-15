@@ -3,6 +3,7 @@ import { MySQL, sql } from "@codemirror/lang-sql"
 import { EditorState } from "@codemirror/state"
 import { describe, expect, it } from "vitest"
 import type { SchemaSnapshot, SchemaTable } from "../../../lib/mysql"
+import { ATHENA_DIALECT } from "../../../lib/sqlDialect"
 import type { SchemaCatalog } from "./catalog"
 import { keywordSource, schemaCompletionSource, type CompletionEnv } from "./source"
 
@@ -250,6 +251,76 @@ describe("keyword completion", () => {
     expect(keywords("select u.wh| from users u")).toBeNull()
     expect(keywords("select 'sel|'")).toBeNull()
     expect(keywords("-- sel|")).toBeNull()
+  })
+})
+
+describe("Athena (double-quoted identifiers)", () => {
+  const SALES = snapshot("sales", [
+    table("orders", [
+      ["order_id", "bigint"],
+      ["user id", "varchar"],
+      ["select", "int"],
+    ]),
+    table('my "t"', [["v", "int"]]),
+  ])
+
+  const athenaEnv = (): CompletionEnv => ({
+    dialect: ATHENA_DIALECT,
+    catalog: () => ({ currentDatabase: "sales", databases: ["sales"], schemas: { sales: SALES } }),
+    requestSchema: () => null,
+  })
+
+  const columnsOf = (result: CompletionResult | null) =>
+    ranked(result)
+      .filter((o) => o.type === "property")
+      .map((o) => o.label)
+
+  it('offers the columns of the tree\'s SELECT * FROM "db"."table"', () => {
+    const sql = 'SELECT | FROM "sales"."orders" LIMIT 1000'
+    expect(columnsOf(complete(athenaEnv(), sql, true))).toEqual(["order_id", "user id", "select"])
+    expect(columnsOf(complete(athenaEnv(), 'SELECT o| FROM "sales"."orders" LIMIT 1000'))).toEqual([
+      "order_id",
+      "user id",
+      "select",
+    ])
+    expect(
+      labels(complete(athenaEnv(), 'SELECT * FROM "sales"."orders" WHERE "sales"."orders".|')),
+    ).toEqual(["order_id", "user id", "select"])
+  })
+
+  it("reads doubled quotes inside a table name", () => {
+    expect(columnsOf(complete(athenaEnv(), 'SELECT | FROM "sales"."my ""t"""', true))).toEqual([
+      "v",
+    ])
+  })
+
+  it("inserts names that need quoting in double quotes, never backticks", () => {
+    const options = ranked(complete(athenaEnv(), 'SELECT | FROM "sales"."orders"', true))
+    expect(options.find((o) => o.label === "user id")?.apply).toBe('"user id"')
+    expect(options.find((o) => o.label === "select")?.apply).toBe('"select"')
+    expect(options.find((o) => o.label === "order_id")?.apply).toBeUndefined()
+    expect(options.find((o) => o.label === 'my "t"')?.apply).toBe('"my ""t"""')
+  })
+
+  it("quotes labels when the word was started with a double quote", () => {
+    const result = complete(athenaEnv(), 'SELECT "us|" FROM "sales"."orders"')
+    expect(result).toMatchObject({ from: 7, to: 11 })
+    expect(columnsOf(result)).toContain('"user id"')
+  })
+
+  it("keeps MySQL reading double quotes as strings", () => {
+    const { env } = fakeEnv()
+    expect(columnsOf(complete(env, 'select i| from "app"."users"'))).toEqual([])
+    expect(complete(env, 'select "us|" from users', true)).toBeNull()
+  })
+
+  it("uses standard keywords and stays out of double-quoted names", () => {
+    const keywords = (marked: string) =>
+      (keywordSource(ATHENA_DIALECT)(contextAt(marked)) as CompletionResult | null)?.options.map(
+        (o) => o.label,
+      ) ?? null
+    expect(keywords("sel|")).toContain("SELECT")
+    expect(keywords('SELECT * FROM "sales".|')).toBeNull()
   })
 })
 

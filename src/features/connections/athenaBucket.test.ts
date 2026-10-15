@@ -71,6 +71,46 @@ describe("Athena output bucket", () => {
     expect(test.status === "ok" && test.athena?.missingBucket).toBeNull()
   })
 
+  it("doesn't test again once the dialog has closed", async () => {
+    await useConnectionsStore.getState().testConnection(config, null)
+    let releaseCreate: () => void = () => {}
+    restore()
+    restore = setTransport(async (command, args) => {
+      calls = [...calls, { command, args }]
+      if (command === "athena_create_output_bucket") {
+        await new Promise<void>((resolve) => (releaseCreate = resolve))
+        return { outputLocation: `s3://${BUCKET}/` }
+      }
+      throw { kind: "unknown", message: command }
+    })
+    const pending = useConnectionsStore.getState().createOutputBucket(config, null, BUCKET)
+    await Promise.resolve()
+    useConnectionsStore.getState().closeDialog()
+    releaseCreate()
+    await expect(pending).resolves.toBeNull()
+    expect(calls.map((c) => c.command)).toEqual(["connections_test", "athena_create_output_bucket"])
+  })
+
+  it("doesn't test a dialog that was closed and opened again", async () => {
+    let releaseCreate: () => void = () => {}
+    restore()
+    restore = setTransport(async (command, args) => {
+      calls = [...calls, { command, args }]
+      if (command === "athena_create_output_bucket") {
+        await new Promise<void>((resolve) => (releaseCreate = resolve))
+        return { outputLocation: `s3://${BUCKET}/` }
+      }
+      throw { kind: "unknown", message: command }
+    })
+    const pending = useConnectionsStore.getState().createOutputBucket(config, null, BUCKET)
+    await Promise.resolve()
+    useConnectionsStore.getState().closeDialog()
+    useConnectionsStore.getState().openDialog()
+    releaseCreate()
+    await expect(pending).resolves.toBeNull()
+    expect(calls.map((c) => c.command)).toEqual(["athena_create_output_bucket"])
+  })
+
   it("returns a friendly error when the bucket can't be created", async () => {
     restore()
     restore = setTransport(async (command) => {

@@ -20,6 +20,8 @@ interface AwsAuthFieldsProps {
   /** Whether the dialog creates a connection rather than editing one. */
   creating: boolean
   onChange: (patch: Partial<AwsAuthDraft>) => void
+  /** Called when the secret access key field loses focus (the typed secret is complete). */
+  onSecretBlur?: () => void
 }
 
 const AUTH_OPTIONS = [
@@ -35,6 +37,7 @@ export function AwsAuthFields({
   profiles,
   creating,
   onChange,
+  onSecretBlur,
 }: AwsAuthFieldsProps) {
   return (
     <>
@@ -69,6 +72,7 @@ export function AwsAuthFields({
             type="password"
             value={draft.secretAccessKey}
             onValueChange={(secretAccessKey) => onChange({ secretAccessKey })}
+            onBlur={onSecretBlur}
             error={errors.secretAccessKey}
             placeholder={secretOptional ? "Saved secret" : ""}
             hint={

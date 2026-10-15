@@ -7,7 +7,7 @@
  * fewer schema names rather than wrong ones.
  */
 
-import { statementAtCursor } from "./sqlContext"
+import { MYSQL_SYNTAX, statementAtCursor, type SqlSyntax } from "./sqlContext"
 import { tokenizeSql, type SqlToken } from "./sqlTokens"
 
 export interface TableRef {
@@ -18,11 +18,11 @@ export interface TableRef {
 }
 
 export interface CompletionWord {
-  /** Start of the word, including an opening backtick. */
+  /** Start of the word, including an opening quote (backtick, or `"` with `ANSI_SYNTAX`). */
   from: number
-  /** End of the range to replace: the cursor, or just past a closing backtick right after it. */
+  /** End of the range to replace: the cursor, or just past a closing quote right after it. */
   to: number
-  /** What has been typed so far, without backticks. */
+  /** What has been typed so far, without quotes. */
   text: string
   quoted: boolean
 }
@@ -125,11 +125,12 @@ function locateWord(sql: string, tokens: SqlToken[], cursor: number): Located {
     }
   }
   const closingNext = token.closed && cursor === token.to - 1
+  const quote = sql[token.from] as string
   return {
     word: {
       from: token.from,
       to: closingNext ? token.to : cursor,
-      text: sql.slice(token.from + 1, cursor).replaceAll("``", "`"),
+      text: sql.slice(token.from + 1, cursor).replaceAll(quote + quote, quote),
       quoted: true,
     },
     index,
@@ -333,8 +334,12 @@ function positionKind(tokens: SqlToken[], index: number, level: Level): CursorPo
 }
 
 /** Context at `cursor` (an offset into `sql`), with `sql` holding a single statement. */
-export function analyzeStatement(sql: string, cursor: number): CursorContext {
-  const all = tokenizeSql(sql)
+export function analyzeStatement(
+  sql: string,
+  cursor: number,
+  syntax: SqlSyntax = MYSQL_SYNTAX,
+): CursorContext {
+  const all = tokenizeSql(sql, syntax)
   if (all.some((t) => insideOpaque(t, cursor))) return NONE
   const tokens = all.filter((t) => t.kind !== "comment")
   const { word, index } = locateWord(sql, tokens, cursor)
@@ -355,17 +360,21 @@ const shiftWord = (word: CompletionWord, by: number): CompletionWord => ({
  * Context at `pos` in a whole editor document, limited to the statement around the cursor.
  * Word offsets are document offsets.
  */
-export function cursorContext(doc: string, pos: number): CursorContext {
-  const range = statementAtCursor(doc, pos)
-  if (!range) return analyzeStatement(doc, pos)
+export function cursorContext(
+  doc: string,
+  pos: number,
+  syntax: SqlSyntax = MYSQL_SYNTAX,
+): CursorContext {
+  const range = statementAtCursor(doc, pos, syntax)
+  if (!range) return analyzeStatement(doc, pos, syntax)
   const startsNewStatement = range.text.endsWith(";") && pos >= range.to
   if (pos < range.from || startsNewStatement) {
-    const before = analyzeStatement(doc.slice(0, pos), pos)
+    const before = analyzeStatement(doc.slice(0, pos), pos, syntax)
     if (before.kind === "none") return NONE
     return { kind: "keyword", word: { from: pos, to: pos, text: "", quoted: false }, tables: [] }
   }
   const text = doc.slice(range.from, Math.max(range.to, pos))
-  const context = analyzeStatement(text, pos - range.from)
+  const context = analyzeStatement(text, pos - range.from, syntax)
   if (context.kind === "none") return context
   return { ...context, word: shiftWord(context.word, range.from) }
 }

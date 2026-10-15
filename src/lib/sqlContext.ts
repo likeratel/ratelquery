@@ -5,6 +5,23 @@
  * not supported.
  */
 
+/**
+ * Quoting rules that differ between engines. MySQL (the default) reads `"..."` as a string with
+ * backslash escapes; with `ansiQuotes` (Athena / Trino) `"..."` is an identifier where only a
+ * doubled `""` escapes the quote.
+ */
+export interface SqlSyntax {
+  ansiQuotes?: boolean
+}
+
+export const MYSQL_SYNTAX: SqlSyntax = Object.freeze({})
+export const ANSI_SYNTAX: SqlSyntax = Object.freeze({ ansiQuotes: true })
+
+/** Whether `quote` opens an identifier (not a string literal) under `syntax`. */
+export function isIdentifierQuote(quote: string | undefined, syntax: SqlSyntax): boolean {
+  return quote === "`" || (quote === '"' && syntax.ansiQuotes === true)
+}
+
 export interface StatementRange {
   /** Offset of the first code character (leading whitespace and comments excluded). */
   from: number
@@ -80,13 +97,17 @@ export function blankStringsAndComments(sql: string): string {
   return out
 }
 
-/** Index just past the end of a quoted run starting at `start`. */
-export function skipQuoted(sql: string, start: number): number {
+/**
+ * Index just past the end of a quoted run starting at `start`. A backslash escapes the next
+ * character in string literals only, never in identifiers.
+ */
+export function skipQuoted(sql: string, start: number, syntax: SqlSyntax = MYSQL_SYNTAX): number {
   const quote = sql[start]
+  const backslashEscapes = !isIdentifierQuote(quote, syntax)
   let i = start + 1
   while (i < sql.length) {
     const ch = sql[i]
-    if (ch === "\\" && quote !== "`") {
+    if (ch === "\\" && backslashEscapes) {
       i += 2
       continue
     }
@@ -135,7 +156,7 @@ export function skipComment(sql: string, i: number): number {
   return -1
 }
 
-function scanSegments(sql: string): Segment[] {
+function scanSegments(sql: string, syntax: SqlSyntax): Segment[] {
   const segments: Segment[] = []
   let start = 0
   let codeFrom = -1
@@ -155,7 +176,7 @@ function scanSegments(sql: string): Segment[] {
     } else if (commentEnd !== -1) {
       i = commentEnd
     } else if (QUOTES.has(ch)) {
-      const end = skipQuoted(sql, i)
+      const end = skipQuoted(sql, i, syntax)
       markCode(i, end)
       i = end
     } else if (ch === ";") {
@@ -191,8 +212,8 @@ function toRange(sql: string, segment: Segment): StatementRange {
 }
 
 /** Every non-empty statement in `sql`, in order. */
-export function splitStatements(sql: string): StatementRange[] {
-  return scanSegments(sql)
+export function splitStatements(sql: string, syntax: SqlSyntax = MYSQL_SYNTAX): StatementRange[] {
+  return scanSegments(sql, syntax)
     .filter((segment) => hasStatement(sql, segment))
     .map((segment) => toRange(sql, segment))
 }
@@ -202,9 +223,13 @@ export function splitStatements(sql: string): StatementRange[] {
  * selects the statement that just ended; a cursor on a later blank line selects the next one.
  * Falls back to the nearest previous statement, then the next one.
  */
-export function statementAtCursor(sql: string, cursor: number): StatementRange | null {
+export function statementAtCursor(
+  sql: string,
+  cursor: number,
+  syntax: SqlSyntax = MYSQL_SYNTAX,
+): StatementRange | null {
   const pos = Math.max(0, Math.min(cursor, sql.length))
-  const segments = scanSegments(sql)
+  const segments = scanSegments(sql, syntax)
   const index = Math.max(
     0,
     segments.findIndex((s) => pos >= s.start && pos < s.end),

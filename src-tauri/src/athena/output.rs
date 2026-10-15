@@ -15,6 +15,7 @@ use crate::error::{AppError, AppResult};
 const DEFAULT_BUCKET_PREFIX: &str = "aws-athena-query-results";
 /// S3's default region: CreateBucket there takes no `LocationConstraint`.
 const S3_DEFAULT_REGION: &str = "us-east-1";
+const HTTP_FORBIDDEN: u16 = 403;
 const HTTP_NOT_FOUND: u16 = 404;
 
 /// The output settings of a workgroup that matter for the resolution.
@@ -116,9 +117,11 @@ pub fn location_constraint(region: &str) -> Option<&str> {
     (region != S3_DEFAULT_REGION).then_some(region)
 }
 
-/// Only a 404 means the bucket is missing; any other HeadBucket outcome counts as existing.
+/// HeadBucket with `ExpectedBucketOwner` answers 404 when the bucket does not exist and 403
+/// when it is not owned by the account (or not readable). Both mean "no usable bucket of ours":
+/// the default bucket name is global, so a bucket another account claimed must not be used.
 pub fn is_missing_bucket_status(status: Option<u16>) -> bool {
-    status == Some(HTTP_NOT_FOUND)
+    matches!(status, Some(HTTP_NOT_FOUND | HTTP_FORBIDDEN))
 }
 
 pub async fn fetch_workgroup(
@@ -147,10 +150,22 @@ async fn account_id(sdk: &SdkConfig, auth: &AwsAuth) -> AppResult<String> {
         .ok_or_else(|| AppError::Query("GetCallerIdentity returned no account id".into()))
 }
 
-async fn bucket_exists(sdk: &SdkConfig, bucket: &str) -> bool {
-    match aws_sdk_s3::Client::new(sdk).head_bucket().bucket(bucket).send().await {
-        Ok(_) => true,
-        Err(err) => !is_missing_bucket_status(err.raw_response().map(|r| r.status().as_u16())),
+/// Whether `bucket` exists and is owned by `account_id`. 404 / 403 are `false`; any other
+/// failure (network, credentials, ...) is an error.
+async fn bucket_owned(
+    sdk: &SdkConfig,
+    bucket: &str,
+    account_id: &str,
+    auth: &AwsAuth,
+) -> AppResult<bool> {
+    let request =
+        aws_sdk_s3::Client::new(sdk).head_bucket().bucket(bucket).expected_bucket_owner(account_id);
+    match request.send().await {
+        Ok(_) => Ok(true),
+        Err(err) if is_missing_bucket_status(err.raw_response().map(|r| r.status().as_u16())) => {
+            Ok(false)
+        }
+        Err(err) => Err(map_sdk_error(&err, auth)),
     }
 }
 
@@ -160,7 +175,7 @@ pub async fn default_bucket(sdk: &SdkConfig, config: &AthenaConnectionConfig) ->
 }
 
 /// Resolves the output location of `config` (GetWorkGroup, then STS / HeadBucket only for the
-/// default bucket). Nothing is created.
+/// default bucket, checked to be owned by the caller's account). Nothing is created.
 pub async fn resolve_output(
     sdk: &SdkConfig,
     client: &Client,
@@ -171,8 +186,9 @@ pub async fn resolve_output(
         OutputChoice::Location(location) => Ok(ResolvedOutput::Location(location)),
         OutputChoice::Managed => Ok(ResolvedOutput::Managed),
         OutputChoice::DefaultBucket => {
-            let bucket = default_bucket(sdk, config).await?;
-            if bucket_exists(sdk, &bucket).await {
+            let account = account_id(sdk, &config.auth).await?;
+            let bucket = default_bucket_name(&account, &config.region);
+            if bucket_owned(sdk, &bucket, &account, &config.auth).await? {
                 Ok(ResolvedOutput::Location(bucket_location(&bucket)))
             } else {
                 Ok(ResolvedOutput::MissingBucket(bucket))
@@ -330,7 +346,8 @@ mod tests {
         assert_eq!(location_constraint("us-east-1"), None);
         assert_eq!(location_constraint("eu-west-1"), Some("eu-west-1"));
         assert!(is_missing_bucket_status(Some(404)));
-        for other in [Some(403), Some(301), Some(200), None] {
+        assert!(is_missing_bucket_status(Some(403)), "not owned by the account");
+        for other in [Some(301), Some(400), Some(500), Some(200), None] {
             assert!(!is_missing_bucket_status(other), "{other:?}");
         }
     }

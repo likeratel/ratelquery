@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { ATHENA_DIALECT } from "./sqlDialect"
 import { classifyDanger, maskSql, withDefaultLimit } from "./sqlGuard"
 
 describe("maskSql", () => {
@@ -174,5 +175,57 @@ describe("classifyDanger", () => {
     expect(classifyDanger("INSERT INTO t VALUES (1)")).toBeNull()
     expect(classifyDanger("-- DROP TABLE t\nSELECT 1")).toBeNull()
     expect(classifyDanger("SELECT 'DROP TABLE t'")).toBeNull()
+  })
+})
+
+describe("Athena rules", () => {
+  const limit = (sql: string) => withDefaultLimit(sql, 1000, ATHENA_DIALECT)
+  const danger = (sql: string) => classifyDanger(sql, ATHENA_DIALECT)
+
+  it("leaves a SELECT with FETCH FIRST or OFFSET ... FETCH alone", () => {
+    expect(limit("SELECT * FROM t FETCH FIRST 10 ROWS ONLY")).toBe(
+      "SELECT * FROM t FETCH FIRST 10 ROWS ONLY",
+    )
+    expect(limit("SELECT * FROM t ORDER BY a OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY")).toBe(
+      "SELECT * FROM t ORDER BY a OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY",
+    )
+    // A FETCH inside a subquery doesn't bound the outer SELECT.
+    expect(limit("SELECT * FROM (SELECT * FROM t FETCH FIRST 1 ROWS ONLY) s")).toBe(
+      "SELECT * FROM (SELECT * FROM t FETCH FIRST 1 ROWS ONLY) s LIMIT 1000",
+    )
+    expect(limit('SELECT * FROM "sales"."orders"')).toBe(
+      'SELECT * FROM "sales"."orders" LIMIT 1000',
+    )
+    expect(limit('SELECT "fetch first" FROM t')).toBe('SELECT "fetch first" FROM t LIMIT 1000')
+  })
+
+  it("flags statements that write to S3 or the catalog", () => {
+    expect(danger("CREATE TABLE t AS SELECT * FROM s")).toMatch(/CREATE TABLE AS/)
+    expect(danger("create table if not exists t with (format = 'PARQUET') as select 1")).toMatch(
+      /CREATE TABLE AS/,
+    )
+    expect(danger('INSERT INTO "sales"."t" SELECT * FROM s')).toMatch(/INSERT/)
+    expect(danger("WITH r AS (SELECT 1) INSERT INTO t SELECT * FROM r")).toMatch(/INSERT/)
+    expect(danger("UNLOAD (SELECT * FROM t) TO 's3://b/p/' WITH (format = 'PARQUET')")).toMatch(
+      /UNLOAD/,
+    )
+    expect(danger("MSCK REPAIR TABLE logs")).toMatch(/MSCK REPAIR/)
+  })
+
+  it("keeps the shared rules and lets reads through", () => {
+    expect(danger("DROP TABLE t")).toMatch(/DROP/)
+    expect(danger("ALTER TABLE t ADD COLUMNS (c int)")).toBe("ALTER TABLE changes a definition")
+    expect(danger("DELETE FROM t")).toMatch(/DELETE without WHERE/)
+    expect(danger("CREATE EXTERNAL TABLE t (a int) LOCATION 's3://b/'")).toBeNull()
+    expect(danger("SELECT 'INSERT' AS \"unload\" FROM t")).toBeNull()
+    expect(danger("SHOW PARTITIONS logs")).toBeNull()
+  })
+
+  it("keeps MySQL rules unchanged", () => {
+    expect(classifyDanger("INSERT INTO t VALUES (1)")).toBeNull()
+    expect(classifyDanger("CREATE TABLE t AS SELECT 1")).toBeNull()
+    expect(withDefaultLimit("SELECT * FROM t FETCH FIRST 1 ROWS ONLY", 10)).toBe(
+      "SELECT * FROM t FETCH FIRST 1 ROWS ONLY LIMIT 10",
+    )
   })
 })

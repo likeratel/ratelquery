@@ -1,6 +1,7 @@
-import { RefreshCw } from "lucide-react"
+import { CircleAlert, RefreshCw } from "lucide-react"
 import { showToast } from "../../components/ui"
 import { isAthenaSchemaLoading } from "../../lib/athenaCatalog"
+import { errorLine } from "../../lib/errorHints"
 import type { QueryTab } from "../../lib/queryTabs"
 import { useAthenaStore } from "../../state/athenaStore"
 import { isSchemaLoading, useSessionsStore } from "../../state/sessionsStore"
@@ -15,19 +16,35 @@ interface SwitcherViewProps {
   onOpen: () => void
   onChange: (database: string | null) => void
   onRefresh: (database: string) => void
+  /** Why the last database or schema load failed; shown with a retry button. */
+  error?: string | null
+  onRetry?: () => void
 }
 
 /** The select and refresh button; the stores behind them differ per engine. */
 function SwitcherView(props: SwitcherViewProps) {
-  const { database, databases, schemaLoading } = props
+  const { database, databases, schemaLoading, error, onRetry } = props
   const options = database && !databases.includes(database) ? [database, ...databases] : databases
   return (
     <div className="db-switch">
+      {error && onRetry && (
+        <button
+          type="button"
+          className="ui-icon-button db-switch__error"
+          data-size="md"
+          onClick={onRetry}
+          aria-label={`Couldn't load the catalog: ${error}. Try again`}
+          title={`${error}\nClick to try again.`}
+        >
+          <CircleAlert size={13} strokeWidth={2} />
+        </button>
+      )}
       <label className="db-switch__field">
         <span className="db-switch__label">Database</span>
         <select
           className="db-switch__select"
           value={database ?? ""}
+          title={error ?? undefined}
           onFocus={props.onOpen}
           onChange={(event) => props.onChange(event.target.value || null)}
         >
@@ -95,6 +112,7 @@ function AthenaDatabaseSwitcher({ tab }: { tab: QueryTab }) {
   const changeDatabase = useChangeDatabase(tab.id)
   const database = athenaTabDatabase(tab, catalog)
   const { loadDatabases, refreshSchema } = useAthenaStore.getState()
+  const error = catalog?.lastError && !catalog.loading ? errorLine(catalog.lastError) : null
   return (
     <SwitcherView
       database={database}
@@ -107,6 +125,12 @@ function AthenaDatabaseSwitcher({ tab }: { tab: QueryTab }) {
       }}
       onChange={changeDatabase}
       onRefresh={(name) => void refreshSchema(tab.connectionId, name)}
+      error={error}
+      onRetry={() => {
+        // The error may come from the list or from a schema: listing again clears it.
+        void loadDatabases(tab.connectionId, true)
+        if (database) void refreshSchema(tab.connectionId, database)
+      }}
     />
   )
 }

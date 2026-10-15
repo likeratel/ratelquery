@@ -18,7 +18,7 @@ pub fn display_type(type_name: &str) -> String {
 }
 
 fn is_integer(text: &str) -> bool {
-    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
+    let digits = text.strip_prefix('-').unwrap_or(text);
     !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
@@ -29,11 +29,15 @@ fn float_cell(text: &str) -> Cell {
     }
 }
 
+/// One pair of exactly two ASCII hex digits (`from_str_radix` alone would accept `+f`).
+fn hex_pair(pair: &str) -> Option<u8> {
+    let valid = pair.len() == 2 && pair.bytes().all(|b| b.is_ascii_hexdigit());
+    valid.then(|| u8::from_str_radix(pair, 16).ok()).flatten()
+}
+
 /// Space-separated hex pairs (`00 ff 1a`) -> bytes. `None` for anything else.
 fn hex_pairs(text: &str) -> Option<Vec<u8>> {
-    text.split_ascii_whitespace()
-        .map(|pair| if pair.len() == 2 { u8::from_str_radix(pair, 16).ok() } else { None })
-        .collect()
+    text.split_ascii_whitespace().map(hex_pair).collect()
 }
 
 fn bytes_cell(text: &str) -> Cell {
@@ -100,6 +104,9 @@ mod tests {
             Cell::Int("9223372036854775807".into())
         );
         assert_eq!(to_cell("integer", Some("n/a")), Cell::Str("n/a".into()));
+        for text in ["+42", "-", "+", "", "4 2", "--1"] {
+            assert_eq!(to_cell("bigint", Some(text)), Cell::Str(text.into()), "{text}");
+        }
         assert_eq!(to_cell("decimal(10,2)", Some("1.20")), Cell::Decimal("1.20".into()));
         assert_eq!(to_cell("date", Some("2024-01-02")), Cell::Date("2024-01-02".into()));
         assert_eq!(to_cell("time", Some("10:00:00.000")), Cell::Time("10:00:00.000".into()));
@@ -134,7 +141,7 @@ mod tests {
         assert_eq!(to_cell("varbinary", Some("00 01 ff")), Cell::Bytes("AAH/".into()));
         assert_eq!(to_cell("varbinary", Some("68 65 6C 6C 6F")), Cell::Bytes("aGVsbG8=".into()));
         assert_eq!(to_cell("varbinary", Some("")), Cell::Bytes(String::new()));
-        for text in ["0 1", "zz", "001", "hello"] {
+        for text in ["0 1", "zz", "001", "hello", "+f", "-1", "00 +f", "0x"] {
             assert_eq!(to_cell("varbinary", Some(text)), Cell::Str(text.into()), "{text}");
         }
     }

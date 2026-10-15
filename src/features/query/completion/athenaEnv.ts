@@ -5,6 +5,7 @@
 
 import type { ConnectionId } from "../../../lib/connections"
 import type { SchemaSnapshot } from "../../../lib/mysql"
+import { ATHENA_DIALECT } from "../../../lib/sqlDialect"
 import { useAthenaStore } from "../../../state/athenaStore"
 import type { SchemaCatalog } from "./catalog"
 import { SCHEMA_RETRY_MS } from "./sessionEnv"
@@ -55,6 +56,7 @@ export function createAthenaCompletionEnv(
     : createAthenaSchemaRequests(store),
 ): CompletionEnv {
   return {
+    dialect: ATHENA_DIALECT,
     catalog: (): SchemaCatalog => {
       const catalog = store.getState().catalogs[connectionId]
       return {

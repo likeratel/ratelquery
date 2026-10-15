@@ -39,6 +39,7 @@ pub async fn connections_save(
     })
     .await?;
     // A cached AWS client would keep the old region, endpoint, workgroup or credentials.
+    // Athena executions started through the old client are stopped (best effort).
     state.dynamo.remove(saved.id()).await;
     state.athena.remove(saved.id()).await;
     Ok(saved)
@@ -50,7 +51,7 @@ pub async fn connections_save(
 pub async fn connections_delete(state: State<'_, AppState>, id: String) -> AppResult<()> {
     state.mysql.disconnect(&id).await;
     state.dynamo.remove(&id).await;
-    // Running Athena executions are not stopped; they finish or fail on the AWS side.
+    // Athena executions started and not yet waited for are stopped in the background.
     state.athena.remove(&id).await;
     blocking(&state, move |c| c.delete(&id)).await
 }

@@ -10,6 +10,8 @@ use crate::mysql::{Cell, ColumnInfo};
 
 /// Rows per GetQueryResults page (the API maximum).
 const PAGE_SIZE: i32 = 1000;
+/// Page size of the look-ahead read that tells whether rows exist past `max_rows`.
+const PROBE_SIZE: i32 = 1;
 const FALLBACK_TYPE: &str = "varchar";
 
 /// One page as plain text values (`None` = no `VarCharValue`).
@@ -39,6 +41,18 @@ pub fn is_header_row(row: &[Option<String>], names: &[String]) -> bool {
         && row.iter().zip(names).all(|(value, name)| value.as_deref() == Some(name.as_str()))
 }
 
+/// What the pager does after a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageOutcome {
+    /// Read the next page.
+    Continue,
+    /// Stop: the results ended, or rows past `max_rows` were seen.
+    Done,
+    /// `max_rows` rows are kept exactly and a `NextToken` remains, which may lead to an empty
+    /// page: read one more row and report it with [`RowCollector::probe_result`].
+    Probe,
+}
+
 /// Collects mapped rows across pages up to `max_rows`.
 #[derive(Debug)]
 pub struct RowCollector {
@@ -63,27 +77,32 @@ impl RowCollector {
             .collect()
     }
 
-    /// Adds one page. Returns false once `max_rows` rows are kept and more exist (`has_more`
-    /// tells whether another page follows), so the caller stops paging.
-    pub fn push_page(&mut self, page: &[TextRow], has_more: bool) -> bool {
+    /// Adds one page (`has_more`: a `NextToken` follows it).
+    pub fn push_page(&mut self, page: &[TextRow], has_more: bool) -> PageOutcome {
         let skip = self.first_page && page.first().is_some_and(|r| is_header_row(r, &self.names));
         self.first_page = false;
         if self.types.is_empty() {
-            return false;
+            return PageOutcome::Done;
         }
         for row in page.iter().skip(usize::from(skip)) {
             if self.rows.len() >= self.max_rows {
                 self.truncated = true;
-                return false;
+                return PageOutcome::Done;
             }
             let mapped = self.map_row(row);
             self.rows.push(mapped);
         }
-        if has_more && self.rows.len() >= self.max_rows {
-            self.truncated = true;
-            return false;
+        match (has_more, self.rows.len() >= self.max_rows) {
+            (false, _) => PageOutcome::Done,
+            (true, true) => PageOutcome::Probe,
+            (true, false) => PageOutcome::Continue,
         }
-        has_more
+    }
+
+    /// Result of the look-ahead read after [`PageOutcome::Probe`]: truncated only when it
+    /// returned a row.
+    pub fn probe_result(&mut self, found_row: bool) {
+        self.truncated = found_row;
     }
 
     pub fn finish(self) -> (Vec<Vec<Cell>>, bool) {
@@ -130,13 +149,36 @@ pub async fn fetch_rows(
             RowCollector::new(names, types, max_rows)
         });
         let next = output.next_token().map(str::to_string);
-        if !current.push_page(&text_rows(result_set), next.is_some()) {
-            break;
+        match current.push_page(&text_rows(result_set), next.is_some()) {
+            PageOutcome::Continue => token = next,
+            PageOutcome::Done => break,
+            PageOutcome::Probe => {
+                let found = probe_row(handle, execution_id, next).await?;
+                current.probe_result(found);
+                break;
+            }
         }
-        token = next;
     }
     let (rows, truncated) = collector.map(RowCollector::finish).unwrap_or_default();
     Ok(FetchedRows { columns, rows, truncated })
+}
+
+/// Reads at most one row at `token`: whether any row exists past the kept ones.
+async fn probe_row(
+    handle: &AthenaHandle,
+    execution_id: &str,
+    token: Option<String>,
+) -> AppResult<bool> {
+    let output = handle
+        .client()
+        .get_query_results()
+        .query_execution_id(execution_id)
+        .max_results(PROBE_SIZE)
+        .set_next_token(token)
+        .send()
+        .await
+        .map_err(|e| map_sdk_error(&e, handle.auth()))?;
+    Ok(output.result_set().is_some_and(|r| !r.rows().is_empty()))
 }
 
 #[cfg(test)]
@@ -170,8 +212,9 @@ mod tests {
     fn drops_the_header_only_on_the_first_page() {
         let mut rows = collector(10);
         let header = text(&[Some("id"), Some("name")]);
-        assert!(rows.push_page(&[header.clone(), text(&[Some("1"), None])], true));
-        assert!(!rows.push_page(&[header], false));
+        let first = rows.push_page(&[header.clone(), text(&[Some("1"), None])], true);
+        assert_eq!(first, PageOutcome::Continue);
+        assert_eq!(rows.push_page(&[header], false), PageOutcome::Done);
         let (rows, truncated) = rows.finish();
         assert!(!truncated);
         assert_eq!(rows[0], vec![Cell::Int("1".into()), Cell::Null]);
@@ -190,18 +233,40 @@ mod tests {
     fn stops_at_max_rows_and_reports_truncation() {
         let row = |i: &str| text(&[Some(i), Some("x")]);
         let mut within = collector(2);
-        assert!(!within.push_page(&[row("1"), row("2")], false));
+        assert_eq!(within.push_page(&[row("1"), row("2")], false), PageOutcome::Done);
         assert!(!within.finish().1, "exactly max rows and no more pages");
 
         let mut cut = collector(2);
-        assert!(!cut.push_page(&[row("1"), row("2"), row("3")], false));
+        assert_eq!(cut.push_page(&[row("1"), row("2"), row("3")], false), PageOutcome::Done);
         let (rows, truncated) = cut.finish();
         assert_eq!((rows.len(), truncated), (2, true));
 
-        let mut paged = collector(2);
-        assert!(paged.push_page(&[row("1")], true));
-        assert!(!paged.push_page(&[row("2")], true), "max reached with another page");
-        assert!(paged.finish().1);
+        let mut cut_with_more = collector(2);
+        assert_eq!(
+            cut_with_more.push_page(&[row("1"), row("2"), row("3")], true),
+            PageOutcome::Done
+        );
+        assert!(cut_with_more.finish().1, "a row past max was seen; no probe needed");
+    }
+
+    #[test]
+    fn a_next_token_at_exactly_max_rows_is_probed() {
+        let row = |i: &str| text(&[Some(i), Some("x")]);
+        let mut more = collector(2);
+        assert_eq!(more.push_page(&[row("1")], true), PageOutcome::Continue);
+        assert_eq!(more.push_page(&[row("2")], true), PageOutcome::Probe);
+        more.probe_result(true);
+        let (rows, truncated) = more.finish();
+        assert_eq!((rows.len(), truncated), (2, true));
+
+        let mut empty_next = collector(2);
+        assert_eq!(empty_next.push_page(&[row("1"), row("2")], true), PageOutcome::Probe);
+        empty_next.probe_result(false);
+        assert!(!empty_next.finish().1, "the next page was empty: not truncated");
+
+        let mut unprobed = collector(2);
+        assert_eq!(unprobed.push_page(&[row("1"), row("2")], true), PageOutcome::Probe);
+        assert!(!unprobed.finish().1, "a probe alone does not mark truncation");
     }
 
     #[test]
@@ -210,7 +275,7 @@ mod tests {
         rows.push_page(&[text(&[Some("7")])], false);
         assert_eq!(rows.finish().0, vec![vec![Cell::Int("7".into()), Cell::Null]]);
         let mut none = RowCollector::new(vec![], vec![], 5);
-        assert!(!none.push_page(&[text(&[])], true));
+        assert_eq!(none.push_page(&[text(&[])], true), PageOutcome::Done);
         assert_eq!(none.finish(), (vec![], false));
     }
 

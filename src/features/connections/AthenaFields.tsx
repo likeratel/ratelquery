@@ -17,6 +17,8 @@ interface AthenaFieldsProps {
   /** Whether the dialog creates a connection rather than editing one. */
   creating: boolean
   onChange: (patch: Partial<AthenaDraft>) => void
+  /** Access keys: the secret field lost focus, so workgroups may be listed with it. */
+  onSecretBlur: () => void
 }
 
 const hasAdvancedError = (errors: FieldErrors) => Boolean(errors.outputLocation || errors.database)
@@ -29,6 +31,7 @@ export function AthenaFields({
   workgroups,
   creating,
   onChange,
+  onSecretBlur,
 }: AthenaFieldsProps) {
   // Starts open when an advanced field is set; an error there always shows it.
   const [advanced, setAdvanced] = useState(
@@ -66,6 +69,7 @@ export function AthenaFields({
         profiles={profiles}
         creating={creating}
         onChange={onChange}
+        onSecretBlur={onSecretBlur}
       />
       <details
         className="conn-form__wide conn-advanced"

@@ -1,11 +1,13 @@
 //! Per-connection Athena clients, created on first use and cached until the connection is
-//! deleted, edited or its credentials fail. Each keeps its resolved output location.
+//! deleted, edited or its credentials fail. Each keeps its resolved output location and the
+//! executions it started, which are stopped when the connection is deleted or edited.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use aws_sdk_athena::Client;
+use aws_sdk_athena::error::DisplayErrorContext;
 use aws_types::SdkConfig;
 use tokio::sync::RwLock;
 
@@ -75,6 +77,33 @@ impl AthenaHandle {
             started.remove(execution_id);
         }
     }
+
+    /// Executions started through this handle that were not waited for or cancelled yet.
+    pub fn started_ids(&self) -> Vec<String> {
+        self.started.lock().map(|s| s.keys().cloned().collect()).unwrap_or_default()
+    }
+
+    /// Sends StopQueryExecution for every recorded execution in a background task, so the
+    /// caller does not wait for AWS. Best effort: failures are only logged to stderr and
+    /// nothing is re-run.
+    fn stop_started(&self) {
+        let ids = self.started_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            for id in ids {
+                let sent = client.stop_query_execution().query_execution_id(&id).send().await;
+                if let Err(err) = sent {
+                    eprintln!(
+                        "athena: could not stop execution {id}: {}",
+                        DisplayErrorContext(&err)
+                    );
+                }
+            }
+        });
+    }
 }
 
 pub async fn open_handle(
@@ -122,8 +151,18 @@ impl AthenaClients {
         Ok(Arc::clone(handles.entry(config.id.clone()).or_insert(handle)))
     }
 
-    /// Drops the cached handle. Removing an unknown id is a no-op.
+    /// Drops the cached handle after asking Athena to stop the executions it started and
+    /// nobody waited for (connection deleted or edited). Removing an unknown id is a no-op.
     pub async fn remove(&self, id: &str) {
+        let removed = self.handles.write().await.remove(id);
+        if let Some(handle) = removed {
+            handle.stop_started();
+        }
+    }
+
+    /// Drops the cached handle without touching its executions, so the next call builds a
+    /// fresh client (credential failure, output bucket created). Unknown ids are a no-op.
+    pub async fn invalidate(&self, id: &str) {
         self.handles.write().await.remove(id);
     }
 }
@@ -155,5 +194,35 @@ mod tests {
         assert!(err.to_string().contains("secret access key is not set"), "{err}");
         assert!(clients.get("a").await.is_none());
         clients.remove("a").await;
+        clients.invalidate("a").await;
+    }
+
+    /// A handle built offline: constructing SDK clients makes no AWS call.
+    fn offline_handle() -> AthenaHandle {
+        let sdk =
+            SdkConfig::builder().behavior_version(aws_config::BehaviorVersion::latest()).build();
+        AthenaHandle {
+            client: Client::new(&sdk),
+            sdk,
+            config: keys_config(),
+            output: RwLock::new(ResolvedOutput::Managed),
+            started: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[test]
+    fn started_ids_track_record_and_forget() {
+        let handle = offline_handle();
+        assert!(handle.started_ids().is_empty());
+        handle.record_start("e1");
+        handle.record_start("e2");
+        let mut ids = handle.started_ids();
+        ids.sort();
+        assert_eq!(ids, ["e1", "e2"]);
+        assert!(handle.started_at("e1").is_some());
+        handle.forget_start("e1");
+        assert_eq!(handle.started_ids(), ["e2"]);
+        handle.forget_start("unknown");
+        assert_eq!(handle.started_ids(), ["e2"]);
     }
 }

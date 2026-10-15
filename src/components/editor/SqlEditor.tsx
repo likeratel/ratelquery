@@ -7,7 +7,7 @@ import {
 } from "@codemirror/autocomplete"
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
 import { runPhysicalEditingShortcut } from "./physicalKeys"
-import { MySQL, sql } from "@codemirror/lang-sql"
+import { MySQL, PostgreSQL, sql, type SQLDialect } from "@codemirror/lang-sql"
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language"
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search"
 import { Compartment, EditorState, type Extension } from "@codemirror/state"
@@ -22,6 +22,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view"
 import { useEffect, useRef } from "react"
+import type { EditorDialect } from "../../lib/sqlDialect"
 import { cachedEditorState, cacheEditorState } from "./editorStateCache"
 import { tokenHighlightStyle, tokenTheme } from "./editorTheme"
 import "./editor.css"
@@ -36,6 +37,11 @@ export interface SqlEditorProps {
    * identity stable; a new array reconfigures completion.
    */
   completionSources?: readonly CompletionSource[]
+  /**
+   * lang-sql dialect for highlighting and keyword completion. `postgresql` (used for Athena)
+   * reads `"..."` as an identifier; `mysql` (the default) as a string.
+   */
+  dialect?: EditorDialect
   placeholderText?: string
   /**
    * Runs in the keydown capture phase, before CodeMirror's `key`-based keymap. Return true to
@@ -48,11 +54,18 @@ export interface SqlEditorProps {
 
 export { forgetEditorState } from "./editorStateCache"
 
+const DIALECTS: Record<EditorDialect, SQLDialect> = { mysql: MySQL, postgresql: PostgreSQL }
+
+const languageSlot = new Compartment()
 const completionSlot = new Compartment()
 const changeHandlers = new Map<string, (update: ViewUpdate) => void>()
 
 function completionFor(sources: readonly CompletionSource[] | undefined): Extension {
   return autocompletion({ icons: false, ...(sources ? { override: [...sources] } : {}) })
+}
+
+function languageFor(dialect: EditorDialect): Extension {
+  return sql({ dialect: DIALECTS[dialect], upperCaseKeywords: true })
 }
 
 function baseExtensions(stateKey: string, placeholderText: string): Extension[] {
@@ -65,7 +78,6 @@ function baseExtensions(stateKey: string, placeholderText: string): Extension[] 
     indentOnInput(),
     bracketMatching(),
     closeBrackets(),
-    sql({ dialect: MySQL, upperCaseKeywords: true }),
     highlightSelectionMatches(),
     // Completion must come before the default keymap so Enter accepts a suggestion
     // instead of inserting a newline while the list is open.
@@ -89,6 +101,7 @@ export function SqlEditor({
   value,
   onChange,
   completionSources,
+  dialect = "mysql",
   placeholderText = "",
   onKeyDownCapture,
   onViewChange,
@@ -122,6 +135,7 @@ export function SqlEditor({
             doc: value,
             extensions: [
               ...baseExtensions(stateKey, placeholderText),
+              languageSlot.of(languageFor(dialect)),
               completionSlot.of(completionFor(completionSources)),
             ],
           })
@@ -161,6 +175,10 @@ export function SqlEditor({
       effects: completionSlot.reconfigure(completionFor(completionSources)),
     })
   }, [completionSources])
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: languageSlot.reconfigure(languageFor(dialect)) })
+  }, [dialect])
 
   useEffect(() => {
     const view = viewRef.current

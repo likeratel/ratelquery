@@ -4,7 +4,7 @@ import { Button, Dialog, SegmentedControl, showToast } from "../../components/ui
 import type { ConnectionConfig } from "../../lib/connections"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { AthenaFields } from "./AthenaFields"
-import { workgroupRequest } from "./athenaWorkgroups"
+import { secretFingerprint, workgroupRequest } from "./athenaWorkgroups"
 import { DynamoFields } from "./DynamoFields"
 import {
   emptyForm,
@@ -91,8 +91,10 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
     (editing?.kind === "dynamodb" || editing?.kind === "athena") &&
     editing.auth.type === "keys" &&
     hasStoredSecret
+  // Fingerprint of the access key secret as it was when its field lost focus; never the text.
+  const [committedSecret, setCommittedSecret] = useState<string | null>(null)
   const workgroups = useAthenaWorkgroups(
-    form.kind === "athena" ? workgroupRequest(form.athena, context) : null,
+    form.kind === "athena" ? workgroupRequest(form.athena, context, committedSecret) : null,
   )
 
   const touch = (keys: readonly string[]) => {
@@ -182,6 +184,9 @@ function ConnectionDialogContent({ editing }: { editing: ConnectionConfig | null
             workgroups={workgroups}
             creating={editing === null}
             onChange={updateAthena}
+            onSecretBlur={() =>
+              setCommittedSecret(secretFingerprint(form.athena.secretAccessKey.trim()))
+            }
           />
         ) : form.kind === "mysql" ? (
           <MysqlFields

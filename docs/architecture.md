@@ -10,7 +10,7 @@ Tauri commands and events, documented in [ipc-contract.md](ipc-contract.md).
 
 | Directory | Contents |
 | --- | --- |
-| `features/` | One folder per screen: `connections/` (connection list and dialog), `query/` (MySQL editor, results grid, edits and export), `dynamo/` (table browser, query form, item editor), `athena/` (catalog store and the Athena branch of the query tab). Components here stay thin and call into `lib/` and `state/`. |
+| `features/` | One folder per screen: `connections/` (connection list and dialog), `query/` (MySQL editor, results grid, edits and export), `dynamo/` (table browser, query form, item editor). Athena has no screen of its own: the connection dialog gains its fields, the schema tree its catalog branch (`schema/athenaActions.ts`) and the query tab its start/wait/cancel path. Components here stay thin and call into `lib/` and `state/`. |
 | `lib/` | Pure, unit-tested helpers: the typed IPC wrapper (`ipc.ts`), MySQL, DynamoDB and Athena types, cell formatting, grid edits, DynamoDB JSON conversion and diffing, SQL context for autocomplete, and physical-key shortcut matching (`shortcuts.ts`). |
 | `state/` | zustand stores: `connectionsStore` (saved configs, dialog state), `sessionsStore` (per-connection session state and schema cache), `tabsStore` (open tabs, SQL text, last result), `athenaStore` (per-connection Glue catalog cache), `uiStore`. Updates are immutable. |
 | `components/` | Shared UI: the shell (sidebar, tab bar, editor bar), CodeMirror SQL and JSON editors, the virtualized result grid, and small UI primitives. |
@@ -108,7 +108,8 @@ From [ipc-contract.md](ipc-contract.md):
 - **Athena** results are read through `GetQueryResults` (text values typed by column), so very
   large results are capped by the row limit rather than streamed, and `varbinary` is decoded
   from Athena's hex text. Multi-statement scripts run one statement at a time; a failure stops
-  the rest.
+  the rest. The editor's keyword list is PostgreSQL's (closest to Trino in lang-sql), and `#`
+  comments and backslash escapes in strings still follow MySQL rules when a script is split.
 
 - **TLS `verify_ca`** currently also checks the host name (with sqlx 0.8.6 and rustls 0.23.46), so
   it behaves like `verify_identity` and fails closed.

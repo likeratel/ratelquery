@@ -140,12 +140,10 @@ pub async fn wait(
     let max_rows = resolve_max_rows(max_rows)?;
     let start = handle.started_at(execution_id).unwrap_or_else(Instant::now);
     let result = poll_until_done(handle, execution_id).await;
-    if result.is_err() {
-        handle.forget_start(execution_id);
-    }
+    // Terminal (or no longer pollable): nothing to stop on delete / edit any more.
+    handle.forget_start(execution_id);
     let execution = result?;
     let fetched = fetch_rows(handle, execution_id, max_rows).await?;
-    handle.forget_start(execution_id);
     Ok(AthenaRowsResult {
         rows: RowsResult {
             row_count: fetched.rows.len(),
@@ -160,8 +158,10 @@ pub async fn wait(
     })
 }
 
-/// StopQueryExecution; finished executions are left as they are.
+/// StopQueryExecution; finished executions are left as they are. The execution is no longer
+/// tracked for the stop on delete / edit.
 pub async fn cancel(handle: &AthenaHandle, execution_id: &str) -> AppResult<()> {
+    handle.forget_start(execution_id);
     handle
         .client()
         .stop_query_execution()

@@ -84,6 +84,10 @@
   color: var(--text-faint);
 }
 
+.db-switch .db-switch__error {
+  color: var(--danger);
+}
+
 .db-switch__select {
   height: 22px;
   max-width: 200px;

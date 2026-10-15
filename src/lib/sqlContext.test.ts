@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { splitStatements, statementAtCursor } from "./sqlContext"
+import { ANSI_SYNTAX, splitStatements, statementAtCursor } from "./sqlContext"
 
 const texts = (sql: string) => splitStatements(sql).map((s) => s.text)
 
@@ -92,5 +92,22 @@ describe("statementAtCursor", () => {
 
   it("returns null when there is nothing to run", () => {
     expect(statementAtCursor("  -- only a comment", 5)).toBeNull()
+  })
+})
+
+describe("ANSI quotes (Athena)", () => {
+  it("ends a double-quoted identifier at its quote, a backslash being part of the name", () => {
+    const sql = 'SELECT "a\\"; SELECT 2'
+    expect(splitStatements(sql, ANSI_SYNTAX).map((s) => s.text)).toEqual([
+      'SELECT "a\\";',
+      "SELECT 2",
+    ])
+    // MySQL reads the backslash as an escape, so the `;` is inside the string.
+    expect(splitStatements(sql).map((s) => s.text)).toEqual([sql])
+  })
+
+  it("finds the statement at the cursor with the same rule", () => {
+    const sql = 'SELECT "a\\"; SELECT 2'
+    expect(statementAtCursor(sql, sql.length, ANSI_SYNTAX)?.text).toBe("SELECT 2")
   })
 })

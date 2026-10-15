@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { ANSI_SYNTAX } from "./sqlContext"
 import { tokenizeSql } from "./sqlTokens"
 
 const kinds = (sql: string) => tokenizeSql(sql).map((t) => [t.kind, t.value])
@@ -49,5 +50,29 @@ describe("tokenizeSql", () => {
       ["word", "sql_no_cache"],
       ["word", "a"],
     ])
+  })
+})
+
+describe("tokenizeSql with ANSI quotes (Athena)", () => {
+  it("reads double-quoted identifiers with doubled quotes and reports unclosed ones", () => {
+    expect(tokenizeSql('"a""b" "open', ANSI_SYNTAX)).toEqual([
+      { kind: "quoted", from: 0, to: 6, value: 'a"b', closed: true },
+      { kind: "quoted", from: 7, to: 12, value: "open", closed: false },
+    ])
+  })
+
+  it("reads a qualified name as identifiers and dots, without backslash escapes", () => {
+    expect(tokenizeSql('FROM "db"."t\\" x', ANSI_SYNTAX).map((t) => [t.kind, t.value])).toEqual([
+      ["word", "FROM"],
+      ["quoted", "db"],
+      ["punct", "."],
+      ["quoted", "t\\"],
+      ["word", "x"],
+    ])
+  })
+
+  it("keeps single-quoted strings and MySQL's double-quoted strings as strings", () => {
+    expect(tokenizeSql("'a\"b'", ANSI_SYNTAX).map((t) => t.kind)).toEqual(["string"])
+    expect(tokenizeSql('"db"."t"').map((t) => t.kind)).toEqual(["string", "punct", "string"])
   })
 })

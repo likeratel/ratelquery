@@ -1,5 +1,6 @@
 import { create } from "zustand"
 import { splitStatements, type StatementRange } from "../../lib/sqlContext"
+import { MYSQL_DIALECT, type SqlDialect } from "../../lib/sqlDialect"
 import { classifyDanger, withDefaultLimit } from "../../lib/sqlGuard"
 import type { QuerySettings } from "../../lib/settings"
 
@@ -36,18 +37,25 @@ function executedForm(text: string): string {
 /**
  * Applies the query safety settings to `sql` without touching the editor text. A LIMIT is
  * spliced into each statement's own range, so everything between statements (comments,
- * blank lines) reaches the backend as written.
+ * blank lines) reaches the backend as written. `dialect` is the tab engine's: it decides how
+ * statements split and which ones need confirmation.
  */
-export function planRun(sql: string, settings: QuerySettings): RunPlan {
-  const statements = splitStatements(sql)
+export function planRun(
+  sql: string,
+  settings: QuerySettings,
+  dialect: SqlDialect = MYSQL_DIALECT,
+): RunPlan {
+  const statements = splitStatements(sql, dialect.syntax)
   const dangers = settings.confirmDestructive
     ? statements.flatMap(({ text }) => {
-        const reason = classifyDanger(text)
+        const reason = classifyDanger(text, dialect)
         return reason ? [{ statement: executedForm(text), reason }] : []
       })
     : []
   if (!settings.addLimitToSelect) return { sql, changed: false, limited: [], dangers }
-  const rewritten = statements.map(({ text }) => withDefaultLimit(text, settings.defaultLimit))
+  const rewritten = statements.map(({ text }) =>
+    withDefaultLimit(text, settings.defaultLimit, dialect),
+  )
   const limited = rewritten.flatMap((text, index) =>
     text === statements[index]?.text ? [] : [{ index, limit: settings.defaultLimit }],
   )

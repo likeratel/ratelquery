@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import { DEFAULT_SETTINGS, type QuerySettings } from "../../lib/settings"
+import { ATHENA_DIALECT } from "../../lib/sqlDialect"
 import {
   addedLimitFor,
   answerDangerousRun,
@@ -110,5 +111,20 @@ describe("addedLimitFor", () => {
     const plan = planRun("SELECT 1;\n-- recent\nSELECT * FROM t", settings())
     expect(addedLimitFor(plan.limited, 1)).toBe(1000)
     expect(addedLimitFor(plan.limited, 0)).toBe(1000)
+  })
+})
+
+describe("planRun on Athena", () => {
+  it("asks before statements that write and splits with double-quoted identifiers", () => {
+    const sql =
+      'SELECT "a;b" FROM t;\nINSERT INTO t SELECT 1;\nSELECT * FROM t FETCH FIRST 5 ROWS ONLY'
+    const plan = planRun(sql, settings(), ATHENA_DIALECT)
+    expect(plan.dangers).toEqual([
+      { statement: "INSERT INTO t SELECT 1", reason: expect.stringMatching(/INSERT/) },
+    ])
+    expect(plan.limited).toEqual([{ index: 0, limit: settings().defaultLimit }])
+    expect(plan.sql).toBe(
+      `SELECT "a;b" FROM t LIMIT ${settings().defaultLimit};\nINSERT INTO t SELECT 1;\nSELECT * FROM t FETCH FIRST 5 ROWS ONLY`,
+    )
   })
 })

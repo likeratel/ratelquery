@@ -5,6 +5,7 @@ import { onAppEvent } from "../../lib/events"
 import { isAppError } from "../../lib/ipc"
 import { tabPendingCount, tabsForConnection, type QueryTab } from "../../lib/queryTabs"
 import { statementAtCursor } from "../../lib/sqlContext"
+import { dialectFor } from "../../lib/sqlDialect"
 import { useAthenaStore } from "../../state/athenaStore"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useSessionsStore } from "../../state/sessionsStore"
@@ -164,12 +165,22 @@ export function forgetConnection(connectionId: ConnectionId): void {
 }
 
 /**
- * Cleans up after deleted connections, and drops an edited Athena connection's catalog (its
- * region or credentials may point somewhere else now). Returns the unsubscribe function.
+ * An edited connection may point at another region, account or workgroup now: its running
+ * Athena tabs stop the way the Cancel button stops them, so no later statement of the run starts
+ * with the new settings, and its Athena catalog is dropped.
+ */
+function connectionEdited(connectionId: ConnectionId): void {
+  for (const id of tabsForConnection(useTabsStore.getState(), connectionId)) stopAthenaRun(id)
+  useAthenaStore.getState().forget(connectionId)
+}
+
+/**
+ * Cleans up after deleted connections, and after edited ones (see `connectionEdited`).
+ * Returns the unsubscribe function.
  */
 export function subscribeConnectionCleanup(): () => void {
   const offRemoved = onAppEvent("connection-removed", forgetConnection)
-  const offUpdated = onAppEvent("connection-updated", (id) => useAthenaStore.getState().forget(id))
+  const offUpdated = onAppEvent("connection-updated", connectionEdited)
   return () => {
     offRemoved()
     offUpdated()
@@ -210,7 +221,7 @@ export async function runActiveTab(scope: "all" | "statement", cursor?: number):
     return
   }
   const head = cursor ?? editorFor(tab.id)?.state.selection.main.head ?? tab.sql.length
-  const statement = statementAtCursor(tab.sql, head)
+  const statement = statementAtCursor(tab.sql, head, dialectFor(tab.engine).syntax)
   if (!statement) {
     reportOutcome("empty")
     return
@@ -230,7 +241,7 @@ async function runGuarded(tab: QueryTab, sql: string | null): Promise<void> {
     reportOutcome("pending-edits")
     return
   }
-  const plan = planRun(sql ?? tab.sql, currentSettings().query)
+  const plan = planRun(sql ?? tab.sql, currentSettings().query, dialectFor(tab.engine))
   if (plan.dangers.length > 0) {
     const confirmed = await confirmDangerousRun(plan.dangers)
     // The tab may have closed while the dialog was open.
