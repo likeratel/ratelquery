@@ -19,6 +19,7 @@ import { subscribeSessionEvents } from "../../state/sessionsStore"
 import { applyEditorFontSize, useSettingsStore } from "../../state/settingsStore"
 import { useTabsStore } from "../../state/tabsStore"
 import { applyPlatformAttribute, applyTheme, useUiStore } from "../../state/uiStore"
+import { startWorkspaceSync } from "../../state/workspaceSync"
 import { isModalOpen, Toaster } from "../ui"
 import { EmptyWorkspace } from "./EmptyWorkspace"
 import { Sidebar } from "./Sidebar"
@@ -50,6 +51,10 @@ export function Shell() {
   useEffect(() => subscribeConnectionCleanup(), [])
 
   useEffect(() => subscribeTreeCleanup(), [])
+
+  // Reopens the last session's query tabs once the connection list has loaded, then keeps
+  // `workspace.json` up to date. No connection is opened for them.
+  useEffect(() => startWorkspaceSync(), [])
 
   useEffect(() => {
     // The SQL editor handles these in its own capture phase and stops the event, so this

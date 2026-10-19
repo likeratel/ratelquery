@@ -23,9 +23,12 @@ export function createAthenaSchemaRequests(store: AthenaStore, now: () => number
 
   return (connectionId: ConnectionId, database: string): Promise<void> | null => {
     const catalog = store.getState().catalogs[connectionId]
-    if (catalog?.schemas[database]) return null
+    // No entry yet: the connection's catalog was never touched this run (a tab reopened from the
+    // last one). Typing alone must not call AWS; opening the database picker, switching the
+    // database or the schema tree creates the entry.
+    if (!catalog || catalog.schemas[database]) return null
     // A name that isn't a known database would only come back as `not_found`.
-    if (catalog?.databases && !catalog.databases.includes(database)) return null
+    if (catalog.databases && !catalog.databases.includes(database)) return null
     const key = `${connectionId}\u0000${database}`
     const pending = inflight.get(key)
     if (pending) return pending

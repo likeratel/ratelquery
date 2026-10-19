@@ -7,6 +7,7 @@ import { useAthenaStore } from "../../state/athenaStore"
 import { isSchemaLoading, useSessionsStore } from "../../state/sessionsStore"
 import { useTabsStore } from "../../state/tabsStore"
 import { athenaTabDatabase } from "./editing"
+import { needsMysqlSession, openMysqlSwitcher, type SwitcherInput } from "./mysqlSession"
 
 interface SwitcherViewProps {
   database: string | null
@@ -14,6 +15,8 @@ interface SwitcherViewProps {
   schemaLoading: boolean
   refreshTitle: string
   onOpen: () => void
+  /** A click or opening key on the select, before it opens. */
+  onIntent?: (input: SwitcherInput) => void
   onChange: (database: string | null) => void
   onRefresh: (database: string) => void
   /** Why the last database or schema load failed; shown with a retry button. */
@@ -46,6 +49,16 @@ function SwitcherView(props: SwitcherViewProps) {
           value={database ?? ""}
           title={error ?? undefined}
           onFocus={props.onOpen}
+          onPointerDown={(event) =>
+            props.onIntent?.({
+              type: "pointerdown",
+              button: event.button,
+              timeStamp: event.timeStamp,
+            })
+          }
+          onKeyDown={(event) =>
+            props.onIntent?.({ type: "keydown", code: event.code, timeStamp: event.timeStamp })
+          }
           onChange={(event) => props.onChange(event.target.value || null)}
         >
           <option value="">None</option>
@@ -99,8 +112,12 @@ function MysqlDatabaseSwitcher({ tab }: { tab: QueryTab }) {
       schemaLoading={isSchemaLoading(session, database)}
       refreshTitle="Reload tables and columns for completion and editing"
       onOpen={() => {
-        if (databases.length === 0) void loadDatabases(tab.connectionId)
+        // Focus never connects: a reopened tab without a session connects on a press instead.
+        if (!needsMysqlSession(tab.connectionId) && databases.length === 0) {
+          void loadDatabases(tab.connectionId)
+        }
       }}
+      onIntent={(input) => openMysqlSwitcher(tab.connectionId, input)}
       onChange={changeDatabase}
       onRefresh={(name) => void refreshSchema(tab.connectionId, name)}
     />

@@ -7,3 +7,4 @@ pub mod mysql;
 pub mod settings;
 pub mod ssh;
 pub mod system;
+pub mod workspace;

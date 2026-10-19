@@ -21,6 +21,7 @@ import { openDynamoTabFor } from "../dynamo/actions"
 import { useDynamoCatalog } from "../dynamo/catalogStore"
 import { editTargetFor } from "./editing"
 import { editorFor } from "./editorRegistry"
+import { ensureMysqlSession } from "./mysqlSession"
 import { confirmDangerousRun, planRun, useRunGuardStore } from "./runGuard"
 import { forgetTabCountUps } from "./useCountUp"
 import { showToast } from "../../components/ui"
@@ -257,6 +258,9 @@ async function runGuarded(tab: QueryTab, sql: string | null): Promise<void> {
     reportOutcome("pending-edits")
     return
   }
+  // A reopened tab has no session yet; connect on the first run.
+  if (tab.engine === "mysql" && (await ensureMysqlSession(tab.connectionId)) !== "ready") return
+  if (!useTabsStore.getState().tabs.some((t) => t.id === tab.id)) return
   const plan = planRun(sql ?? tab.sql, currentSettings().query, dialectFor(tab.engine))
   if (plan.dangers.length > 0) {
     const confirmed = await confirmDangerousRun(plan.dangers)

@@ -295,6 +295,7 @@ default. Sessions with `sql_mode` `NO_BACKSLASH_ESCAPES` are not supported: a st
 - `src/state/connectionsStore.ts` – configs, dialog open state, test status. Owned by the connections feature.
 - `src/state/sessionsStore.ts` – per connection: `state`, `serverVersion`, `currentDatabase`, `schema` cache. Owned by the query feature.
 - `src/state/tabsStore.ts` – open tabs, active tab, per-tab sql text and last result. Owned by the query feature.
+- `src/state/workspaceSync.ts` – no state of its own; mirrors the tabs store's query tabs into `workspace.json` (see Workspace). Owned by the shell.
 - `src/state/athenaStore.ts` – per Athena connection: `databases`, `schemas` cache (same `SchemaSnapshot` shape as MySQL), `currentDatabase`, loading flags. Owned by the query feature (filled by the schema tree and the query tab); completion and the database switcher read it.
 
 ## DynamoDB
@@ -455,6 +456,58 @@ interface Settings {
 | --- | --- | --- |
 | `settings_get` | – | `Settings` (defaults merged over the file). A `settings.json` that is not a JSON object returns the defaults (logged) and is left as is. |
 | `settings_set` | `settings: Partial<Settings>` (nested groups may be partial too) | saved `Settings`. The input is deep-merged over the stored settings (objects key by key, other values replaced), so a client sends only the fields it changes. A non-object input or an out-of-range merged value → `invalid_input`. Over a corrupt `settings.json` the file is moved to `settings.json.bak` and the input is merged over the defaults. A changed `secretStore` moves the secrets (see Secret storage). |
+
+## Workspace
+
+The query tabs open when the app last ran, persisted as JSON at `<app config dir>/workspace.json`,
+written atomically with owner-only (0600) permissions on unix. Only what a tab *is* is saved:
+results, grid edits, errors and run state are not.
+
+```ts
+interface Workspace {
+  version: 1
+  activeTabId: string | null                    // null, or the id of one of `tabs`
+  tabs: WorkspaceTab[]                          // in tab bar order; MySQL and Athena query tabs only
+}
+interface WorkspaceTab {
+  id: string                                    // non-empty, unique in `tabs`
+  kind: "query"
+  connectionId: ConnectionId                    // non-empty
+  engine: "mysql" | "athena"
+  title: string
+  sql: string
+  database: string | null
+}
+```
+
+| command | args | returns |
+| --- | --- | --- |
+| `workspace_load` | – | `Workspace \| null`. A missing file is `null`. A file that is not a version 1 workspace object is `null` too (logged to stderr) and is left as is until the next save replaces it. Tabs in the file that don't parse or repeat an id are dropped; an `activeTabId` that names no remaining tab becomes `null`. A file that exists but cannot be read rejects with `kind: "io"`. |
+| `workspace_save` | `workspace: Workspace` | `void`. Replaces the file. Any type error, another `version`, an empty or repeated tab id, or an `activeTabId` that names no tab → `invalid_input` and nothing is written. |
+
+`connections_delete` does not touch the file: the frontend closes the deleted connection's tabs,
+which saves the workspace again.
+
+Frontend (`src/state/workspaceSync.ts`, started by the shell): once the connection list has
+loaded, `workspace_load` runs once and its tabs reopen in one tabs store update, dropping tabs
+whose connection no longer exists or is of another kind than the tab's engine. The saved active
+tab becomes active again (the first tab when it is gone), and the "Query N" counter continues
+from the highest restored N. Restoring opens no MySQL session and loads no Athena catalog: a
+reopened MySQL tab connects (asking for the password when none is stored) on its first run, or
+when its database picker is clicked or opened with Enter, Space or Down. Focusing the picker
+never connects, and after a cancelled password prompt only a new press asks again. Completion
+in a reopened Athena tab makes no AWS call until that connection's catalog is used (database
+picker, database switch, schema tree). Until the restore finished nothing is saved, so the empty
+startup state never replaces the file; a failed `workspace_load` leaves saving off for that run.
+Afterwards opening, closing or switching tabs, or changing a tab's database, saves right away (changes in the same task are merged into one save); editor text is saved
+1000 ms after typing stops, or when the window closes. Saves never overlap.
+
+Saving on close is best effort, not guaranteed. Closing the window waits up to 1.5 s for the
+last save (through the window's close request, which is why the capability grants
+`core:window:allow-destroy`). Quitting from the app menu (Cmd+Q) sends no close request; only
+`pagehide` starts a save then, and the process may exit before it is written. Text typed in the
+last second before such a quit, or before a crash, can be lost. A failed save is logged to the console once per
+failure streak, without a toast.
 
 ## Secret storage
 

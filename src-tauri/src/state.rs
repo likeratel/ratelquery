@@ -11,6 +11,7 @@ use crate::dynamo::DynamoClients;
 use crate::mysql::{MysqlSessions, MysqlStateEvent, STATE_EVENT, StateSink};
 use crate::settings::{SettingsService, SettingsStore};
 use crate::ssh::KnownHosts;
+use crate::workspace::WorkspaceStore;
 
 /// Managed Tauri state shared by all commands. The services doing file or keyring I/O are
 /// `Arc`s so commands can move them onto the blocking pool.
@@ -23,6 +24,8 @@ pub struct AppState {
     pub settings: Arc<SettingsService>,
     /// `~/.ssh/known_hosts` plus the app's own file, for SSH tunnels.
     pub known_hosts: KnownHosts,
+    /// `workspace.json`: the query tabs to reopen on the next launch.
+    pub workspace: Arc<WorkspaceStore>,
 }
 
 impl AppState {
@@ -52,6 +55,7 @@ impl AppState {
             athena: AthenaClients::new(),
             settings,
             known_hosts,
+            workspace: Arc::new(WorkspaceStore::new(config_dir)),
         }
     }
 }

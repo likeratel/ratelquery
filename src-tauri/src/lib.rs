@@ -13,6 +13,7 @@ pub mod settings;
 pub mod ssh;
 mod state;
 mod util;
+pub mod workspace;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,6 +91,8 @@ pub fn run() {
             commands::settings::settings_get,
             commands::settings::settings_set,
             commands::ssh::ssh_trust_host,
+            commands::workspace::workspace_load,
+            commands::workspace::workspace_save,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

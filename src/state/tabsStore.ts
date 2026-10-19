@@ -32,6 +32,7 @@ import {
   type TabsState,
   type WorkspaceTab,
 } from "../lib/queryTabs"
+import { mergeRestoredTabs } from "../lib/workspace"
 import { useAthenaStore } from "./athenaStore"
 import { runAthenaStatements } from "./athenaRun"
 import { useSessionsStore } from "./sessionsStore"
@@ -54,6 +55,11 @@ interface TabsStore extends TabsState {
    */
   openTable: (connectionId: ConnectionId, database: string, table: string) => string
   updateTable: (id: string, update: (tab: TableTab) => TableTab) => void
+  /**
+   * Reopens saved query tabs in one update, in front of any tab opened meanwhile (see
+   * `mergeRestoredTabs`). Opens no session and loads no catalog.
+   */
+  restore: (tabs: readonly QueryTab[], activeId: string | null, seq: number) => void
   /** Closes the tab at once, even with unsaved work. */
   close: (id: string) => void
   /** Closes the tab, or asks first (`closing`) when it holds unsaved work. */
@@ -191,6 +197,9 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     },
 
     updateTable: (id, update) => set((state) => updateTableTab(state, id, update)),
+
+    restore: (tabs, activeId, seq) =>
+      set((state) => mergeRestoredTabs(state, { tabs, activeId, seq })),
 
     close: (id) => set((state) => closeTab(state, id)),
 
