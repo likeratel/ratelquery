@@ -60,7 +60,11 @@ const DIALECTS: Record<EditorDialect, SQLDialect> = { mysql: MySQL, postgresql: 
 
 const languageSlot = new Compartment()
 const completionSlot = new Compartment()
-const changeHandlers = new Map<string, (update: ViewUpdate) => void>()
+/**
+ * The update listener of the mounted component. It is reconfigured on every mount, so a cached
+ * state reaches the component that currently shows it, and nothing outlives a hot reload.
+ */
+const listenerSlot = new Compartment()
 
 function completionFor(sources: readonly CompletionSource[] | undefined): Extension {
   return autocompletion({ icons: false, ...(sources ? { override: [...sources] } : {}) })
@@ -70,7 +74,7 @@ function languageFor(dialect: EditorDialect): Extension {
   return sql({ dialect: DIALECTS[dialect], upperCaseKeywords: true })
 }
 
-function baseExtensions(stateKey: string, placeholderText: string): Extension[] {
+function baseExtensions(placeholderText: string): Extension[] {
   return [
     lineNumbers(),
     highlightActiveLineGutter(),
@@ -94,7 +98,7 @@ function baseExtensions(stateKey: string, placeholderText: string): Extension[] 
     syntaxHighlighting(tokenHighlightStyle),
     tokenTheme,
     placeholder(placeholderText),
-    EditorView.updateListener.of((update) => changeHandlers.get(stateKey)?.(update)),
+    listenerSlot.of([]),
   ]
 }
 
@@ -119,33 +123,33 @@ export function SqlEditor({
   })
 
   useEffect(() => {
-    changeHandlers.set(stateKey, (update) => {
-      if (update.docChanged) latest.current.onChange(update.state.doc.toString())
-      if (update.selectionSet || update.docChanged) {
-        latest.current.onSelectionChange?.(update.view)
-      }
-    })
-    return () => {
-      changeHandlers.delete(stateKey)
-    }
-  }, [stateKey])
-
-  useEffect(() => {
     const host = hostRef.current
     if (!host) return
     const cached = cachedEditorState(stateKey)
-    const state =
-      cached && cached.doc.toString() === value
-        ? cached
-        : EditorState.create({
-            doc: value,
-            extensions: [
-              ...baseExtensions(stateKey, placeholderText),
-              languageSlot.of(languageFor(dialect)),
-              completionSlot.of(completionFor(completionSources)),
-            ],
-          })
+    // A cached state is only reused when it was built by this module: after a hot reload the
+    // compartments are new objects and reconfiguring the old state would silently do nothing.
+    const reusable = cached && cached.doc.toString() === value && listenerSlot.get(cached)
+    const state = reusable
+      ? cached
+      : EditorState.create({
+          doc: value,
+          extensions: [
+            ...baseExtensions(placeholderText),
+            languageSlot.of(languageFor(dialect)),
+            completionSlot.of(completionFor(completionSources)),
+          ],
+        })
     const view = new EditorView({ state, parent: host })
+    view.dispatch({
+      effects: listenerSlot.reconfigure(
+        EditorView.updateListener.of((update: ViewUpdate) => {
+          if (update.docChanged) latest.current.onChange(update.state.doc.toString())
+          if (update.selectionSet || update.docChanged) {
+            latest.current.onSelectionChange?.(update.view)
+          }
+        }),
+      ),
+    })
     viewRef.current = view
     latest.current.onViewChange?.(view)
     latest.current.onSelectionChange?.(view)
