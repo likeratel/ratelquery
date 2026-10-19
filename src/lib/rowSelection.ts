@@ -44,12 +44,9 @@ export function clearSelection(): RowSelection {
   return EMPTY_ROW_SELECTION
 }
 
+/** `retainRows` keeps every index below `count`, so the size alone tells. */
 export function isAllSelected(selection: RowSelection, count: number): boolean {
-  if (count <= 0) return false
-  for (let index = 0; index < count; index += 1) {
-    if (!selection.rows.has(index)) return false
-  }
-  return true
+  return count > 0 && selection.rows.size === count
 }
 
 /** Applies a click on a row: Shift extends, Mod toggles, a plain click selects only that row. */
@@ -80,6 +77,16 @@ export function retainRows(selection: RowSelection, count: number): RowSelection
 /** Selected rows in display order. */
 export function selectedRows(selection: RowSelection): number[] {
   return [...selection.rows].sort((a, b) => a - b)
+}
+
+/**
+ * Whether Mod+C copies rows rather than the focused cell: only when rows beyond the focused one
+ * are selected. A plain click or an arrow key selects just the focused row, and copying that
+ * row's cell is what the key did before row selection existed.
+ */
+export function copiesWholeRows(selection: RowSelection, focusedRow: number | null): boolean {
+  if (selection.rows.size === 0) return false
+  return selection.rows.size > 1 || !selection.rows.has(focusedRow ?? -1)
 }
 
 /** Rows a copy acts on: the selection, or else the focused row. */

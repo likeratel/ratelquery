@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   clearSelection,
   clickRow,
+  copiesWholeRows,
   copyTargetRows,
   EMPTY_ROW_SELECTION,
   extendTo,
@@ -65,6 +66,14 @@ describe("row selection", () => {
     expect(selectedRows(trimmed)).toEqual([1])
     expect(trimmed.anchor).toBeNull()
     expect(retainRows(selectOnly(2), 5).anchor).toBe(2)
+  })
+
+  it("copies whole rows only when more than the focused row is selected", () => {
+    expect(copiesWholeRows(EMPTY_ROW_SELECTION, 2)).toBe(false)
+    expect(copiesWholeRows(selectOnly(2), 2)).toBe(false)
+    expect(copiesWholeRows(selectOnly(1), 2)).toBe(true)
+    expect(copiesWholeRows(toggleRow(selectOnly(2), 3), 2)).toBe(true)
+    expect(copiesWholeRows(selectOnly(2), null)).toBe(true)
   })
 
   it("copies the selection in display order, or the focused row", () => {

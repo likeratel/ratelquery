@@ -15,8 +15,6 @@ export interface RunScopeInput {
 export interface RunScopeText {
   /** Text to run; null means the whole editor. */
   sql: string | null
-  /** Where the text came from, for messages and labels. */
-  source: "statement" | "selection" | "all"
 }
 
 /**
@@ -31,11 +29,9 @@ export function runScopeText(
 ): RunScopeText | null {
   if (scope === "selection") {
     const selected = input.selectedText ?? ""
-    return selected.trim() === ""
-      ? { sql: null, source: "all" }
-      : { sql: selected, source: "selection" }
+    return { sql: selected.trim() === "" ? null : selected }
   }
   const cursor = input.cursor ?? input.sql.length
   const statement = statementAtCursor(input.sql, cursor, syntax)
-  return statement ? { sql: statement.text, source: "statement" } : null
+  return statement ? { sql: statement.text } : null
 }

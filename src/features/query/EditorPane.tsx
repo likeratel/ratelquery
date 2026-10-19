@@ -49,10 +49,10 @@ export function EditorPane({ tab }: EditorPaneProps) {
   }, [])
   // Only whether something is selected: the label of the second button depends on it.
   const [hasSelection, setHasSelection] = useState(false)
-  const onSelectionChange = useCallback(
-    (view: EditorView) => setHasSelection(!view.state.selection.main.empty),
-    [],
-  )
+  const onSelectionChange = useCallback((view: EditorView) => {
+    const main = view.state.selection.main
+    setHasSelection(view.state.sliceDoc(main.from, main.to).trim() !== "")
+  }, [])
 
   return (
     <div className="editor-pane">

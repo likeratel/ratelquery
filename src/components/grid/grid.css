@@ -292,6 +292,10 @@
 }
 
 /* The grid's menus, opened from the toolbar or at the pointer. */
+.grid-menu .ui-menu__item {
+  white-space: nowrap;
+}
+
 .grid-menu {
   min-width: 220px;
   box-shadow: var(--shadow-pop);

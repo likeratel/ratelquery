@@ -16,6 +16,7 @@ import type { Cell, ColumnInfo } from "../../lib/mysql"
 import {
   clearSelection,
   clickRow,
+  copiesWholeRows,
   copyTargetRows,
   EMPTY_ROW_SELECTION,
   isAllSelected,
@@ -180,12 +181,12 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
     return true
   }
 
+  /** Moves the focused cell; the row selection follows it, like a spreadsheet's. */
   const move = (dRow: number, dCol: number) => {
     const current = selection ?? { row: 0, col: 0 }
-    onSelect({
-      row: clamp(current.row + dRow, 0, rows.length - 1),
-      col: clamp(current.col + dCol, 0, columns.length - 1),
-    })
+    const row = clamp(current.row + dRow, 0, rows.length - 1)
+    onSelect({ row, col: clamp(current.col + dCol, 0, columns.length - 1) })
+    changeRows?.(() => selectOnly(row))
   }
 
   /** Handles the copy and row selection shortcuts; returns whether the key was used. */
@@ -194,7 +195,9 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
     const targets = copyTargetRows(selected, selection?.row ?? null)
     if (matchesShortcut(event, COPY_ROW_SHORTCUT)) return copy("rows-with-names", targets, null)
     if (matchesShortcut(event, COPY_CELL_SHORTCUT)) {
-      return selected.rows.size > 0 ? copy("rows", targets, null) : copy("cell", [], selection)
+      return copiesWholeRows(selected, selection?.row ?? null)
+        ? copy("rows", targets, null)
+        : copy("cell", [], selection)
     }
     if (!rowSelection) return false
     if (matchesShortcut(event, SELECT_ALL_ROWS_SHORTCUT)) {

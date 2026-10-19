@@ -91,10 +91,14 @@ export function RowsView(props: RowsViewProps) {
     [target, result.rows, updateEdits, tabId, index],
   )
 
-  const toggleDelete = (ref: RowRef) =>
+  const toggleDelete = (ref: RowRef) => {
+    // Removing an inserted row shifts the inserted rows after it, so index-based selection
+    // would land on other rows.
+    if (ref.kind === "insert") setRowSelection(EMPTY_ROW_SELECTION)
     updateEdits(tabId, index, (current) =>
       ref.kind === "existing" ? toggleRowDelete(current, ref.index) : removeInsert(current, ref.id),
     )
+  }
 
   const addRow = () => {
     updateEdits(tabId, index, (current) => addInsert(current, crypto.randomUUID()))
