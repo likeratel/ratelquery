@@ -4,6 +4,8 @@
 
 A minimal, modern desktop client for MySQL, DynamoDB and Amazon Athena. Tauri 2, React 19 and Rust. Named after the ratel (honey badger): it digs into any table and is not put off by a few stings.
 
+> Built with AI. I set the direction and tested every feature against my own databases; the code, tests and docs were written in sessions with [Claude Code](https://claude.com/claude-code). See [Why I built this](#why-i-built-this).
+
 ![MySQL result grid with typed cells](docs/screenshots/mysql-grid.png)
 
 ## Why another client
@@ -14,6 +16,12 @@ Most desktop database tools get four everyday things wrong. This one is built ar
 - **Autocomplete knows your schema.** Table and column names are loaded from `information_schema` the moment you connect, and the editor offers them as you type.
 - **Connections heal themselves.** A dropped MySQL session is replaced on the next query. Read statements are retried once; writes are never repeated silently.
 - **DynamoDB items are edited as JSON with a diff.** Edit in the DynamoDB wire format or plain JSON, review every added, changed and removed attribute, then save with a condition so you never overwrite something that changed under you.
+
+## Why I built this
+
+I use MySQL, DynamoDB and Athena every day, and the clients I had kept getting in the way. Under a Korean input source, `⌘⏎` in MySQL Workbench and DBeaver typed a character instead of running the query. Autocomplete rarely knew my schema. A connection that went idle over lunch had to be reconnected by hand. And the interfaces felt like they were designed for a different decade. I wanted one small app that got those things right, looked calm, and still had the power features I reach for: typed result grids, cell editing with a transaction, DynamoDB item editing with a diff, SSH tunnels, and Athena with the catalog in the sidebar.
+
+What I did: decided what to build and what to leave out, picked the stack (Tauri 2, React 19, Rust) and the safety rules (default `LIMIT`, confirmation before destructive statements, nothing re-run on Athena because scans cost money), ran every stage against real MySQL, DynamoDB and Athena, and sent each change through an independent review round before it was committed. The implementation, the 800-plus tests and these docs were written with Claude Code. The honey badger artwork was generated from prompts and composed into the icons by hand.
 
 ## Features
 
