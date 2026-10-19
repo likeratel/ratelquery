@@ -1,7 +1,10 @@
 import { CircleSlash, Plus, Trash2 } from "lucide-react"
 import { useCallback, useMemo, useState } from "react"
+import { copyToClipboard } from "../../components/grid/clipboard"
+import { CopyMenu } from "../../components/grid/CopyMenu"
 import { ResultGrid, type GridSelection } from "../../components/grid/ResultGrid"
 import { NULL_INPUT, parseCellInput } from "../../lib/cellEdit"
+import { gridCopyText, type GridCopyKind } from "../../lib/gridCopy"
 import {
   addInsert,
   displayRows,
@@ -16,6 +19,14 @@ import {
   type RowRef,
 } from "../../lib/gridEdits"
 import type { RowsResult } from "../../lib/mysql"
+import {
+  clearSelection,
+  copyTargetRows,
+  EMPTY_ROW_SELECTION,
+  retainRows,
+  selectAll,
+  type RowSelection,
+} from "../../lib/rowSelection"
 import { useTabsStore } from "../../state/tabsStore"
 import { ResultExportMenu } from "./ExportMenu"
 import { PendingBar } from "./PendingBar"
@@ -50,6 +61,10 @@ export function RowsView(props: RowsViewProps) {
     [result, edits],
   )
   const [selection, setSelection] = useState<GridSelection | null>(null)
+  const [storedRowSelection, setRowSelection] = useState<RowSelection>(EMPTY_ROW_SELECTION)
+  // Removing an inserted row shortens the rows; drop selected indexes that no longer exist.
+  const rowSelection = retainRows(storedRowSelection, rows.length)
+  if (rowSelection !== storedRowSelection) setRowSelection(rowSelection)
   const target = edit.editable ? edit.target : null
   const selectedRow = selection ? rows[selection.row] : undefined
 
@@ -97,6 +112,17 @@ export function RowsView(props: RowsViewProps) {
     [target],
   )
 
+  const copy = (kind: GridCopyKind) => {
+    const text = gridCopyText(kind, {
+      rows,
+      columnNames: result.columns.map((column) => column.name),
+      targetRows: copyTargetRows(rowSelection, selection?.row ?? null),
+      cell: selection,
+    })
+    if (text !== null) copyToClipboard(text)
+  }
+  const selectedCount = rowSelection.rows.size
+
   const selectedNullable = selection
     ? (target?.schemaColumns[selection.col]?.nullable ?? false)
     : false
@@ -114,6 +140,11 @@ export function RowsView(props: RowsViewProps) {
           </span>
         )}
         <span className="result-toolbar__spacer" />
+        {selectedCount > 0 && (
+          <span className="result-toolbar__selection" aria-live="polite">
+            {selectedCount.toLocaleString()} {selectedCount === 1 ? "row" : "rows"} selected
+          </span>
+        )}
         {target ? (
           <div className="result-toolbar__group" aria-label="Edit rows">
             <button type="button" className="q-button q-button--ghost" onClick={addRow}>
@@ -147,6 +178,16 @@ export function RowsView(props: RowsViewProps) {
             </span>
           )
         )}
+        <CopyMenu
+          targetCount={
+            copyTargetRows(rowSelection, selectedRow ? (selection?.row ?? null) : null).length
+          }
+          hasCell={selectedRow !== undefined}
+          selection={{ selected: selectedCount, total: rows.length }}
+          onCopy={copy}
+          onSelectAll={() => setRowSelection(selectAll(rows.length))}
+          onClearSelection={() => setRowSelection(clearSelection())}
+        />
         <ResultExportMenu
           connectionId={connectionId}
           result={result}
@@ -165,6 +206,8 @@ export function RowsView(props: RowsViewProps) {
         onSelect={setSelection}
         onCommit={target ? commit : undefined}
         insertPlaceholder={placeholder}
+        rowSelection={rowSelection}
+        onRowSelectionChange={setRowSelection}
       />
       <PendingBar tabId={tabId} index={index} edits={props.edits} applying={applying} />
     </div>

@@ -6,31 +6,51 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
-  type PointerEvent,
+  type MouseEvent,
 } from "react"
 import { cellToEditText } from "../../lib/cellEdit"
-import { cellTone, formatCell } from "../../lib/cellFormat"
-import { copyText } from "../../lib/gridCopy"
+import { gridCopyText, type GridCopyKind } from "../../lib/gridCopy"
 import type { DisplayRow } from "../../lib/gridEdits"
+import type { Point } from "../../lib/menuPosition"
 import type { Cell, ColumnInfo } from "../../lib/mysql"
-import { matchesShortcut, parseShortcut } from "../../lib/shortcuts"
-import { showToast } from "../ui/toastStore"
+import {
+  clearSelection,
+  clickRow,
+  copyTargetRows,
+  EMPTY_ROW_SELECTION,
+  isAllSelected,
+  selectAll,
+  selectedRows,
+  selectOnly,
+  toggleRow,
+  type RowSelection,
+} from "../../lib/rowSelection"
+import { isMac, matchesShortcut } from "../../lib/shortcuts"
 import { CellEditor } from "./CellEditor"
+import { copyToClipboard } from "./clipboard"
+import { copyMenuItems } from "./copyMenuItems"
+import { GRID_CONTEXT_MENU_CLASS, GridContextMenu } from "./GridContextMenu"
+import { GridHeader } from "./GridHeader"
+import { GridRow, type GridSelection } from "./GridRow"
+import {
+  CLEAR_SELECTION_SHORTCUT,
+  COPY_CELL_SHORTCUT,
+  COPY_ROW_SHORTCUT,
+  SELECT_ALL_ROWS_SHORTCUT,
+} from "./gridShortcuts"
 import { useColumnWidths } from "./useColumnWidths"
 import "./grid.css"
 
+export { COPY_CELL_SHORTCUT, COPY_ROW_SHORTCUT } from "./gridShortcuts"
+export type { GridSelection } from "./GridRow"
+
 export const ROW_HEIGHT = 26
 const GUTTER_WIDTH = 52
+const CHECK_WIDTH = 28
 const OVERSCAN = 12
 
-/** Mod+C copies the selected cell; Mod+Shift+C copies its whole row, tab separated. */
-export const COPY_CELL_SHORTCUT = parseShortcut("Mod+C")
-export const COPY_ROW_SHORTCUT = parseShortcut("Mod+Shift+C")
-
-export interface GridSelection {
-  row: number
-  col: number
-}
+/** Updates the row selection from its latest value, like a state setter's updater form. */
+export type RowSelectionUpdate = (update: (current: RowSelection) => RowSelection) => void
 
 export interface ResultGridProps {
   columns: readonly ColumnInfo[]
@@ -46,20 +66,17 @@ export interface ResultGridProps {
   insertPlaceholder?: (col: number) => string
   /** Identity of the grid (tab and result); resized column widths are kept per key. */
   widthKey?: string
+  /**
+   * Selected rows. With both this and `onRowSelectionChange` the grid shows row checkboxes and
+   * selects rows on click (Mod toggles, Shift extends), Mod+A and Esc.
+   */
+  rowSelection?: RowSelection
+  onRowSelectionChange?: RowSelectionUpdate
 }
 
-function copyToClipboard(text: string): void {
-  if (!navigator.clipboard) {
-    showToast({ tone: "error", message: "The clipboard isn't available here" })
-    return
-  }
-  navigator.clipboard.writeText(text).catch((error: unknown) => {
-    showToast({
-      tone: "error",
-      message: "Couldn't copy to the clipboard",
-      detail: error instanceof Error ? error.message : undefined,
-    })
-  })
+interface ContextMenuState {
+  position: Point
+  cell: GridSelection
 }
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
@@ -73,6 +90,11 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const { widths, resize } = useColumnWidths(columns, sourceRows, props.widthKey)
   const [editing, setEditing] = useState<GridSelection | null>(null)
+  const [menu, setMenu] = useState<ContextMenuState | null>(null)
+  const changeRows = props.rowSelection ? props.onRowSelectionChange : undefined
+  const rowSelection = changeRows ? (props.rowSelection ?? EMPTY_ROW_SELECTION) : null
+  // A right-clicked row is already in view; scrolling would also close its menu straight away.
+  const skipScroll = useRef(false)
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -82,16 +104,22 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
   })
 
   useEffect(() => {
+    if (skipScroll.current) {
+      skipScroll.current = false
+      return
+    }
     if (selection) virtualizer.scrollToIndex(selection.row, { align: "auto" })
   }, [selection, virtualizer])
 
-  const template = `${GUTTER_WIDTH}px ${widths.map((w) => `${w}px`).join(" ")}`
-  const totalWidth = GUTTER_WIDTH + widths.reduce((sum, w) => sum + w, 0)
+  const checkWidth = rowSelection ? CHECK_WIDTH : 0
+  const leadWidth = checkWidth + GUTTER_WIDTH
+  const template = `${rowSelection ? `${CHECK_WIDTH}px ` : ""}${GUTTER_WIDTH}px ${widths.map((w) => `${w}px`).join(" ")}`
+  const totalWidth = leadWidth + widths.reduce((sum, w) => sum + w, 0)
 
-  // Rows receive a stable callback that reads the latest props, so GridRow's memo holds.
-  const latest = useRef({ rows, editable, onCommit })
+  // Rows receive stable callbacks that read the latest props, so GridRow's memo holds.
+  const latest = useRef({ rows, editable, onCommit, selection, onSelect, changeRows })
   useEffect(() => {
-    latest.current = { rows, editable, onCommit }
+    latest.current = { rows, editable, onCommit, selection, onSelect, changeRows }
   })
   const startEdit = useCallback((target: GridSelection) => {
     const current = latest.current
@@ -99,6 +127,58 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
     if (!current.editable || !current.onCommit || !row || row.deleted) return
     setEditing(target)
   }, [])
+
+  const press = useCallback((target: GridSelection, event: MouseEvent) => {
+    const mac = isMac()
+    // Ctrl+click is a right click on macOS; the context menu handles it.
+    if (event.button !== 0 || (mac && event.ctrlKey)) return
+    const current = latest.current
+    current.onSelect(target)
+    const modifiers = { toggle: mac ? event.metaKey : event.ctrlKey, extend: event.shiftKey }
+    current.changeRows?.((rows) => clickRow(rows, target.row, modifiers))
+  }, [])
+
+  const openMenu = useCallback((target: GridSelection, event: MouseEvent) => {
+    event.preventDefault()
+    const current = latest.current
+    const focused = current.selection
+    if (focused?.row !== target.row || focused.col !== target.col) skipScroll.current = true
+    current.onSelect(target)
+    current.changeRows?.((rows) => (rows.rows.has(target.row) ? rows : selectOnly(target.row)))
+    setMenu({ position: { x: event.clientX, y: event.clientY }, cell: target })
+  }, [])
+
+  const closeMenu = useCallback(() => {
+    setMenu(null)
+    skipScroll.current = false
+    const active = document.activeElement
+    if (!active || active === document.body || active.closest(`.${GRID_CONTEXT_MENU_CLASS}`)) {
+      scrollRef.current?.focus()
+    }
+  }, [])
+
+  const toggle = useCallback((index: number) => {
+    latest.current.changeRows?.((rows) => toggleRow(rows, index))
+  }, [])
+
+  // A checkbox would otherwise take focus, and the grid's keys would stop working.
+  const keepFocus = useCallback((event: MouseEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    scrollRef.current?.focus()
+  }, [])
+
+  const selectEvery = () => changeRows?.(() => selectAll(rows.length))
+  const clearRows = () => changeRows?.(() => clearSelection())
+
+  /** Copies `kind` for the given rows and cell; returns false when there is nothing to copy. */
+  const copy = (kind: GridCopyKind, targetRows: readonly number[], cell: GridSelection | null) => {
+    const columnNames = columns.map((column) => column.name)
+    const text = gridCopyText(kind, { rows, columnNames, targetRows, cell })
+    if (text === null) return false
+    copyToClipboard(text)
+    return true
+  }
 
   const move = (dRow: number, dCol: number) => {
     const current = selection ?? { row: 0, col: 0 }
@@ -108,20 +188,31 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
     })
   }
 
-  /** Copies the selected cell (or its row); returns false when there is nothing to copy. */
-  const copySelection = (wholeRow: boolean): boolean => {
-    const row = selection ? rows[selection.row] : undefined
-    if (!selection || !row) return false
-    copyToClipboard(copyText(wholeRow ? row.cells : [row.cells[selection.col]]))
-    return true
+  /** Handles the copy and row selection shortcuts; returns whether the key was used. */
+  const selectionKey = (event: KeyboardEvent<HTMLDivElement>): boolean => {
+    const selected = rowSelection ?? EMPTY_ROW_SELECTION
+    const targets = copyTargetRows(selected, selection?.row ?? null)
+    if (matchesShortcut(event, COPY_ROW_SHORTCUT)) return copy("rows-with-names", targets, null)
+    if (matchesShortcut(event, COPY_CELL_SHORTCUT)) {
+      return selected.rows.size > 0 ? copy("rows", targets, null) : copy("cell", [], selection)
+    }
+    if (!rowSelection) return false
+    if (matchesShortcut(event, SELECT_ALL_ROWS_SHORTCUT)) {
+      selectEvery()
+      return true
+    }
+    if (matchesShortcut(event, CLEAR_SELECTION_SHORTCUT) && rowSelection.rows.size > 0) {
+      clearRows()
+      return true
+    }
+    return false
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // Keys typed into the cell editor keep their default behaviour, copy included.
     if (event.target !== event.currentTarget || rows.length === 0) return
-    const wholeRow = matchesShortcut(event, COPY_ROW_SHORTCUT)
-    if (wholeRow || matchesShortcut(event, COPY_CELL_SHORTCUT)) {
-      if (copySelection(wholeRow)) event.preventDefault()
+    if (selectionKey(event)) {
+      event.preventDefault()
       return
     }
     if (event.metaKey || event.ctrlKey || event.altKey) return
@@ -148,6 +239,9 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
     scrollRef.current?.focus()
   }
 
+  const menuTargets = (target: GridSelection) =>
+    rowSelection?.rows.has(target.row) ? selectedRows(rowSelection) : [target.row]
+
   return (
     <div
       className="grid"
@@ -156,10 +250,29 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
       role="grid"
       aria-rowcount={rows.length}
       aria-colcount={columns.length}
+      aria-multiselectable={rowSelection ? true : undefined}
       onKeyDown={onKeyDown}
     >
       <div className="grid__inner" style={{ width: totalWidth }}>
-        <GridHeader columns={columns} template={template} widths={widths} onResize={resize} />
+        <GridHeader
+          columns={columns}
+          template={template}
+          widths={widths}
+          onResize={resize}
+          gutterLeft={checkWidth}
+          onCheckboxMouseDown={keepFocus}
+          selectAll={
+            rowSelection
+              ? {
+                  checked: isAllSelected(rowSelection, rows.length),
+                  indeterminate:
+                    rowSelection.rows.size > 0 && !isAllSelected(rowSelection, rows.length),
+                  onToggle: () =>
+                    isAllSelected(rowSelection, rows.length) ? clearRows() : selectEvery(),
+                }
+              : undefined
+          }
+        />
         <div className="grid__body" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((item) => {
             const row = rows[item.index]
@@ -175,16 +288,21 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
                   index={item.index}
                   template={template}
                   selectedCol={selection?.row === item.index ? selection.col : null}
+                  rowSelected={rowSelection ? rowSelection.rows.has(item.index) : null}
+                  gutterLeft={checkWidth}
                   editable={editable}
                   insertPlaceholder={props.insertPlaceholder}
-                  onSelect={onSelect}
+                  onPress={press}
+                  onContextMenu={openMenu}
+                  onToggleRow={toggle}
+                  onCheckboxMouseDown={keepFocus}
                   onStartEdit={startEdit}
                 />
                 {editCol !== null && onCommit && (
                   <div
                     className="grid__editor-slot"
                     style={{
-                      left: GUTTER_WIDTH + widths.slice(0, editCol).reduce((s, w) => s + w, 0),
+                      left: leadWidth + widths.slice(0, editCol).reduce((s, w) => s + w, 0),
                       width: widths[editCol],
                     }}
                   >
@@ -211,6 +329,22 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
           })}
         </div>
       </div>
+      {menu && (
+        <GridContextMenu
+          position={menu.position}
+          onClose={closeMenu}
+          items={copyMenuItems({
+            targetCount: menuTargets(menu.cell).length,
+            hasCell: true,
+            selection: rowSelection
+              ? { selected: rowSelection.rows.size, total: rows.length }
+              : null,
+            onCopy: (kind) => copy(kind, menuTargets(menu.cell), menu.cell),
+            onSelectAll: selectEvery,
+            onClearSelection: clearRows,
+          })}
+        />
+      )}
     </div>
   )
 })
@@ -218,103 +352,3 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
 function editInitial(cell: Cell | undefined): string {
   return cell ? cellToEditText(cell) : ""
 }
-
-interface GridHeaderProps {
-  columns: readonly ColumnInfo[]
-  template: string
-  widths: readonly number[]
-  onResize: (index: number, width: number) => void
-}
-
-function GridHeader({ columns, template, widths, onResize }: GridHeaderProps) {
-  const startResize = (index: number) => (event: PointerEvent<HTMLSpanElement>) => {
-    event.preventDefault()
-    event.stopPropagation()
-    const handle = event.currentTarget
-    const startX = event.clientX
-    const startWidth = widths[index]
-    handle.setPointerCapture(event.pointerId)
-    const onMove = (move: globalThis.PointerEvent) =>
-      onResize(index, startWidth + move.clientX - startX)
-    const onUp = () => {
-      handle.removeEventListener("pointermove", onMove)
-      handle.removeEventListener("pointerup", onUp)
-      handle.removeEventListener("pointercancel", onUp)
-    }
-    handle.addEventListener("pointermove", onMove)
-    handle.addEventListener("pointerup", onUp)
-    handle.addEventListener("pointercancel", onUp)
-  }
-
-  return (
-    <div className="grid__header" role="row" style={{ gridTemplateColumns: template }}>
-      <span className="grid__corner" />
-      {columns.map((column, index) => (
-        <span
-          key={`${column.name}-${index}`}
-          className="grid__th"
-          role="columnheader"
-          title={`${column.name} · ${column.typeName}${column.nullable ? "" : " · not null"}`}
-        >
-          <span className="grid__th-name">{column.name}</span>
-          <span className="grid__th-type">{column.typeName.toLowerCase()}</span>
-          <span
-            className="grid__resize"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label={`Resize ${column.name}`}
-            onPointerDown={startResize(index)}
-          />
-        </span>
-      ))}
-    </div>
-  )
-}
-
-interface GridRowProps {
-  row: DisplayRow
-  index: number
-  template: string
-  selectedCol: number | null
-  editable: boolean
-  insertPlaceholder?: (col: number) => string
-  onSelect: (selection: GridSelection) => void
-  onStartEdit: (selection: GridSelection) => void
-}
-
-const GridRow = memo(function GridRow(props: GridRowProps) {
-  const { row, index, template, selectedCol, editable, onSelect, onStartEdit } = props
-  const inserted = row.ref.kind === "insert"
-  return (
-    <div
-      className="grid__row"
-      role="row"
-      data-deleted={row.deleted || undefined}
-      data-inserted={inserted || undefined}
-      data-selected={selectedCol !== null || undefined}
-      style={{ gridTemplateColumns: template }}
-    >
-      <span
-        className="grid__gutter"
-        onMouseDown={() => onSelect({ row: index, col: Math.max(0, selectedCol ?? 0) })}
-      >
-        {inserted ? "+" : index + 1}
-      </span>
-      {row.cells.map((cell, col) => (
-        <span
-          key={col}
-          role="gridcell"
-          className="grid__td"
-          data-tone={cell ? cellTone(cell) : "placeholder"}
-          data-changed={row.changed[col] || undefined}
-          data-selected={selectedCol === col || undefined}
-          data-editable={editable || undefined}
-          onMouseDown={() => onSelect({ row: index, col })}
-          onDoubleClick={() => onStartEdit({ row: index, col })}
-        >
-          {cell ? formatCell(cell) : (props.insertPlaceholder?.(col) ?? "default")}
-        </span>
-      ))}
-    </div>
-  )
-})

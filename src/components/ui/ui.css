@@ -345,6 +345,20 @@
   font-size: var(--text-xs);
 }
 
+.ui-menu__shortcut {
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--text-faint);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+}
+
+.ui-menu__separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--line);
+}
+
 .ui-menu__label {
   padding: 4px 8px 2px;
   color: var(--text-faint);

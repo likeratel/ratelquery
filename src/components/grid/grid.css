@@ -246,3 +246,57 @@
   font-size: var(--text-xs);
   white-space: nowrap;
 }
+
+/* Row selection: a check column before the row numbers, and a soft accent on selected rows. */
+.grid__check {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  background: var(--bg-sunken);
+  border-right: 1px solid var(--line);
+}
+
+.grid__check--header {
+  z-index: 2;
+}
+
+.grid__check-hit {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+
+.grid__check-hit input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: default;
+}
+
+.grid__row[data-row-selected] .grid__td,
+.grid__row[data-row-selected] .grid__gutter,
+.grid__row[data-row-selected] .grid__check {
+  background-image: linear-gradient(var(--accent-soft), var(--accent-soft));
+}
+
+.grid__row[data-row-selected] .grid__gutter {
+  color: var(--text);
+}
+
+.grid__row:hover .grid__check {
+  background-color: var(--surface-hover);
+}
+
+/* The grid's menus, opened from the toolbar or at the pointer. */
+.grid-menu {
+  min-width: 220px;
+  box-shadow: var(--shadow-pop);
+}
+
+.grid-context-menu {
+  z-index: 30;
+}

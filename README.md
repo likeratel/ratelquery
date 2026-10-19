@@ -58,7 +58,7 @@ Most desktop database tools get four everyday things wrong. This one is built ar
 | `⌘⏎` | Run the statement at the cursor, or the DynamoDB form |
 | `⇧⌘⏎` | Run the selected text, or everything when nothing is selected |
 | `⌘S` | Apply pending grid edits, or review a DynamoDB item |
-| `⌘C` / `⇧⌘C` | Copy the selected cell or row |
+| `⌘C` / `⇧⌘C` | Copy the selected rows, or the focused cell; `⇧` adds a line of column names |
 | `⌘B` | Toggle the sidebar |
 | `⌘,` | Settings |
 | `Esc` | Close the item or cell editor, or a prompt |
