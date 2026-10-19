@@ -1,15 +1,15 @@
 //! Live Amazon Athena tests against a real account. Run only with
-//! `DBCLIENT_TEST_ATHENA_PROFILE=<~/.aws profile>` (and optionally
-//! `DBCLIENT_TEST_ATHENA_REGION`, default `ap-northeast-2`, and
-//! `DBCLIENT_TEST_ATHENA_WORKGROUP`, default `primary`).
+//! `RATELQUERY_TEST_ATHENA_PROFILE=<~/.aws profile>` (and optionally
+//! `RATELQUERY_TEST_ATHENA_REGION`, default `ap-northeast-2`, and
+//! `RATELQUERY_TEST_ATHENA_WORKGROUP`, default `primary`).
 //!
 //! Everything here is read-only on the AWS side apart from the result files Athena itself
 //! writes to the workgroup's result location: no bucket, table or database is created, and
 //! every statement is a constant `SELECT` or a metadata statement that scans no data.
 
-use dbclient_lib::athena::{self, AthenaClients, AthenaQueryOptions};
-use dbclient_lib::connections::{AthenaConnectionConfig, AwsAuth, probe_athena};
-use dbclient_lib::mysql::Cell;
+use ratelquery_lib::athena::{self, AthenaClients, AthenaQueryOptions};
+use ratelquery_lib::connections::{AthenaConnectionConfig, AwsAuth, probe_athena};
+use ratelquery_lib::mysql::Cell;
 
 struct Env {
     profile: String,
@@ -18,14 +18,14 @@ struct Env {
 }
 
 fn env() -> Option<Env> {
-    let Ok(profile) = std::env::var("DBCLIENT_TEST_ATHENA_PROFILE") else {
-        eprintln!("skipping: DBCLIENT_TEST_ATHENA_PROFILE is not set");
+    let Ok(profile) = std::env::var("RATELQUERY_TEST_ATHENA_PROFILE") else {
+        eprintln!("skipping: RATELQUERY_TEST_ATHENA_PROFILE is not set");
         return None;
     };
     let region =
-        std::env::var("DBCLIENT_TEST_ATHENA_REGION").unwrap_or_else(|_| "ap-northeast-2".into());
+        std::env::var("RATELQUERY_TEST_ATHENA_REGION").unwrap_or_else(|_| "ap-northeast-2".into());
     let workgroup =
-        std::env::var("DBCLIENT_TEST_ATHENA_WORKGROUP").unwrap_or_else(|_| "primary".into());
+        std::env::var("RATELQUERY_TEST_ATHENA_WORKGROUP").unwrap_or_else(|_| "primary".into());
     Some(Env { profile, region, workgroup })
 }
 
@@ -80,7 +80,7 @@ async fn workgroups_databases_and_schema_are_listed() {
         }
     }
 
-    let err = athena::schema(&handle, "dbclient-no-such-database-7f3a").await.unwrap_err();
+    let err = athena::schema(&handle, "ratelquery-no-such-database-7f3a").await.unwrap_err();
     assert_eq!(err.kind(), "not_found", "{err}");
 }
 

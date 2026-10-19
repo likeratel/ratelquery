@@ -1,16 +1,16 @@
-//! Shared helpers for tests that need a live MySQL (`DBCLIENT_TEST_MYSQL_URL`).
+//! Shared helpers for tests that need a live MySQL (`RATELQUERY_TEST_MYSQL_URL`).
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
 
-use dbclient_lib::connections::MysqlConnectionConfig;
-use dbclient_lib::mysql::{
+use ratelquery_lib::connections::MysqlConnectionConfig;
+use ratelquery_lib::mysql::{
     MysqlSession, MysqlSessions, QueryOptions, QueryResult, RecordingSink, RowsResult,
     connect_options,
 };
 use sqlx::{Connection, Executor};
 
-pub const URL_VAR: &str = "DBCLIENT_TEST_MYSQL_URL";
+pub const URL_VAR: &str = "RATELQUERY_TEST_MYSQL_URL";
 const URL_EXAMPLE: &str = "mysql://dev:dev@127.0.0.1:3307/sample";
 
 pub struct TestDb {
@@ -72,7 +72,7 @@ pub async fn connect(db: &TestDb) -> Connected {
 }
 
 pub async fn query(session: &MysqlSession, sql: &str) -> Vec<QueryResult> {
-    dbclient_lib::mysql::run_query(session, sql, &QueryOptions::default())
+    ratelquery_lib::mysql::run_query(session, sql, &QueryOptions::default())
         .await
         .unwrap_or_else(|e| panic!("query {sql:?} failed: {e}"))
 }

@@ -1,6 +1,6 @@
 # Architecture
 
-dbclient is a Tauri 2 application. A React 19 + TypeScript webview renders the UI, and a Rust
+ratelquery is a Tauri 2 application. A React 19 + TypeScript webview renders the UI, and a Rust
 backend owns every database connection, credential and file write. The two sides talk only through
 Tauri commands and events, documented in [ipc-contract.md](ipc-contract.md).
 
@@ -26,6 +26,7 @@ Tauri commands and events, documented in [ipc-contract.md](ipc-contract.md).
 | `athena/` | Per-connection Athena clients with the resolved result location, Glue catalog listing as `SchemaSnapshot`, start/wait/cancel of query executions with paged result reading, and the text-to-`Cell` decoding by column type. |
 | `export/` | CSV, JSON and SQL formatters, and the safe file writer used by every export. |
 | `error.rs` | `AppError`, the single error type serialized to the webview as `{ kind, message }`. |
+| `legacy_config.rs` | One-time copy at startup from the config dir of the app's former identifier `dev.harry.dbclient`: when the new config dir has no `connections.json`, `connections.json`, `settings.json`, `secrets.json` and `known_hosts` are copied (never moved, owner-only, existing files kept; failures are logged to stderr). Keychain entries under the former service `dbclient` are not migrated. |
 | `util.rs` | Shared helpers: `run_blocking` (keyring and file I/O from commands and exports runs on the blocking pool, never on an async worker) and `elapsed_ms`. |
 
 ## Data flow
@@ -52,7 +53,7 @@ the DynamoDB JSON wire format so no type is lost. Cell values from MySQL are tag
 
 - **Credentials.** MySQL passwords and AWS secret access keys are passed only as the `secret`
   argument of `connections_save` and `connections_test`, then stored in the OS keyring under
-  service `dbclient`, account `<connection id>` (or in the owner-only `secrets.json` when the
+  service `ratelquery`, account `<connection id>` (or in the owner-only `secrets.json` when the
   file store is chosen in Settings). They are never part of the saved config or any command
   result, and a stored secret is never reused for a config that points at another server.
   Connection configs are written atomically to `<app config dir>/connections.json` with

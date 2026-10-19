@@ -6,12 +6,12 @@
 # `cargo run`, which would start the binary before anything could sign it, so this wrapper turns
 # `run` into `build`, signs the result with a stable local identity, then starts it.
 #
-# Which identity: DBCLIENT_DEV_SIGN_IDENTITY when set; otherwise the only code-signing identity
+# Which identity: RATELQUERY_DEV_SIGN_IDENTITY when set; otherwise the only code-signing identity
 # in the keychain. With zero or several identities nothing is signed, so a clone never silently
-# picks a certificate its owner did not choose. DBCLIENT_DEV_SIGN=0 turns signing off.
+# picks a certificate its owner did not choose. RATELQUERY_DEV_SIGN=0 turns signing off.
 set -eu
 
-if [ "${1:-}" != "run" ] || [ "${DBCLIENT_DEV_SIGN:-1}" = "0" ]; then
+if [ "${1:-}" != "run" ] || [ "${RATELQUERY_DEV_SIGN:-1}" = "0" ]; then
   exec cargo "$@"
 fi
 shift
@@ -42,12 +42,12 @@ cargo build $build_args
 root=$(cd "$(dirname "$0")/.." && pwd)
 target_dir="${CARGO_TARGET_DIR:-$root/src-tauri/target}"
 if [ -n "$target" ]; then
-  binary="$target_dir/$target/$profile/dbclient"
+  binary="$target_dir/$target/$profile/ratelquery"
 else
-  binary="$target_dir/$profile/dbclient"
+  binary="$target_dir/$profile/ratelquery"
 fi
 
-identity="${DBCLIENT_DEV_SIGN_IDENTITY:-}"
+identity="${RATELQUERY_DEV_SIGN_IDENTITY:-}"
 if [ -z "$identity" ]; then
   identities=$(security find-identity -v -p codesigning 2>/dev/null | grep -c '^ *[0-9]*) ' || true)
   if [ "$identities" = "1" ]; then
@@ -55,12 +55,12 @@ if [ -z "$identity" ]; then
   elif [ "$identities" = "0" ]; then
     echo "dev-sign: no code-signing identity found, leaving the ad-hoc signature" >&2
   else
-    echo "dev-sign: $identities identities found; set DBCLIENT_DEV_SIGN_IDENTITY to pick one" >&2
+    echo "dev-sign: $identities identities found; set RATELQUERY_DEV_SIGN_IDENTITY to pick one" >&2
   fi
 fi
 
 if [ -n "$identity" ]; then
-  if codesign --force --sign "$identity" --identifier dev.harry.dbclient "$binary" 2>/dev/null; then
+  if codesign --force --sign "$identity" --identifier dev.harry.ratelquery "$binary" 2>/dev/null; then
     echo "dev-sign: signed as \"$identity\"" >&2
   else
     echo "dev-sign: signing failed, leaving the ad-hoc signature" >&2

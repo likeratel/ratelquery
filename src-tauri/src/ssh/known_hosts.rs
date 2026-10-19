@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn missing_files_mean_unknown() {
-        let hosts = KnownHosts::new(Some("/nonexistent/dbclient/kh".into()), None);
+        let hosts = KnownHosts::new(Some("/nonexistent/ratelquery/kh".into()), None);
         assert_eq!(
             hosts.status("b", 22, &key(ED_A)).unwrap(),
             HostKeyStatus::Unknown { other_types: false }

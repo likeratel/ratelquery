@@ -6,6 +6,7 @@ pub mod dynamo;
 mod error;
 pub mod export;
 mod fsutil;
+mod legacy_config;
 mod menu;
 pub mod mysql;
 pub mod settings;
@@ -49,6 +50,7 @@ pub fn run() {
         .menu(menu::build)
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
+            legacy_config::migrate(&config_dir);
             let sink = Arc::new(TauriStateSink::new(app.handle().clone()));
             app.manage(AppState::new(&config_dir, Arc::new(KeyringSecretStore), sink));
             Ok(())

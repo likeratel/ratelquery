@@ -16,7 +16,7 @@ RUN apk add --no-cache openssh-server \
         'PermitOpen any' \
         'AllowAgentForwarding no' \
         'X11Forwarding no' \
-        > /etc/ssh/sshd_config.d/dbclient-test.conf \
+        > /etc/ssh/sshd_config.d/ratelquery-test.conf \
     && grep -q '^Include /etc/ssh/sshd_config.d/\*.conf' /etc/ssh/sshd_config \
     || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
 

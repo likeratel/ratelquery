@@ -1,4 +1,4 @@
-//! Live DynamoDB Local tests. Run only with `DBCLIENT_TEST_DYNAMODB_ENDPOINT`
+//! Live DynamoDB Local tests. Run only with `RATELQUERY_TEST_DYNAMODB_ENDPOINT`
 //! (e.g. `http://localhost:8000`).
 
 use std::sync::Arc;
@@ -7,20 +7,20 @@ use aws_sdk_dynamodb::types::{
     AttributeDefinition, BillingMode, GlobalSecondaryIndex, KeySchemaElement,
     KeyType as SdkKeyType, Projection as SdkProjection, ProjectionType, ScalarAttributeType,
 };
-use dbclient_lib::connections::{DynamoAuth, DynamoConnectionConfig};
-use dbclient_lib::dynamo::{
+use futures_util::FutureExt;
+use ratelquery_lib::connections::{DynamoAuth, DynamoConnectionConfig};
+use ratelquery_lib::dynamo::{
     self, DynamoClients, DynamoExportFormat, DynamoExportOptions, DynamoExportRequest,
     DynamoHandle, IndexKind, KeyType, Page, Projection, PutExpectation, QueryRequest,
     RangeCondition, ScanRequest, WireItem,
 };
-use futures_util::FutureExt;
 use serde_json::{Value, json};
 
 fn endpoint() -> Option<String> {
-    match std::env::var("DBCLIENT_TEST_DYNAMODB_ENDPOINT") {
+    match std::env::var("RATELQUERY_TEST_DYNAMODB_ENDPOINT") {
         Ok(endpoint) => Some(endpoint),
         Err(_) => {
-            eprintln!("skipping: DBCLIENT_TEST_DYNAMODB_ENDPOINT is not set");
+            eprintln!("skipping: RATELQUERY_TEST_DYNAMODB_ENDPOINT is not set");
             None
         }
     }

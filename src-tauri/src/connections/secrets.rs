@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use crate::error::{AppError, AppResult};
 
-const KEYRING_SERVICE: &str = "dbclient";
+const KEYRING_SERVICE: &str = "ratelquery";
 pub const KEYCHAIN_LOCATION: &str = "the keychain";
 /// Suffix of the secret entry holding a connection's SSH password or key passphrase.
 pub const SSH_SECRET_SUFFIX: &str = ":ssh";

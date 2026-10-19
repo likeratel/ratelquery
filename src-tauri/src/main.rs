@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    dbclient_lib::run()
+    ratelquery_lib::run()
 }

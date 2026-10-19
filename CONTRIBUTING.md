@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for your interest in dbclient. It is a small desktop client for MySQL and DynamoDB built
+Thanks for your interest in ratelquery. It is a small desktop client for MySQL, DynamoDB and Amazon Athena built
 with Tauri 2 (Rust) and React 19 + TypeScript. This guide covers the setup, the checks a pull
 request has to pass, and the rules the code follows. See [docs/architecture.md](docs/architecture.md)
 for how the pieces fit together and [docs/ipc-contract.md](docs/ipc-contract.md) for every command.
@@ -43,12 +43,12 @@ are set. To run them against the Docker databases:
 
 ```sh
 pnpm db:up
-DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample \
-DBCLIENT_TEST_DYNAMODB_ENDPOINT=http://localhost:8000 \
+RATELQUERY_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample \
+RATELQUERY_TEST_DYNAMODB_ENDPOINT=http://localhost:8000 \
 pnpm test:rust
 ```
 
-`DBCLIENT_TEST_MYSQL_CA=<path to the server CA PEM>` additionally enables the `verify_ca` TLS test.
+`RATELQUERY_TEST_MYSQL_CA=<path to the server CA PEM>` additionally enables the `verify_ca` TLS test.
 CI runs the integration tests against the same containers.
 
 ## Code rules

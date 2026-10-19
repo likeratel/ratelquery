@@ -1,6 +1,6 @@
 //! Live SSH tunnel tests against the compose `ssh` bastion (user dev / dev). Run with
-//! `DBCLIENT_TEST_SSH=127.0.0.1:2222` plus `DBCLIENT_TEST_MYSQL_URL` (database user, password
-//! and name). `DBCLIENT_TEST_SSH_MYSQL` is the MySQL address as seen from the bastion
+//! `RATELQUERY_TEST_SSH=127.0.0.1:2222` plus `RATELQUERY_TEST_MYSQL_URL` (database user, password
+//! and name). `RATELQUERY_TEST_SSH_MYSQL` is the MySQL address as seen from the bastion
 //! (default `mysql:3306`).
 
 mod common;
@@ -9,16 +9,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{TestDb, query, rows, test_db};
-use dbclient_lib::connections::{
+use ratelquery_lib::connections::{
     MysqlConnectionConfig, SshAuth, SshConfig, probe_mysql_via, validate_config,
 };
-use dbclient_lib::mysql::{Cell, MysqlSessions, RecordingSink, SessionState};
-use dbclient_lib::ssh::{
+use ratelquery_lib::mysql::{Cell, MysqlSessions, RecordingSink, SessionState};
+use ratelquery_lib::ssh::{
     KNOWN_HOSTS_FILE, KnownHosts, PASSPHRASE_REQUIRED, SshTunnel, tunnel_request,
 };
 
-const SSH_VAR: &str = "DBCLIENT_TEST_SSH";
-const SSH_MYSQL_VAR: &str = "DBCLIENT_TEST_SSH_MYSQL";
+const SSH_VAR: &str = "RATELQUERY_TEST_SSH";
+const SSH_MYSQL_VAR: &str = "RATELQUERY_TEST_SSH_MYSQL";
 const SSH_USER: &str = "dev";
 const SSH_PASSWORD: &str = "dev";
 
@@ -90,7 +90,7 @@ async fn trusted_known_hosts(b: &Bastion) -> (tempfile::TempDir, KnownHosts) {
     (dir, hosts)
 }
 
-async fn current_user(session: &dbclient_lib::mysql::MysqlSession) -> String {
+async fn current_user(session: &ratelquery_lib::mysql::MysqlSession) -> String {
     let result = query(session, "SELECT CURRENT_USER()").await;
     match &rows(&result[0]).rows[0][0] {
         Cell::Str(user) => user.clone(),
@@ -204,7 +204,7 @@ async fn key_auth_with_and_without_passphrase() {
     let keygen = |name: &str, passphrase: &str| {
         let path = dir.path().join(name);
         let status = std::process::Command::new("ssh-keygen")
-            .args(["-q", "-t", "ed25519", "-N", passphrase, "-C", "dbclient-test", "-f"])
+            .args(["-q", "-t", "ed25519", "-N", passphrase, "-C", "ratelquery-test", "-f"])
             .arg(&path)
             .status()
             .expect("ssh-keygen is installed");
@@ -218,11 +218,11 @@ async fn key_auth_with_and_without_passphrase() {
     authorize_key(&b, &hosts, &plain_pub).await;
 
     let probe = |key_path: &str, secret: Option<&str>| {
-        let config = validate_config(&dbclient_lib::connections::ConnectionConfig::Mysql(
+        let config = validate_config(&ratelquery_lib::connections::ConnectionConfig::Mysql(
             b.config(SshAuth::Key { key_path: key_path.into() }),
         ))
         .expect("valid");
-        let dbclient_lib::connections::ConnectionConfig::Mysql(config) = config else {
+        let ratelquery_lib::connections::ConnectionConfig::Mysql(config) = config else {
             unreachable!()
         };
         let request = tunnel_request(&config, secret.map(str::to_string), &hosts).unwrap();
@@ -265,7 +265,7 @@ async fn a_dropped_tunnel_is_reopened_by_the_next_query() {
 
     // `session.run` paths (schema, edits, export) re-open it as well.
     session.close_tunnel();
-    let databases = dbclient_lib::mysql::databases(&session).await.unwrap();
+    let databases = ratelquery_lib::mysql::databases(&session).await.unwrap();
     assert!(databases.iter().any(|d| d == b.db.database()));
     assert_eq!(session.tunnel_alive(), Some(true));
     sessions.disconnect(&config.id).await;
@@ -306,7 +306,7 @@ async fn a_tunnel_that_cannot_be_reopened_reports_error() {
     // The host key is no longer trusted, so re-opening fails.
     std::fs::remove_file(dir.path().join(KNOWN_HOSTS_FILE)).unwrap();
     session.close_tunnel();
-    let err = dbclient_lib::mysql::run_query(&session, "SELECT 1", &Default::default())
+    let err = ratelquery_lib::mysql::run_query(&session, "SELECT 1", &Default::default())
         .await
         .unwrap_err();
     assert_eq!(err.kind(), "ssh_host_key", "{err}");

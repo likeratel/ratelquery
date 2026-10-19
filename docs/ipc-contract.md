@@ -67,7 +67,7 @@ type ConnectionConfig = MysqlConnectionConfig | DynamoConnectionConfig | AthenaC
 
 Secrets (MySQL password, AWS secret access key) are never part of `ConnectionConfig`. They are
 passed only as the `secret` argument of `connections_save` / `connections_test` and stored in the
-OS keyring under service `dbclient`, account `<connection id>`.
+OS keyring under service `ratelquery`, account `<connection id>`.
 
 Configs are persisted as JSON at `<app config dir>/connections.json` (Tauri `app_config_dir`),
 written atomically (write temp file, rename) with owner-only permissions (`0600` on unix).

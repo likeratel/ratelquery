@@ -17,7 +17,7 @@ use super::model::TableDescription;
 use crate::connections::{DynamoAuth, DynamoConnectionConfig};
 use crate::error::AppResult;
 
-const CREDENTIALS_PROVIDER_NAME: &str = "dbclient";
+const CREDENTIALS_PROVIDER_NAME: &str = "ratelquery";
 
 /// One connection's client plus its DescribeTable cache.
 pub struct DynamoHandle {
@@ -175,7 +175,7 @@ impl DynamoClients {
 mod tests {
     use super::*;
 
-    const CHILD_VAR: &str = "DBCLIENT_TEST_PROFILE_CHILD";
+    const CHILD_VAR: &str = "RATELQUERY_TEST_PROFILE_CHILD";
     const TEST_NAME: &str = "dynamo::registry::tests::profile_auth_ignores_environment_keys";
 
     fn profile_config() -> DynamoConnectionConfig {

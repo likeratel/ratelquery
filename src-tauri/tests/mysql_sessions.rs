@@ -1,6 +1,6 @@
 //! Live MySQL tests for sessions: reconnects, the retry policy, state events, disconnect and
-//! TLS. Run with `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample`.
-//! `DBCLIENT_TEST_MYSQL_CA` (optional) points at the server's CA PEM to test `verify_ca`.
+//! TLS. Run with `RATELQUERY_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample`.
+//! `RATELQUERY_TEST_MYSQL_CA` (optional) points at the server's CA PEM to test `verify_ca`.
 
 mod common;
 
@@ -9,16 +9,16 @@ use std::time::{Duration, Instant};
 use common::{Cleanup, Connected, connect, query, rows, test_db, unique};
 use std::sync::Arc;
 
-use dbclient_lib::connections::{
+use ratelquery_lib::connections::{
     ConnectionConfig, ConnectionStore, ConnectionsService, MemorySecretStore,
     MysqlConnectionConfig, MysqlTlsMode, SecretStore, probe_mysql,
 };
-use dbclient_lib::mysql::{
+use ratelquery_lib::mysql::{
     self, Cell, MysqlSessions, POOL_BUSY, QueryOptions, RecordingSink, SessionState,
     UNKNOWN_OUTCOME, run_query,
 };
 
-const CA_VAR: &str = "DBCLIENT_TEST_MYSQL_CA";
+const CA_VAR: &str = "RATELQUERY_TEST_MYSQL_CA";
 
 fn states(c: &Connected) -> Vec<SessionState> {
     c.sink.events().iter().map(|e| e.state).collect()

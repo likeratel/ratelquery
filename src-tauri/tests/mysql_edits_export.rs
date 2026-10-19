@@ -5,8 +5,10 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{Cleanup, connect, query, rows, test_db, unique};
-use dbclient_lib::export::{ExportFormat, ExportOptions};
-use dbclient_lib::mysql::{Cell, MysqlSession, QueryResult, RowChange, apply_changes, run_export};
+use ratelquery_lib::export::{ExportFormat, ExportOptions};
+use ratelquery_lib::mysql::{
+    Cell, MysqlSession, QueryResult, RowChange, apply_changes, run_export,
+};
 
 fn cells(pairs: &[(&str, Cell)]) -> BTreeMap<String, Cell> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()

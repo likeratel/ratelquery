@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "dbclient",
+  "productName": "ratelquery",
   "version": "0.1.0",
-  "identifier": "dev.harry.dbclient",
+  "identifier": "dev.harry.ratelquery",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "dbclient",
+        "title": "ratelquery",
         "width": 1280,
         "height": 820,
         "minWidth": 960,
@@ -32,8 +32,8 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
-    "shortDescription": "A minimal, modern client for MySQL and DynamoDB",
-    "longDescription": "A minimal, modern desktop client for MySQL and DynamoDB with schema-aware SQL autocomplete, physical-key shortcuts that work under any input source, self-healing MySQL sessions and JSON item editing with a diff before every DynamoDB write.",
+    "shortDescription": "A minimal, modern client for MySQL, DynamoDB and Amazon Athena",
+    "longDescription": "A minimal, modern desktop client for MySQL, DynamoDB and Amazon Athena with schema-aware SQL autocomplete, physical-key shortcuts that work under any input source, self-healing MySQL sessions and JSON item editing with a diff before every DynamoDB write.",
     "publisher": "harry",
     "copyright": "Copyright © 2026 harry",
     "icon": [

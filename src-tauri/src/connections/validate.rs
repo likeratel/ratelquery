@@ -427,7 +427,7 @@ mod tests {
             SshConfig { port: 65_536, ..ssh(SshAuth::Password) },
             ssh(SshAuth::Key { key_path: "relative/id_ed25519".into() }),
             ssh(SshAuth::Key { key_path: " ".into() }),
-            ssh(SshAuth::Key { key_path: "/nonexistent/dbclient/id_ed25519".into() }),
+            ssh(SshAuth::Key { key_path: "/nonexistent/ratelquery/id_ed25519".into() }),
             ssh(SshAuth::Key { key_path: dir.path().to_str().unwrap().into() }),
         ];
         for case in cases {

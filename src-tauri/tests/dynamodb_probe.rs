@@ -1,11 +1,11 @@
-//! Runs only with `DBCLIENT_TEST_DYNAMODB_ENDPOINT` (e.g. `http://localhost:8000`).
+//! Runs only with `RATELQUERY_TEST_DYNAMODB_ENDPOINT` (e.g. `http://localhost:8000`).
 
-use dbclient_lib::connections::{DynamoAuth, DynamoConnectionConfig, probe_dynamodb};
+use ratelquery_lib::connections::{DynamoAuth, DynamoConnectionConfig, probe_dynamodb};
 
 #[tokio::test]
 async fn probes_dynamodb_local_with_static_keys() {
-    let Ok(endpoint) = std::env::var("DBCLIENT_TEST_DYNAMODB_ENDPOINT") else {
-        eprintln!("skipping: DBCLIENT_TEST_DYNAMODB_ENDPOINT is not set");
+    let Ok(endpoint) = std::env::var("RATELQUERY_TEST_DYNAMODB_ENDPOINT") else {
+        eprintln!("skipping: RATELQUERY_TEST_DYNAMODB_ENDPOINT is not set");
         return;
     };
     let config = DynamoConnectionConfig {

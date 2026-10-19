@@ -1,6 +1,8 @@
-# dbclient (working title)
+<img src="docs/ratelquery.png" alt="ratelquery, a honey badger looking straight at you" width="128" />
 
-A minimal, modern desktop client for MySQL, DynamoDB and Amazon Athena. Tauri 2, React 19 and Rust.
+# ratelquery
+
+A minimal, modern desktop client for MySQL, DynamoDB and Amazon Athena. Tauri 2, React 19 and Rust. Named after the ratel (honey badger): it digs into any table and is not put off by a few stings.
 
 ![MySQL result grid with typed cells](docs/screenshots/mysql-grid.png)
 
@@ -81,19 +83,15 @@ The seeded MySQL database is `sample` with user `dev` / `dev` (root password `ro
 pnpm verify         # Prettier, TypeScript, Vitest, clippy and cargo test
 ```
 
-Live database tests run only when `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample` and `DBCLIENT_TEST_DYNAMODB_ENDPOINT=http://localhost:8000` are set. An optional `DBCLIENT_TEST_MYSQL_CA=<server ca.pem>` enables the TLS verification test, and `DBCLIENT_TEST_SSH=127.0.0.1:2222` the SSH tunnel tests against the test-only bastion (user `dev` / `dev`, which reaches MySQL as `mysql:3306`).
+Live database tests run only when `RATELQUERY_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample` and `RATELQUERY_TEST_DYNAMODB_ENDPOINT=http://localhost:8000` are set. An optional `RATELQUERY_TEST_MYSQL_CA=<server ca.pem>` enables the TLS verification test, and `RATELQUERY_TEST_SSH=127.0.0.1:2222` the SSH tunnel tests against the test-only bastion (user `dev` / `dev`, which reaches MySQL as `mysql:3306`).
 
-On macOS, `tauri dev` re-signs the debug binary (see `scripts/cargo.sh`) so the keychain's "Always allow" on saved passwords survives rebuilds. It uses `DBCLIENT_DEV_SIGN_IDENTITY` when set, otherwise the only code-signing identity in your keychain; with none or several it leaves the ad-hoc signature and says so. Set `DBCLIENT_DEV_SIGN=0` to skip signing.
+On macOS, `tauri dev` re-signs the debug binary (see `scripts/cargo.sh`) so the keychain's "Always allow" on saved passwords survives rebuilds. It uses `RATELQUERY_DEV_SIGN_IDENTITY` when set, otherwise the only code-signing identity in your keychain; with none or several it leaves the ad-hoc signature and says so. Set `RATELQUERY_DEV_SIGN=0` to skip signing.
 
-A DynamoDB or Athena connection that uses an AWS profile runs whatever that profile configures, including a `credential_process` command from your AWS config, exactly as the AWS CLI would. There is no local Athena emulator, so Athena is covered by unit tests on the result decoding and the location rules, plus `src-tauri/tests/athena_live.rs`, which runs constant `SELECT`s and metadata statements against a real account only when `DBCLIENT_TEST_ATHENA_PROFILE=<~/.aws profile>` is set (optionally `DBCLIENT_TEST_ATHENA_REGION`, `DBCLIENT_TEST_ATHENA_WORKGROUP`); those statements scan no data, but Athena still writes their result files to the workgroup's result location.
+A DynamoDB or Athena connection that uses an AWS profile runs whatever that profile configures, including a `credential_process` command from your AWS config, exactly as the AWS CLI would. There is no local Athena emulator, so Athena is covered by unit tests on the result decoding and the location rules, plus `src-tauri/tests/athena_live.rs`, which runs constant `SELECT`s and metadata statements against a real account only when `RATELQUERY_TEST_ATHENA_PROFILE=<~/.aws profile>` is set (optionally `RATELQUERY_TEST_ATHENA_REGION`, `RATELQUERY_TEST_ATHENA_WORKGROUP`); those statements scan no data, but Athena still writes their result files to the workgroup's result location.
 
 To avoid keychain prompts altogether, choose the file secret store in Settings: secrets are then kept in `<app config dir>/secrets.json` (mode 0600), protected by file permissions only. Secrets are moved when possible; ones the old store refuses to hand over stay there.
 
 See [docs/architecture.md](docs/architecture.md) for the module layout and security model, and [docs/ipc-contract.md](docs/ipc-contract.md) for the commands between the webview and Rust.
-
-## Renaming
-
-The product name lives in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json`.
 
 ## License
 

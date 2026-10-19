@@ -1,10 +1,10 @@
 //! Live MySQL tests for queries, type mapping and schema. Every test creates its own tables.
-//! Run with `DBCLIENT_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample`.
+//! Run with `RATELQUERY_TEST_MYSQL_URL=mysql://dev:dev@127.0.0.1:3307/sample`.
 
 mod common;
 
 use common::{Cleanup, connect, query, rows, test_db};
-use dbclient_lib::mysql::{self, Cell, QueryOptions, QueryResult, TableKind, run_query};
+use ratelquery_lib::mysql::{self, Cell, QueryOptions, QueryResult, TableKind, run_query};
 
 fn cell_text(cell: &Cell) -> &str {
     match cell {

@@ -1,13 +1,13 @@
 [package]
-name = "dbclient"
+name = "ratelquery"
 version = "0.1.0"
-description = "A minimal, modern desktop client for MySQL and DynamoDB"
+description = "A minimal, modern desktop client for MySQL, DynamoDB and Amazon Athena"
 authors = ["harry"]
 license = "MIT"
 edition = "2024"
 
 [lib]
-name = "dbclient_lib"
+name = "ratelquery_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

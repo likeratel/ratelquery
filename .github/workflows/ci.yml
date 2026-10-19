@@ -34,9 +34,9 @@ jobs:
     name: Rust check and test
     runs-on: ubuntu-24.04
     env:
-      DBCLIENT_TEST_MYSQL_URL: mysql://dev:dev@127.0.0.1:3307/sample
-      DBCLIENT_TEST_DYNAMODB_ENDPOINT: http://localhost:8000
-      DBCLIENT_TEST_SSH: 127.0.0.1:2222
+      RATELQUERY_TEST_MYSQL_URL: mysql://dev:dev@127.0.0.1:3307/sample
+      RATELQUERY_TEST_DYNAMODB_ENDPOINT: http://localhost:8000
+      RATELQUERY_TEST_SSH: 127.0.0.1:2222
     steps:
       - uses: actions/checkout@v5
       - uses: pnpm/action-setup@v4
@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euo pipefail
           for _ in $(seq 1 60); do
-            status="$(docker inspect --format '{{.State.Health.Status}}' dbclient-mysql)"
+            status="$(docker inspect --format '{{.State.Health.Status}}' ratelquery-mysql)"
             [[ "$status" == "healthy" ]] && break
             sleep 2
           done
@@ -73,7 +73,7 @@ jobs:
             echo "::error::MySQL did not become healthy (status: $status)."
             exit 1
           fi
-          docker exec dbclient-mysql mysql -h127.0.0.1 -udev -pdev sample -e 'SELECT 1' > /dev/null
+          docker exec ratelquery-mysql mysql -h127.0.0.1 -udev -pdev sample -e 'SELECT 1' > /dev/null
           dynamodb=down
           for _ in $(seq 1 30); do
             curl -s -o /dev/null http://localhost:8000 && dynamodb=up && break

@@ -1,7 +1,7 @@
 services:
   mysql:
     image: mysql:8.4
-    container_name: dbclient-mysql
+    container_name: ratelquery-mysql
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: sample
@@ -19,7 +19,7 @@ services:
 
   dynamodb:
     image: amazon/dynamodb-local:latest
-    container_name: dbclient-dynamodb
+    container_name: ratelquery-dynamodb
     command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
     ports:
       - "127.0.0.1:8000:8000"
@@ -27,8 +27,8 @@ services:
   # Test-only SSH bastion (dev / dev) for the MySQL tunnel tests; forwards to mysql:3306.
   ssh:
     build: ./ssh
-    image: dbclient-ssh:test
-    container_name: dbclient-ssh
+    image: ratelquery-ssh:test
+    container_name: ratelquery-ssh
     ports:
       - "127.0.0.1:2222:22"
     depends_on:
