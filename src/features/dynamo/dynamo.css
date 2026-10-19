@@ -232,7 +232,6 @@
 
 .dyn-form__row--expr {
   align-items: flex-start;
-  flex-wrap: nowrap;
 }
 
 .dyn-form__spacer {

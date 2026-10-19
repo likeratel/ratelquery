@@ -1,6 +1,7 @@
 import { SegmentedControl, TextField } from "../../components/ui"
 import type { MysqlTlsMode } from "../../lib/connections"
 import { ColorSwatches } from "./ColorSwatches"
+import { useSecretStoreHint } from "./secretStoreHint"
 import {
   SSH_NO_VERIFY_IDENTITY,
   verifiesCertificate,
@@ -48,10 +49,10 @@ interface MysqlFieldsProps {
   onChange: (patch: Partial<MysqlDraft>) => void
 }
 
-function passwordHint(editing: boolean, hasStoredSecret: boolean): string {
+function passwordHint(editing: boolean, hasStoredSecret: boolean, storeHint: string): string {
   if (editing && hasStoredSecret) return "Saved password is kept. Type a new one to replace it."
   if (editing) return "No password is saved for this connection."
-  return "Stored in the system keychain, never in the settings file."
+  return storeHint
 }
 
 export function MysqlFields({
@@ -63,6 +64,7 @@ export function MysqlFields({
   storedSshAuth,
   onChange,
 }: MysqlFieldsProps) {
+  const storeHint = useSecretStoreHint()
   return (
     <div className="conn-form__grid">
       <TextField
@@ -108,7 +110,7 @@ export function MysqlFields({
         onValueChange={(password) => onChange({ password })}
         error={errors.password}
         placeholder={editing && hasStoredSecret ? "Saved password" : ""}
-        hint={passwordHint(editing, hasStoredSecret)}
+        hint={passwordHint(editing, hasStoredSecret, storeHint)}
       />
       <div className="conn-form__wide conn-form__auth">
         <span className="ui-field__label">TLS</span>

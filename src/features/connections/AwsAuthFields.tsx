@@ -2,6 +2,7 @@ import { SegmentedControl, TextField } from "../../components/ui"
 import type { AwsProfilesState, ProfileDraft } from "./awsProfiles"
 import type { DynamoAuthType, FieldErrors } from "./form"
 import { ProfileField } from "./ProfileField"
+import { useSecretStoreHint } from "./secretStoreHint"
 
 /** Draft fields of AWS authentication, shared by DynamoDB and Athena. */
 export interface AwsAuthDraft extends ProfileDraft {
@@ -39,6 +40,7 @@ export function AwsAuthFields({
   onChange,
   onSecretBlur,
 }: AwsAuthFieldsProps) {
+  const storeHint = useSecretStoreHint()
   return (
     <>
       <div className="conn-form__wide conn-form__auth">
@@ -76,9 +78,7 @@ export function AwsAuthFields({
             error={errors.secretAccessKey}
             placeholder={secretOptional ? "Saved secret" : ""}
             hint={
-              secretOptional
-                ? "Saved secret is kept. Type a new one to replace it."
-                : "Stored in the system keychain."
+              secretOptional ? "Saved secret is kept. Type a new one to replace it." : storeHint
             }
           />
         </>
