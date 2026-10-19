@@ -166,7 +166,7 @@ export function QueryForm({ tab, description }: QueryFormProps) {
         <button type="submit" className="q-button q-button--primary" disabled={tab.running}>
           <Play size={12} strokeWidth={2.4} />
           Run
-          <kbd className="q-kbd">{formatShortcut(APP_SHORTCUTS.run)}</kbd>
+          <kbd className="q-kbd">{formatShortcut(APP_SHORTCUTS.runStatement)}</kbd>
         </button>
       </div>
       <div className="dyn-form__row dyn-form__row--expr">

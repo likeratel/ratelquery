@@ -4,7 +4,7 @@ import type { AthenaConnectionConfig, ConnectionId } from "../../lib/connections
 import { onAppEvent } from "../../lib/events"
 import { isAppError } from "../../lib/ipc"
 import { tabPendingCount, tabsForConnection, type QueryTab } from "../../lib/queryTabs"
-import { statementAtCursor } from "../../lib/sqlContext"
+import { runScopeText, type RunScope } from "../../lib/runScope"
 import { dialectFor } from "../../lib/sqlDialect"
 import { useAthenaStore } from "../../state/athenaStore"
 import { useConnectionsStore } from "../../state/connectionsStore"
@@ -214,21 +214,35 @@ function reportOutcome(outcome: RunOutcome): void {
   if (message) showToast({ tone: "info", message })
 }
 
-/** Mod+Enter runs the whole editor; Mod+Shift+Enter only the statement at the cursor. */
-export async function runActiveTab(scope: "all" | "statement", cursor?: number): Promise<void> {
+export interface RunContext {
+  /** Cursor offset; read from the tab's editor when absent. */
+  cursor?: number
+  /** Selected editor text; read from the tab's editor when absent. */
+  selectedText?: string
+}
+
+/** The editor's cursor and selection, for a run started outside the editor (buttons). */
+function editorContext(tabId: string): RunContext {
+  const state = editorFor(tabId)?.state
+  if (!state) return {}
+  const main = state.selection.main
+  return { cursor: main.head, selectedText: state.sliceDoc(main.from, main.to) }
+}
+
+/**
+ * Mod+Enter runs the statement at the cursor; Mod+Shift+Enter the selected text, or the whole
+ * editor when nothing is selected.
+ */
+export async function runActiveTab(scope: RunScope, context: RunContext = {}): Promise<void> {
   const tab = selectActiveQueryTab(useTabsStore.getState())
   if (!tab) return
-  if (scope === "all") {
-    await runGuarded(tab, null)
-    return
-  }
-  const head = cursor ?? editorFor(tab.id)?.state.selection.main.head ?? tab.sql.length
-  const statement = statementAtCursor(tab.sql, head, dialectFor(tab.engine).syntax)
-  if (!statement) {
+  const input = { sql: tab.sql, ...editorContext(tab.id), ...context }
+  const text = runScopeText(scope, input, dialectFor(tab.engine).syntax)
+  if (!text) {
     reportOutcome("empty")
     return
   }
-  await runGuarded(tab, statement.text)
+  await runGuarded(tab, text.sql)
 }
 
 /**

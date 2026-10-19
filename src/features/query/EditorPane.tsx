@@ -1,6 +1,6 @@
 import type { EditorView } from "@codemirror/view"
 import { Play, Square } from "lucide-react"
-import { useCallback } from "react"
+import { useCallback, useState } from "react"
 import { SqlEditor } from "../../components/editor/lazyEditors"
 import type { SchemaSnapshot } from "../../lib/mysql"
 import type { QueryTab } from "../../lib/queryTabs"
@@ -40,9 +40,17 @@ export function EditorPane({ tab }: EditorPaneProps) {
     (view: EditorView | null) => registerEditor(tabId, view),
     [tabId],
   )
-  const onKeyDownCapture = useCallback(
-    (event: KeyboardEvent, view: EditorView) =>
-      handleAppShortcut(event, { cursor: view.state.selection.main.head }),
+  const onKeyDownCapture = useCallback((event: KeyboardEvent, view: EditorView) => {
+    const main = view.state.selection.main
+    return handleAppShortcut(event, {
+      cursor: main.head,
+      selectedText: view.state.sliceDoc(main.from, main.to),
+    })
+  }, [])
+  // Only whether something is selected: the label of the second button depends on it.
+  const [hasSelection, setHasSelection] = useState(false)
+  const onSelectionChange = useCallback(
+    (view: EditorView) => setHasSelection(!view.state.selection.main.empty),
     [],
   )
 
@@ -55,8 +63,9 @@ export function EditorPane({ tab }: EditorPaneProps) {
           onChange={onChange}
           completionSources={completionSources}
           dialect={dialectFor(tab.engine).editor}
-          placeholderText={`Write SQL. ${formatShortcut(APP_SHORTCUTS.run)} runs everything, ${formatShortcut(APP_SHORTCUTS.runStatement)} runs the statement at the cursor.`}
+          placeholderText={`Write SQL. ${formatShortcut(APP_SHORTCUTS.runStatement)} runs the statement at the cursor, ${formatShortcut(APP_SHORTCUTS.runSelection)} runs the selection or everything.`}
           onKeyDownCapture={onKeyDownCapture}
+          onSelectionChange={onSelectionChange}
           onViewChange={onViewChange}
           autoFocus
         />
@@ -65,21 +74,23 @@ export function EditorPane({ tab }: EditorPaneProps) {
         <button
           type="button"
           className="q-button q-button--primary"
-          onClick={() => void runActiveTab("all")}
+          onClick={() => void runActiveTab("statement")}
           disabled={tab.running}
+          title="Run the statement at the cursor"
         >
           <Play size={12} strokeWidth={2.4} />
           Run
-          <kbd className="q-kbd">{formatShortcut(APP_SHORTCUTS.run)}</kbd>
+          <kbd className="q-kbd">{formatShortcut(APP_SHORTCUTS.runStatement)}</kbd>
         </button>
         <button
           type="button"
           className="q-button"
-          onClick={() => void runActiveTab("statement")}
+          onClick={() => void runActiveTab("selection")}
           disabled={tab.running}
+          title={hasSelection ? "Run the selected text" : "Run everything in the editor"}
         >
-          Run statement
-          <kbd className="q-kbd">{formatShortcut(APP_SHORTCUTS.runStatement)}</kbd>
+          {hasSelection ? "Run selection" : "Run all"}
+          <kbd className="q-kbd">{formatShortcut(APP_SHORTCUTS.runSelection)}</kbd>
         </button>
         {athena && tab.running && (
           <button

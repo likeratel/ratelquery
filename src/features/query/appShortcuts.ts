@@ -7,8 +7,10 @@ import { applyActiveEdits, closeActiveTab, newTabFromActive, runActiveTab } from
 export const APP_SHORTCUTS = {
   newTab: parseShortcut("Mod+T"),
   closeTab: parseShortcut("Mod+W"),
-  run: parseShortcut("Mod+Enter"),
-  runStatement: parseShortcut("Mod+Shift+Enter"),
+  /** The statement at the cursor, or the DynamoDB form. */
+  runStatement: parseShortcut("Mod+Enter"),
+  /** The selected editor text, or the whole editor when nothing is selected. */
+  runSelection: parseShortcut("Mod+Shift+Enter"),
   apply: parseShortcut("Mod+S"),
   toggleSidebar: parseShortcut("Mod+B"),
   settings: parseShortcut("Mod+,"),
@@ -17,6 +19,8 @@ export const APP_SHORTCUTS = {
 export interface ShortcutContext {
   /** Cursor offset when the event came from the SQL editor. */
   cursor?: number
+  /** Selected editor text when the event came from the SQL editor. */
+  selectedText?: string
 }
 
 /**
@@ -39,8 +43,8 @@ export type AppShortcut = keyof typeof APP_SHORTCUTS
 export function matchAppShortcut(event: KeyLike): AppShortcut | null {
   // Shift+Enter is checked before Enter so the longer combination wins.
   const order: readonly AppShortcut[] = [
+    "runSelection",
     "runStatement",
-    "run",
     "newTab",
     "closeTab",
     "apply",
@@ -55,11 +59,11 @@ function runAppShortcut(action: AppShortcut, context: ShortcutContext): void {
   switch (action) {
     case "runStatement":
       if (dynamo) runActiveDynamo()
-      else void runActiveTab("statement", context.cursor)
+      else void runActiveTab("statement", context)
       return
-    case "run":
+    case "runSelection":
       if (dynamo) runActiveDynamo()
-      else void runActiveTab("all")
+      else void runActiveTab("selection", context)
       return
     case "newTab":
       newTabFromActive()

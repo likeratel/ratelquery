@@ -18,8 +18,8 @@ beforeEach(() => {
 
 describe("handleAppShortcut", () => {
   it("prefers the longer Enter combination", () => {
-    expect(matchAppShortcut(modKey("Enter", { shiftKey: true }))).toBe("runStatement")
-    expect(matchAppShortcut(modKey("NumpadEnter"))).toBe("run")
+    expect(matchAppShortcut(modKey("Enter", { shiftKey: true }))).toBe("runSelection")
+    expect(matchAppShortcut(modKey("NumpadEnter"))).toBe("runStatement")
     expect(matchAppShortcut(modKey("KeyX"))).toBeNull()
   })
 

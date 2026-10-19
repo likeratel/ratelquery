@@ -48,6 +48,8 @@ export interface SqlEditorProps {
    * claim the event; it is then prevented and stopped so the editor never sees it.
    */
   onKeyDownCapture?: (event: KeyboardEvent, view: EditorView) => boolean
+  /** Called when the selection changes (and once when the view mounts). */
+  onSelectionChange?: (view: EditorView) => void
   onViewChange?: (view: EditorView | null) => void
   autoFocus?: boolean
 }
@@ -104,20 +106,24 @@ export function SqlEditor({
   dialect = "mysql",
   placeholderText = "",
   onKeyDownCapture,
+  onSelectionChange,
   onViewChange,
   autoFocus = false,
 }: SqlEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
-  const latest = useRef({ onChange, onKeyDownCapture, onViewChange })
+  const latest = useRef({ onChange, onKeyDownCapture, onSelectionChange, onViewChange })
 
   useEffect(() => {
-    latest.current = { onChange, onKeyDownCapture, onViewChange }
+    latest.current = { onChange, onKeyDownCapture, onSelectionChange, onViewChange }
   })
 
   useEffect(() => {
     changeHandlers.set(stateKey, (update) => {
       if (update.docChanged) latest.current.onChange(update.state.doc.toString())
+      if (update.selectionSet || update.docChanged) {
+        latest.current.onSelectionChange?.(update.view)
+      }
     })
     return () => {
       changeHandlers.delete(stateKey)
@@ -142,6 +148,7 @@ export function SqlEditor({
     const view = new EditorView({ state, parent: host })
     viewRef.current = view
     latest.current.onViewChange?.(view)
+    latest.current.onSelectionChange?.(view)
     if (autoFocus) view.focus()
 
     const onKeyDown = (event: KeyboardEvent) => {

@@ -4,7 +4,8 @@ import { formatShortcut, parseShortcut } from "../../lib/shortcuts"
 const HINTS = [
   { keys: "Mod+N", label: "New connection" },
   { keys: "Mod+T", label: "New tab" },
-  { keys: "Mod+Enter", label: "Run query" },
+  { keys: "Mod+Enter", label: "Run the statement at the cursor" },
+  { keys: "Mod+Shift+Enter", label: "Run the selection, or everything" },
   { keys: "Mod+B", label: "Toggle sidebar" },
   { keys: "Mod+,", label: "Settings" },
 ]

@@ -8,7 +8,7 @@ A minimal, modern desktop client for MySQL, DynamoDB and Amazon Athena. Tauri 2,
 
 Most desktop database tools get four everyday things wrong. This one is built around them.
 
-- **Shortcuts work under any input source.** Every binding is matched on the physical key, so `⌘⏎` runs the query while a Korean or Japanese keyboard is active instead of typing a stray character.
+- **Shortcuts work under any input source.** Every binding is matched on the physical key, so `⌘⏎` runs the statement while a Korean or Japanese keyboard is active instead of typing a stray character.
 - **Autocomplete knows your schema.** Table and column names are loaded from `information_schema` the moment you connect, and the editor offers them as you type.
 - **Connections heal themselves.** A dropped MySQL session is replaced on the next query. Read statements are retried once; writes are never repeated silently.
 - **DynamoDB items are edited as JSON with a diff.** Edit in the DynamoDB wire format or plain JSON, review every added, changed and removed attribute, then save with a condition so you never overwrite something that changed under you.
@@ -55,8 +55,8 @@ Most desktop database tools get four everyday things wrong. This one is built ar
 | `⌘N` | New connection |
 | `⌘T` | New tab on the current connection |
 | `⌘W` | Close tab |
-| `⌘⏎` | Run the query, or the DynamoDB form |
-| `⇧⌘⏎` | Run the statement at the cursor |
+| `⌘⏎` | Run the statement at the cursor, or the DynamoDB form |
+| `⇧⌘⏎` | Run the selected text, or everything when nothing is selected |
 | `⌘S` | Apply pending grid edits, or review a DynamoDB item |
 | `⌘C` / `⇧⌘C` | Copy the selected cell or row |
 | `⌘B` | Toggle the sidebar |
