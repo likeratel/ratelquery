@@ -45,6 +45,8 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          # Nothing is installed in this job, so there is no pnpm store to cache.
+          package-manager-cache: false
       # Started first so the containers initialise while Rust compiles.
       - name: Start MySQL, DynamoDB Local and the SSH bastion
         run: pnpm db:up
@@ -98,6 +100,10 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # audit-check reports its findings as a check run.
+      checks: write
     steps:
       - uses: actions/checkout@v5
       - uses: rustsec/audit-check@v2

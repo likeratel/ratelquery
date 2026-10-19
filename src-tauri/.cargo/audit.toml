@@ -1,0 +1,10 @@
+# cargo-audit settings for `cargo audit --file Cargo.lock` run from this directory (CI too).
+[advisories]
+ignore = [
+  # Marvin attack on the `rsa` crate (timing side channel in RSA decryption). It reaches us
+  # through sqlx-mysql (caching_sha2_password key exchange) and russh (RSA host/user keys),
+  # neither of which has a release on a fixed `rsa`. The app never decrypts attacker-supplied
+  # RSA ciphertexts in a timing-observable loop, so the exposure is low; re-check when
+  # sqlx or russh move to a fixed version.
+  "RUSTSEC-2023-0071",
+]
