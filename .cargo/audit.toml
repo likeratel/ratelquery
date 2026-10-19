@@ -1,4 +1,5 @@
-# cargo-audit settings for `cargo audit --file Cargo.lock` run from this directory (CI too).
+# cargo-audit settings, read from the repository root: `cargo audit --file src-tauri/Cargo.lock`
+# (CI runs the same command from the root).
 [advisories]
 ignore = [
   # Marvin attack on the `rsa` crate (timing side channel in RSA decryption). It reaches us
