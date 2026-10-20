@@ -13,6 +13,8 @@ use crate::error::{AppError, AppResult};
 use crate::fsutil::write_private_atomic;
 
 const FILE_NAME: &str = "query-output.json";
+/// Where a corrupt or oversized file is moved, like `settings.json.bak`.
+const BACKUP_NAME: &str = "query-output.json.bak";
 
 /// The only format this build reads and writes.
 pub const QUERY_OUTPUT_VERSION: u64 = 1;
@@ -55,9 +57,25 @@ impl QueryOutputStore {
         &self.path
     }
 
-    /// The saved log. A missing file is `None`; so is a corrupt or oversized one, after logging
-    /// why (the file is left as is until the next save replaces it). A file that exists but
-    /// cannot be read is an `io` error.
+    pub fn backup_path(&self) -> PathBuf {
+        self.path.with_file_name(BACKUP_NAME)
+    }
+
+    /// Moves a corrupt or oversized file to `query-output.json.bak` (replacing an older backup)
+    /// so the next save doesn't destroy it, and logs why. When it can't be moved this is an `io`
+    /// error, so the frontend leaves saving off rather than overwrite it.
+    fn set_aside(&self, reason: &str) -> AppResult<Option<Value>> {
+        let backup = self.backup_path();
+        fs::rename(&self.path, &backup).map_err(|e| {
+            AppError::Io(format!("{FILE_NAME} is {reason} and could not be moved aside: {e}"))
+        })?;
+        eprintln!("{FILE_NAME} is {reason}; moved it to {BACKUP_NAME} and started without it");
+        Ok(None)
+    }
+
+    /// The saved log. A missing file is `None`; so is a corrupt or oversized one, which is
+    /// moved to `query-output.json.bak` first (see `set_aside`). A file that exists but cannot
+    /// be read is an `io` error.
     pub fn load(&self) -> AppResult<Option<Value>> {
         let size = match fs::metadata(&self.path) {
             Ok(meta) => meta.len(),
@@ -65,8 +83,7 @@ impl QueryOutputStore {
             Err(e) => return Err(AppError::Io(format!("could not read {FILE_NAME}: {e}"))),
         };
         if size > MAX_FILE_BYTES {
-            eprintln!("{FILE_NAME} is larger than {MAX_FILE_BYTES} bytes; starting without it");
-            return Ok(None);
+            return self.set_aside(&format!("larger than {MAX_FILE_BYTES} bytes"));
         }
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
@@ -78,10 +95,7 @@ impl QueryOutputStore {
             .and_then(|value| check_envelope(&value).map(|()| value));
         match parsed {
             Ok(value) => Ok(Some(value)),
-            Err(reason) => {
-                eprintln!("{FILE_NAME} is not valid ({reason}); starting without saved output");
-                Ok(None)
-            }
+            Err(reason) => self.set_aside(&format!("not valid ({reason})")),
         }
     }
 
@@ -160,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_is_none_and_kept() {
+    fn corrupt_file_is_none_and_moved_aside() {
         let dir = tempfile::tempdir().unwrap();
         let store = QueryOutputStore::new(dir.path());
         for bad in [
@@ -172,8 +186,26 @@ mod tests {
         ] {
             std::fs::write(store.path(), bad).unwrap();
             assert_eq!(store.load().unwrap(), None, "{bad}");
-            assert_eq!(std::fs::read_to_string(store.path()).unwrap(), bad);
+            assert!(!store.path().exists(), "{bad}");
+            assert_eq!(std::fs::read_to_string(store.backup_path()).unwrap(), bad);
         }
+        // The next save leaves the backup alone.
+        store.save(sample()).unwrap();
+        assert_eq!(std::fs::read_to_string(store.backup_path()).unwrap(), r#"{"version":1}"#);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_corrupt_file_that_cannot_be_moved_is_an_io_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = QueryOutputStore::new(dir.path());
+        std::fs::write(store.path(), "{nope").unwrap();
+        // A directory where the backup goes can't be replaced by a file.
+        std::fs::create_dir(store.backup_path()).unwrap();
+        std::fs::write(store.backup_path().join("keep"), "x").unwrap();
+        let err = store.load().unwrap_err();
+        assert_eq!(err.kind(), "io");
+        assert_eq!(std::fs::read_to_string(store.path()).unwrap(), "{nope");
     }
 
     #[test]
@@ -194,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_output_is_refused_and_an_oversized_file_ignored() {
+    fn oversized_output_is_refused_and_an_oversized_file_moved_aside() {
         let dir = tempfile::tempdir().unwrap();
         let store = QueryOutputStore::new(dir.path());
         let huge = "x".repeat(usize::try_from(MAX_FILE_BYTES).unwrap());
@@ -203,7 +235,8 @@ mod tests {
         assert!(!store.path().exists());
         std::fs::write(store.path(), serde_json::to_vec(&input).unwrap()).unwrap();
         assert_eq!(store.load().unwrap(), None);
-        assert!(store.path().exists(), "an ignored file is left for the next save");
+        assert!(!store.path().exists(), "an oversized file is moved aside");
+        assert!(store.backup_path().exists());
     }
 
     #[cfg(unix)]

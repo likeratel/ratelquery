@@ -538,7 +538,7 @@ failure streak, without a toast.
 
 The Output tab of a query tab's bottom panel logs what the database returned: one entry per
 executed statement, and one per run that failed as a whole or was cancelled. Only the SQL text
-(cut to 10,000 characters) and a summary are kept, never row data. Persisted per connection at
+(cut to 10,000 UTF-16 units, never inside a surrogate pair) and a summary are kept, never row data. Persisted per connection at
 `<app config dir>/query-output.json`, written atomically with owner-only (0600) permissions on
 unix, for `query.outputRetentionDays` days.
 
@@ -568,17 +568,22 @@ non-empty ids to arrays) and the size; the entries are the frontend's to validat
 
 | command | args | returns |
 | --- | --- | --- |
-| `query_output_load` | – | the stored JSON, or `null`. A missing file is `null`; so is one larger than 16 MiB or with another envelope (logged to stderr, left as is until the next save). A file that exists but cannot be read rejects with `kind: "io"`. |
+| `query_output_load` | – | the stored JSON, or `null`. A missing file is `null`; so is one larger than 16 MiB or with another envelope, which is first moved to `query-output.json.bak` (replacing an older backup, logged to stderr) so the next save can't destroy it. A file that exists but cannot be read, or a bad file that cannot be moved aside, rejects with `kind: "io"`. |
 | `query_output_save` | `output: OutputFile \| null` | `void`. Replaces the file; `null` removes it. Another envelope or a body over 16 MiB → `invalid_input` and nothing is written. |
 
-Frontend (`src/state/queryOutputSync.ts`, started when a query tab is first shown and kept for
-the life of the window): once settings and the connection list have loaded, `query_output_load`
-runs once (not at all with a retention of 0). Entries that don't parse are dropped, as are
+Frontend (`src/state/queryOutputSync.ts`, started with the app shell next to the workspace sync
+and kept for the life of the window): once settings and the connection list have loaded,
+`query_output_load` runs once (not at all with a retention of 0). While settings failed to load
+(the retention would only be the default) nothing is loaded or saved; a later successful
+settings load resumes. Entries that don't parse are dropped, as are
 connections that no longer exist and entries older than the retention; the result goes in front
 of the entries logged meanwhile and is written back. Later changes to the log are saved 1000 ms
-after the last one, and on window close (best effort, as for the workspace). Every save drops
-entries older than the retention and, past 12 MiB encoded, the oldest entries. Setting the
-retention to 0 removes the file; the log then lives for the session only. A deleted connection's
+after the last one, and on window close (best effort, as for the workspace; one close listener
+runs the workspace and output saves together and waits for both). Every save drops entries
+older than the retention and, past 12 MiB encoded, the oldest entries; the log in memory drops
+them too when the retention changes and, at most once a minute, when entries are added. Setting
+the retention to 0 removes the file, even when the load had failed; the log then lives for the
+session only. A deleted connection's
 entries are dropped from the log and from the next save. A failed load leaves saving off for
 that run; a failed save is logged once per failure streak.
 
