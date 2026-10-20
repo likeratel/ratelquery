@@ -56,11 +56,20 @@ export interface EntryContext {
   newId: () => string
 }
 
+const isHighSurrogate = (code: number) => code >= 0xd800 && code <= 0xdbff
+
+/**
+ * The statement cut to `MAX_OUTPUT_SQL_CHARS` UTF-16 units, never between the two halves of a
+ * surrogate pair: a lone surrogate isn't valid JSON for the backend, so every later save of the
+ * log would fail.
+ */
 function clipSql(sql: string): { sql: string; sqlTruncated: boolean } {
   const trimmed = sql.trim()
-  return trimmed.length > MAX_OUTPUT_SQL_CHARS
-    ? { sql: trimmed.slice(0, MAX_OUTPUT_SQL_CHARS), sqlTruncated: true }
-    : { sql: trimmed, sqlTruncated: false }
+  if (trimmed.length <= MAX_OUTPUT_SQL_CHARS) return { sql: trimmed, sqlTruncated: false }
+  const end = isHighSurrogate(trimmed.charCodeAt(MAX_OUTPUT_SQL_CHARS - 1))
+    ? MAX_OUTPUT_SQL_CHARS - 1
+    : MAX_OUTPUT_SQL_CHARS
+  return { sql: trimmed.slice(0, end), sqlTruncated: true }
 }
 
 function entry(

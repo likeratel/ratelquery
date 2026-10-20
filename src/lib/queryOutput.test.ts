@@ -117,6 +117,18 @@ describe("building entries", () => {
     expect(cut.sql).toHaveLength(MAX_OUTPUT_SQL_CHARS)
     expect(cut.sqlTruncated).toBe(true)
   })
+
+  it("never cuts a surrogate pair in half", () => {
+    // The emoji's two UTF-16 units straddle the limit.
+    const long = `${"x".repeat(MAX_OUTPUT_SQL_CHARS - 1)}\u{1F600}tail`
+    const [cut] = entriesFromResults(ctx(), [exec({ statement: long })])
+    expect(cut.sql).toBe("x".repeat(MAX_OUTPUT_SQL_CHARS - 1))
+    expect(cut.sqlTruncated).toBe(true)
+    // A pair that ends exactly at the limit is kept whole.
+    const fits = `${"x".repeat(MAX_OUTPUT_SQL_CHARS - 2)}\u{1F600}tail`
+    const [whole] = entriesFromResults(ctx(), [exec({ statement: fits })])
+    expect(whole.sql).toBe(`${"x".repeat(MAX_OUTPUT_SQL_CHARS - 2)}\u{1F600}`)
+  })
 })
 
 describe("outcomeText", () => {
