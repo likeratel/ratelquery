@@ -1,8 +1,6 @@
-import { useEffect } from "react"
 import { useShallow } from "zustand/react/shallow"
 import type { QueryTab } from "../../lib/queryTabs"
 import { selectResultsView } from "../../lib/tabViews"
-import { ensureQueryOutputSync } from "../../state/queryOutputSync"
 import { useSessionsStore } from "../../state/sessionsStore"
 import { selectActiveQueryTab, useTabsStore } from "../../state/tabsStore"
 import { EditorPane } from "./EditorPane"
@@ -35,9 +33,6 @@ function ResultsSlot({ tabId }: { tabId: string }) {
 /** The active query tab: editor above, results below. */
 export function QueryWorkspace() {
   const tabId = useTabsStore((s) => selectActiveQueryTab(s)?.id ?? null)
-  // Loads the saved Output log and keeps `query-output.json` up to date from the first query
-  // tab shown until the window closes.
-  useEffect(() => ensureQueryOutputSync(), [])
   if (!tabId) return null
   return (
     <SplitPane

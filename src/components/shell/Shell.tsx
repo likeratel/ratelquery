@@ -15,6 +15,7 @@ import {
 } from "../../features/query"
 import { SettingsDialog } from "../../features/settings"
 import { useConnectionsStore } from "../../state/connectionsStore"
+import { ensureQueryOutputSync } from "../../state/queryOutputSync"
 import { subscribeSessionEvents } from "../../state/sessionsStore"
 import { applyEditorFontSize, useSettingsStore } from "../../state/settingsStore"
 import { useTabsStore } from "../../state/tabsStore"
@@ -59,6 +60,10 @@ export function Shell() {
   // Reopens the last session's query tabs once the connection list has loaded, then keeps
   // `workspace.json` up to date. No connection is opened for them.
   useEffect(() => startWorkspaceSync(), [])
+
+  // Loads the saved Output log once settings and connections are ready, then keeps
+  // `query-output.json` up to date until the window closes. Starting it again does nothing.
+  useEffect(() => ensureQueryOutputSync(), [])
 
   useEffect(() => {
     // The SQL editor handles these in its own capture phase and stops the event, so this
