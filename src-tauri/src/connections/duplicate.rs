@@ -14,6 +14,7 @@ pub fn copy_name<'a>(name: &str, taken: impl IntoIterator<Item = &'a str>) -> St
 
 #[cfg(test)]
 mod service_tests {
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -24,12 +25,14 @@ mod service_tests {
     use crate::error::{AppError, AppResult};
 
     /// Memory store that remembers every key written and, once `fail_ssh` is set, refuses to
-    /// write SSH secrets.
+    /// write SSH secrets. When refusing it also breaks the connection file at `break_store`, so
+    /// the rollback that follows cannot restore the list.
     #[derive(Default)]
     struct FlakySecrets {
         inner: MemorySecretStore,
         written: Mutex<Vec<String>>,
         fail_ssh: AtomicBool,
+        break_store: Mutex<Option<PathBuf>>,
     }
 
     impl SecretStore for FlakySecrets {
@@ -38,6 +41,11 @@ mod service_tests {
         }
         fn set(&self, id: &str, secret: &str) -> AppResult<()> {
             if self.fail_ssh.load(Ordering::SeqCst) && id.ends_with(SSH_SECRET_SUFFIX) {
+                if let Some(path) = self.break_store.lock().unwrap().take() {
+                    // A directory where the file goes makes the next save fail.
+                    std::fs::remove_file(&path).unwrap();
+                    std::fs::create_dir(&path).unwrap();
+                }
                 return Err(AppError::Credential("keychain locked".into()));
             }
             self.written.lock().unwrap().push(id.to_string());
@@ -117,6 +125,24 @@ mod service_tests {
             assert_eq!(secrets.get(key).unwrap(), None, "{key} was cleaned up");
         }
         assert_eq!(svc.resolve_secret(source.id(), None).unwrap().as_deref(), Some("db-pw"));
+    }
+
+    #[test]
+    fn copied_secrets_are_removed_even_when_the_list_cannot_be_restored() {
+        let secrets = Arc::new(FlakySecrets::default());
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConnectionStore::new(dir.path());
+        let svc = ConnectionsService::new(store.clone(), secrets.clone());
+        let source = svc.save_with_ssh(&tunneled("prod"), Some("db-pw"), Some("ssh-pw")).unwrap();
+        *secrets.break_store.lock().unwrap() = Some(store.path().to_path_buf());
+        secrets.fail_ssh.store(true, Ordering::SeqCst);
+        let err = svc.duplicate(source.id()).unwrap_err();
+        assert_eq!(err.kind(), "io", "the restore failure is reported: {err}");
+        let written = secrets.written.lock().unwrap().clone();
+        assert_eq!(written.len(), 3, "the db secret of the copy was written: {written:?}");
+        for key in written.iter().filter(|k| !k.starts_with(source.id())) {
+            assert_eq!(secrets.get(key).unwrap(), None, "{key} was cleaned up");
+        }
     }
 
     #[test]

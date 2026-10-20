@@ -239,13 +239,16 @@ impl ConnectionsService {
         self.store.save(&upsert(&existing, &copy))?;
         let copied = slots.iter().try_for_each(|slot| self.copy_secret(*slot, id, copy.id()));
         if let Err(err) = copied {
-            // Do not leave a copy behind that is missing secrets the original has.
-            self.store.save(&existing)?;
+            // Do not leave a copy behind that is missing secrets the original has. The copied
+            // secrets are removed even when restoring the list fails, and that failure is
+            // reported over the copy error.
+            let restored = self.store.save(&existing);
             for slot in &slots {
                 if let Err(cleanup) = self.secrets.delete(&slot.key(copy.id())) {
                     eprintln!("could not remove the copied secret of {}: {cleanup}", copy.id());
                 }
             }
+            restored?;
             return Err(err);
         }
         Ok(copy)
