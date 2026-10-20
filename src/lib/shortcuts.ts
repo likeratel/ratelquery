@@ -21,6 +21,8 @@ export interface KeyLike {
   altKey: boolean
   /** True for auto-repeat events while the key is held down. */
   repeat?: boolean
+  /** `KeyboardEvent.getModifierState`, used to tell AltGr from Ctrl+Alt. */
+  getModifierState?: (key: "AltGraph") => boolean
 }
 
 const SINGLE_CHAR_CODES: Record<string, string> = {
@@ -71,6 +73,9 @@ export function isMac(platform: string = navigator.platform): boolean {
 export function matchesShortcut(event: KeyLike, shortcut: Shortcut, mac = isMac()): boolean {
   const modPressed = mac ? event.metaKey : event.ctrlKey
   const otherModPressed = mac ? event.ctrlKey : event.metaKey
+  // Outside macOS, AltGr arrives as Ctrl+Alt and types characters ("{" or "[" on a German
+  // layout), so a Ctrl+Alt shortcut must not claim it.
+  if (!mac && shortcut.alt && event.getModifierState?.("AltGraph")) return false
   return (
     codeMatches(event.code, shortcut.code) &&
     modPressed === shortcut.mod &&

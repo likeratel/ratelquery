@@ -65,6 +65,8 @@ What I did: decided what to build and what to leave out, picked the stack (Tauri
 | `⌘N` | New connection |
 | `⌘T` | New tab on the current connection |
 | `⌘W` | Close tab |
+| `⌘1`…`⌘8` / `⌘9` | Go to that tab of the current connection / its last tab |
+| `⌥⌘1`…`⌥⌘8` / `⌥⌘9` | Go to that connection (its last used tab) / the last connection |
 | `⌘⏎` | Run the statement at the cursor, or the DynamoDB form |
 | `⇧⌘⏎` | Run the selected text, or everything when nothing is selected |
 | `⌘S` | Apply pending grid edits, or review a DynamoDB item |

@@ -6,6 +6,8 @@ const HINTS = [
   { keys: "Mod+T", label: "New tab" },
   { keys: "Mod+Enter", label: "Run the statement at the cursor" },
   { keys: "Mod+Shift+Enter", label: "Run the selection, or everything" },
+  { keys: "Mod+1", label: "Tab 1–8 of this connection, 9 for its last" },
+  { keys: "Mod+Alt+1", label: "Connection 1–8, 9 for the last" },
   { keys: "Mod+B", label: "Toggle sidebar" },
   { keys: "Mod+,", label: "Settings" },
 ]

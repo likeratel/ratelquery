@@ -25,6 +25,21 @@ describe("parseShortcut", () => {
     })
   })
 
+  it("parses Mod+Alt digits and matches them by code, whatever Alt types", () => {
+    const shortcut = parseShortcut("Mod+Alt+1")
+    expect(shortcut).toEqual({ code: "Digit1", mod: true, shift: false, alt: true })
+    // On macOS Option+1 produces "¡"; only the physical key counts.
+    expect(matchesShortcut(press("Digit1", { meta: true, alt: true }), shortcut, true)).toBe(true)
+    expect(matchesShortcut(press("Digit1", { meta: true }), shortcut, true)).toBe(false)
+    // Outside macOS, AltGr (reported as Ctrl+Alt) types characters and is left alone.
+    const ctrlAlt = press("Digit8", { ctrl: true, alt: true })
+    const altGr = { ...ctrlAlt, getModifierState: (key: string) => key === "AltGraph" }
+    expect(matchesShortcut(ctrlAlt, parseShortcut("Mod+Alt+8"), false)).toBe(true)
+    expect(matchesShortcut(altGr, parseShortcut("Mod+Alt+8"), false)).toBe(false)
+    expect(formatShortcut(shortcut, true)).toBe("⌥⌘1")
+    expect(formatShortcut(shortcut, false)).toBe("Ctrl+Alt+1")
+  })
+
   it("rejects characters that need Shift to type", () => {
     expect(() => parseShortcut("Mod+?")).toThrow(/Unsupported key/)
   })
