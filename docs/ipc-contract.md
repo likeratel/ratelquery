@@ -265,7 +265,11 @@ interface ApplyChangesResult { affectedRows: number; elapsedMs: number }
 | `mysql_apply_changes` | `connectionId`, `database`, `table`, `changes: RowChange[]` | `ApplyChangesResult` |
 
 Backend rules: `database`, `table` and every column name must exist in the live schema
-(re-fetched for the call) or the command rejects with `invalid_input`. Identifiers are quoted with
+(re-fetched for the call) or the command rejects with `invalid_input`. The frontend sends
+`database` and `table` spelled as the query wrote them (what MySQL resolved), never the cached
+snapshot's spelling. The backend takes an exact match first, otherwise the only name that differs
+just in letter case; several case-insensitive matches without an exact one reject with
+`invalid_input`. Column names are sent as the schema spells them. Identifiers are quoted with
 backticks, values are always bound parameters. An `update` or `delete` whose `WHERE` matches
 anything other than exactly 1 row fails the whole batch with `kind: "query"`.
 
