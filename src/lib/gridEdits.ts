@@ -54,17 +54,20 @@ export function findByName<T>(
 }
 
 /**
- * The database a result's rows would be edited in: the one its table is qualified with in the
- * statement (spelled as in `known` when that is unambiguous), else the one the run used.
+ * The database a result's rows would be edited in, spelled as the statement wrote it: the one
+ * its table is qualified with, else the one the run used. That spelling is what MySQL itself
+ * resolved, so it is what the apply command receives; the snapshot may be stale.
  */
-export function editDatabase(
-  statement: string,
-  ranDatabase: string | null,
-  known: readonly string[] = [],
-): string | null {
-  const qualified = inferBaseTable(statement)?.database
-  if (!qualified) return ranDatabase
-  return findByName(known, qualified, (name) => name) ?? qualified
+export function editDatabase(statement: string, ranDatabase: string | null): string | null {
+  return inferBaseTable(statement)?.database ?? ranDatabase
+}
+
+/**
+ * The cached schema snapshot to judge `database` against: the exact name when the session knows
+ * it, otherwise the only one that differs just in letter case.
+ */
+export function schemaDatabase(database: string, known: readonly string[] = []): string {
+  return findByName(known, database, (name) => name) ?? database
 }
 
 /**
@@ -78,15 +81,18 @@ export function editSchemaDatabases(
 ): string[] {
   const databases = results
     .filter((r) => r.kind === "rows" && inferBaseTable(r.statement) !== null)
-    .map((r) => editDatabase(r.statement, ranDatabase, known))
+    .map((r) => editDatabase(r.statement, ranDatabase))
     .filter((database): database is string => database !== null)
+    .map((database) => schemaDatabase(database, known))
   return [...new Set(databases)]
 }
 
 /**
  * Decides whether a result can be edited: every column comes from the same base table, that
- * table has a primary key, and every key column is part of the result. The target spells the
- * table and columns as the schema does, since the apply command matches them exactly.
+ * table has a primary key, and every key column is part of the result. The snapshot is matched
+ * ignoring letter case only to decide this. The target keeps the table and database as the
+ * query spelled them (what MySQL resolved; the backend resolves them against the live schema)
+ * and the columns as the schema spells them, since MySQL column names never depend on case.
  */
 export function resolveEditTarget(
   columns: readonly ColumnInfo[],
@@ -95,7 +101,7 @@ export function resolveEditTarget(
   statement = "",
 ): EditTargetResult {
   if (columns.length === 0) return { editable: false, reason: "No columns" }
-  if (!database || !schema || schema.database !== database) {
+  if (!database || !schema || !sameName(schema.database, database)) {
     return { editable: false, reason: "Select a database to edit rows" }
   }
   const table = originTable(columns, statement, database)
@@ -124,7 +130,7 @@ export function resolveEditTarget(
     editable: true,
     target: {
       database,
-      table: snapshot.name,
+      table,
       keyIndexes,
       schemaColumns: schemaColumns as SchemaColumn[],
     },

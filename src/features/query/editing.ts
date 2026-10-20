@@ -1,6 +1,11 @@
 import { isAthenaResult } from "../../lib/athena"
 import type { AthenaCatalog } from "../../lib/athenaCatalog"
-import { editDatabase, resolveEditTarget, type EditTargetResult } from "../../lib/gridEdits"
+import {
+  editDatabase,
+  resolveEditTarget,
+  schemaDatabase,
+  type EditTargetResult,
+} from "../../lib/gridEdits"
 import type { QueryResult } from "../../lib/mysql"
 import type { QueryTab } from "../../lib/queryTabs"
 import { isSchemaLoading, knownDatabases, type MysqlSession } from "../../state/sessionsStore"
@@ -36,10 +41,11 @@ export function editTargetFor(
   if (!result || result.kind !== "rows") return { editable: false, reason: "No rows" }
   // A table qualified with its database (`FROM shop.users`) is edited there, even when the
   // run had no database or another one.
-  const database = editDatabase(result.statement, tab.ranDatabase, knownDatabases(session))
-  const schema = database ? (session?.schemas[database] ?? null) : null
-  if (database && !schema) {
-    const reason = isSchemaLoading(session, database)
+  const database = editDatabase(result.statement, tab.ranDatabase)
+  const cached = database ? schemaDatabase(database, knownDatabases(session)) : null
+  const schema = cached ? (session?.schemas[cached] ?? null) : null
+  if (cached && !schema) {
+    const reason = isSchemaLoading(session, cached)
       ? "Loading the schema…"
       : "Schema not loaded. Use Refresh schema next to the Run button."
     return { editable: false, reason }

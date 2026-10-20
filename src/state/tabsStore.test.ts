@@ -260,8 +260,9 @@ describe("schema for editing a result", () => {
     const resolved = editTarget()
     if (!resolved.editable) throw new Error(resolved.reason)
     await useTabsStore.getState().applyEdits(id, 0, resolved.target)
+    // The query's spelling goes to the backend, which resolves it against the live schema.
     expect(calls.find((c) => c.command === "mysql_apply_changes")?.args).toMatchObject({
-      database: "shop",
+      database: "Shop",
       table: "users",
     })
   })

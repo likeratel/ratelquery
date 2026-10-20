@@ -10,6 +10,7 @@ import {
   pendingCount,
   removeInsert,
   resolveEditTarget,
+  schemaDatabase,
   setCellEdit,
   setInsertValue,
   toggleRowDelete,
@@ -168,15 +169,24 @@ describe("buildRowChanges", () => {
 })
 
 describe("case-insensitive names", () => {
-  it("matches table and column names that differ only in case, using the schema's spelling", () => {
+  it("matches names that differ only in case, keeping the query's table spelling", () => {
     const upper = columns.map((c) => ({ ...c, name: c.name.toUpperCase() }))
-    expect(resolveEditTarget(upper, schema, "app", "select * from `Users` limit 5")).toMatchObject({
-      editable: true,
-      target: { table: "users", keyIndexes: [0] },
-    })
+    const resolved = resolveEditTarget(upper, schema, "app", "select * from `Users` limit 5")
+    expect(resolved).toMatchObject({ editable: true, target: { table: "Users", keyIndexes: [0] } })
+    if (!resolved.editable) throw new Error(resolved.reason)
+    expect(resolved.target.schemaColumns.map((c) => c.name)).toEqual(["id", "email", "note"])
     expect(
-      resolveEditTarget(columns, schema, "app", "select * from APP.users where id = 1"),
-    ).toMatchObject({ editable: true, target: { database: "app", table: "users" } })
+      resolveEditTarget(columns, schema, "APP", "select * from APP.users where id = 1"),
+    ).toMatchObject({ editable: true, target: { database: "APP", table: "users" } })
+  })
+
+  it("sends the table as queried even when a stale snapshot only knows another case", () => {
+    // lower_case_table_names=0: `users` was created after the snapshot that knows `Users`.
+    const stale = { ...schema, tables: [{ ...schema.tables[0], name: "Users" }] }
+    expect(resolveEditTarget(columns, stale, "app", "select * from users")).toMatchObject({
+      editable: true,
+      target: { database: "app", table: "users" },
+    })
   })
 
   it("stays read only when the case-folded name is ambiguous or repeated", () => {
@@ -201,12 +211,19 @@ describe("case-insensitive names", () => {
 })
 
 describe("editDatabase", () => {
-  it("uses the database a table is qualified with, spelled as the session knows it", () => {
+  it("uses the database a table is qualified with, spelled as the statement wrote it", () => {
     expect(editDatabase("select * from users", "app")).toBe("app")
     expect(editDatabase("select * from users", null)).toBeNull()
-    expect(editDatabase("select * from `Shop`.users", null, ["app", "shop"])).toBe("shop")
+    expect(editDatabase("select * from `Shop`.users", null)).toBe("Shop")
     expect(editDatabase("select * from shop.users", "app")).toBe("shop")
     expect(editDatabase("select * from a join b on a.id = b.id", "app")).toBe("app")
+  })
+
+  it("looks the schema snapshot up by exact name, else by a unique case-folded one", () => {
+    expect(schemaDatabase("Shop", ["app", "shop"])).toBe("shop")
+    expect(schemaDatabase("shop", ["Shop", "shop"])).toBe("shop")
+    expect(schemaDatabase("SHOP", ["Shop", "shop"])).toBe("SHOP")
+    expect(schemaDatabase("other", ["app"])).toBe("other")
   })
 
   it("lists the databases a run's editable results need schemas for", () => {

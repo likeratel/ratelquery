@@ -51,10 +51,15 @@ pub fn is_system_database(name: &str) -> bool {
     SYSTEM_DATABASES.iter().any(|s| s.eq_ignore_ascii_case(name))
 }
 
-pub async fn list_databases(conn: &mut MySqlConnection) -> Result<Vec<String>, sqlx::Error> {
+/// Every database on the server, system ones included.
+pub async fn all_databases(conn: &mut MySqlConnection) -> Result<Vec<String>, sqlx::Error> {
     let rows = sqlx::query(DATABASES_SQL).fetch_all(&mut *conn).await?;
-    let names: Result<Vec<String>, sqlx::Error> = rows.iter().map(|r| text(r, 0)).collect();
-    Ok(names?.into_iter().filter(|n| !is_system_database(n)).collect())
+    rows.iter().map(|r| text(r, 0)).collect()
+}
+
+pub async fn list_databases(conn: &mut MySqlConnection) -> Result<Vec<String>, sqlx::Error> {
+    let names = all_databases(conn).await?;
+    Ok(names.into_iter().filter(|n| !is_system_database(n)).collect())
 }
 
 pub(super) fn table_kind(table_type: &str) -> TableKind {
