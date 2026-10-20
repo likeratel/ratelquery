@@ -1,4 +1,13 @@
-import { Cloud, Database, Ellipsis, Pencil, ScanSearch, Trash, type LucideIcon } from "lucide-react"
+import {
+  Cloud,
+  Copy,
+  Database,
+  Ellipsis,
+  Pencil,
+  ScanSearch,
+  Trash,
+  type LucideIcon,
+} from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { Button, Menu, showToast } from "../../components/ui"
 import type { ConnectionConfig, ConnectionId } from "../../lib/connections"
@@ -42,6 +51,13 @@ function openTab(config: ConnectionConfig): void {
       detail: errorDetail(normalizeError(raw)),
     })
   })
+}
+
+async function duplicate(config: ConnectionConfig): Promise<void> {
+  const result = await useConnectionsStore.getState().duplicate(config.id)
+  if (!result.ok) {
+    showToast({ tone: "error", message: result.error.summary, detail: result.error.detail })
+  }
 }
 
 function DeleteConfirm({
@@ -218,6 +234,12 @@ export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
                 label: "Edit",
                 icon: <Pencil size={13} aria-hidden />,
                 onSelect: () => useConnectionsStore.getState().openDialog(config),
+              },
+              {
+                id: "duplicate",
+                label: "Duplicate",
+                icon: <Copy size={13} aria-hidden />,
+                onSelect: () => void duplicate(config),
               },
               {
                 id: "delete",

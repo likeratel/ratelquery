@@ -1,5 +1,6 @@
 //! Saved connection configs (JSON file) and their secrets (OS keyring or `secrets.json`).
 
+mod duplicate;
 mod file_secrets;
 mod model;
 mod probe;

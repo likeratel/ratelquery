@@ -173,6 +173,24 @@ impl ConnectionConfig {
         }
     }
 
+    /// Returns a copy with `name` replaced.
+    pub fn with_name(&self, name: &str) -> ConnectionConfig {
+        match self {
+            ConnectionConfig::Mysql(c) => ConnectionConfig::Mysql(MysqlConnectionConfig {
+                name: name.to_string(),
+                ..c.clone()
+            }),
+            ConnectionConfig::Dynamodb(c) => ConnectionConfig::Dynamodb(DynamoConnectionConfig {
+                name: name.to_string(),
+                ..c.clone()
+            }),
+            ConnectionConfig::Athena(c) => ConnectionConfig::Athena(AthenaConnectionConfig {
+                name: name.to_string(),
+                ..c.clone()
+            }),
+        }
+    }
+
     /// Returns a copy with `id` replaced.
     pub fn with_id(&self, id: &str) -> ConnectionConfig {
         match self {

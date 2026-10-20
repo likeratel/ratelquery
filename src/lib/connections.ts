@@ -107,6 +107,8 @@ export const connectionsApi = {
   save: (config: ConnectionConfig, secret: string | null, sshSecret?: string | null) =>
     ipc<ConnectionConfig>("connections_save", { config, ...secretArgs(secret, sshSecret) }),
   delete: (id: ConnectionId) => ipc<void>("connections_delete", { id }),
+  /** Saves a copy under a new id and name; the backend copies the stored secrets itself. */
+  duplicate: (id: ConnectionId) => ipc<ConnectionConfig>("connections_duplicate", { id }),
   /** Whether a secret is stored for the connection; `which` defaults to the database password. */
   hasSecret: (id: ConnectionId, which?: SecretSlot) =>
     ipc<boolean>("connections_has_secret", which === undefined ? { id } : { id, which }),

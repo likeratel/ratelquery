@@ -56,6 +56,16 @@ pub async fn connections_delete(state: State<'_, AppState>, id: String) -> AppRe
     blocking(&state, move |c| c.delete(&id)).await
 }
 
+/// Saves a copy of a connection under a new id and name. Its stored secrets are copied in the
+/// backend; they never reach the webview.
+#[tauri::command]
+pub async fn connections_duplicate(
+    state: State<'_, AppState>,
+    id: String,
+) -> AppResult<ConnectionConfig> {
+    blocking(&state, move |c| c.duplicate(&id)).await
+}
+
 #[tauri::command]
 pub async fn connections_has_secret(
     state: State<'_, AppState>,

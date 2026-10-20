@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use super::duplicate::copy_name;
 use super::model::ConnectionConfig;
 use super::secrets::{SecretSlot, SecretStore, StuckSecret};
 use super::store::ConnectionStore;
@@ -215,6 +216,46 @@ impl ConnectionsService {
             return Err(err);
         }
         Ok(saved)
+    }
+
+    /// Saves a copy of connection `id` under a new id and a free "<name> copy" name, with its
+    /// stored secrets (database and SSH) copied inside the backend. When a secret cannot be
+    /// copied the copy is removed again, secrets included, and the error returned.
+    pub fn duplicate(&self, id: &str) -> AppResult<ConnectionConfig> {
+        let id = require_id(id)?;
+        let _guard = self.guard()?;
+        let existing = self.store.load()?;
+        let source = existing
+            .iter()
+            .find(|c| c.id() == id)
+            .ok_or_else(|| AppError::NotFound(format!("connection {id} does not exist")))?;
+        let name = copy_name(source.name(), existing.iter().map(ConnectionConfig::name));
+        let copy = source.with_id(&uuid::Uuid::new_v4().to_string()).with_name(&name);
+        let slots: Vec<SecretSlot> = if has_ssh(source) {
+            vec![SecretSlot::Db, SecretSlot::Ssh]
+        } else {
+            vec![SecretSlot::Db]
+        };
+        self.store.save(&upsert(&existing, &copy))?;
+        let copied = slots.iter().try_for_each(|slot| self.copy_secret(*slot, id, copy.id()));
+        if let Err(err) = copied {
+            // Do not leave a copy behind that is missing secrets the original has.
+            self.store.save(&existing)?;
+            for slot in &slots {
+                if let Err(cleanup) = self.secrets.delete(&slot.key(copy.id())) {
+                    eprintln!("could not remove the copied secret of {}: {cleanup}", copy.id());
+                }
+            }
+            return Err(err);
+        }
+        Ok(copy)
+    }
+
+    fn copy_secret(&self, slot: SecretSlot, from: &str, to: &str) -> AppResult<()> {
+        match self.secrets.get(&slot.key(from))? {
+            Some(secret) => self.secrets.set(&slot.key(to), &secret),
+            None => Ok(()),
+        }
     }
 
     fn apply_secret(&self, key: &str, secret: Option<&str>) -> AppResult<()> {

@@ -40,6 +40,13 @@ class FakeBackend {
         this.configs.delete(args?.id as string)
         this.secrets.delete(args?.id as string)
         return undefined
+      case "connections_duplicate": {
+        const source = this.configs.get(args?.id as string)
+        if (!source) throw { kind: "not_found", message: "gone" }
+        const copy = { ...source, id: `id-${this.nextId++}`, name: `${source.name} copy` }
+        this.configs.set(copy.id, copy)
+        return copy
+      }
       case "connections_has_secret":
         return this.secrets.has(
           args?.which === "ssh" ? `${args.id as string}:ssh` : (args?.id as string),
@@ -227,6 +234,34 @@ describe("remove", () => {
     })
     expect(useConnectionsStore.getState().connections.map((c) => c.id)).toEqual(["m2"])
     expect(removed).toEqual(["m1"])
+  })
+})
+
+describe("duplicate", () => {
+  it("lists the copy in name order without opening the dialog", async () => {
+    const source = mysql({ id: "m1", name: "Prod" })
+    backend.configs.set("m1", source)
+    useConnectionsStore.setState({ connections: [source, mysql({ id: "z", name: "Zeta" })] })
+    const result = await useConnectionsStore.getState().duplicate("m1")
+    expect(result).toEqual({ ok: true, value: { ...source, id: "id-1", name: "Prod copy" } })
+    const state = useConnectionsStore.getState()
+    expect(state.connections.map((c) => c.name)).toEqual(["Prod", "Prod copy", "Zeta"])
+    expect(state.dialog.open).toBe(false)
+    // Only the id crosses IPC; secrets stay in the backend.
+    expect(backend.calls.at(-1)).toEqual({ command: "connections_duplicate", args: { id: "m1" } })
+  })
+
+  it("reports failures with a friendly error and keeps the list", async () => {
+    useConnectionsStore.setState({ connections: [mysql({ id: "m1" })] })
+    const result = await useConnectionsStore.getState().duplicate("m1")
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        summary: "Couldn't duplicate the connection. This connection no longer exists.",
+        detail: "gone",
+      },
+    })
+    expect(useConnectionsStore.getState().connections).toHaveLength(1)
   })
 })
 

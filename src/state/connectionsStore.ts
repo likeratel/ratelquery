@@ -58,6 +58,8 @@ interface ConnectionsState {
     sshSecret?: string | null,
   ) => Promise<ActionResult<ConnectionConfig>>
   remove: (id: ConnectionId) => Promise<ActionResult>
+  /** Saves a copy of the connection (secrets included, copied by the backend) and lists it. */
+  duplicate: (id: ConnectionId) => Promise<ActionResult<ConnectionConfig>>
   /** Tests through the SSH tunnel when the config has one, asking about unknown host keys. */
   testConnection: (
     config: ConnectionConfig,
@@ -200,6 +202,16 @@ export const useConnectionsStore = create<ConnectionsState>((set, get) => ({
         return { ok: true, value: undefined, warning: describeError(error, "delete") }
       }
       return { ok: false, error: describeError(error, "delete") }
+    }
+  },
+
+  duplicate: async (id) => {
+    try {
+      const copy = await connectionsApi.duplicate(id)
+      set((state) => ({ connections: upsertConnection(state.connections, copy) }))
+      return { ok: true, value: copy }
+    } catch (raw) {
+      return { ok: false, error: friendly(raw, "duplicate") }
     }
   },
 
