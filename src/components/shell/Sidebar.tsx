@@ -15,6 +15,9 @@ interface SidebarProps {
 const ADD_LABEL = `Add connection (${formatShortcut(NEW_CONNECTION_SHORTCUT)})`
 
 export function Sidebar({ onAddConnection, inert = false }: SidebarProps) {
+  // The store ignores layout changes until the saved layout has loaded; the list itself (and
+  // with it every other layout action) isn't rendered until then either.
+  const layoutLoading = useConnectionLayout((s) => s.status === "loading")
   useEffect(() => {
     const { status, load } = useConnectionsStore.getState()
     if (status === "idle") void load()
@@ -38,6 +41,7 @@ export function Sidebar({ onAddConnection, inert = false }: SidebarProps) {
             className="ui-icon-button"
             data-size="md"
             onClick={() => useConnectionLayout.getState().createFolder()}
+            disabled={layoutLoading}
             aria-label="New folder"
             title="New folder"
           >
