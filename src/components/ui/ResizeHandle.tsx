@@ -1,4 +1,5 @@
-import type { KeyboardEvent, PointerEvent } from "react"
+import { useEffect, useRef, type KeyboardEvent, type PointerEvent } from "react"
+import { startPanelDrag } from "../../lib/panelDrag"
 import { dragWidth, type PanelSpec } from "../../lib/panelWidths"
 import "./ui.css"
 
@@ -15,8 +16,13 @@ interface ResizeHandleProps {
   edge: "start" | "end"
   label: string
   className?: string
-  onResize: (width: number) => void
-  /** Called with true when a pointer drag starts and false when it ends. */
+  /**
+   * Called with the new width. `settled` is false for the widths a pointer drag reports while it
+   * moves, and true for the final width when it ends and for keyboard and double-click changes,
+   * so the caller can persist only settled widths.
+   */
+  onResize: (width: number, settled: boolean) => void
+  /** Called with true when a pointer drag starts and false when it ends (or the handle unmounts). */
   onDragChange?: (dragging: boolean) => void
 }
 
@@ -33,34 +39,40 @@ export function ResizeHandle({
   onResize,
   onDragChange,
 }: ResizeHandleProps) {
+  const endDrag = useRef<(() => void) | null>(null)
+
+  // Unmounting mid-drag (say the sidebar collapses by shortcut) must still end the drag.
+  useEffect(() => () => endDrag.current?.(), [])
+
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return
     event.preventDefault()
+    endDrag.current?.()
     const handle = event.currentTarget
     handle.setPointerCapture(event.pointerId)
-    const startX = event.clientX
     const startWidth = width
-    const root = document.documentElement
-    root.setAttribute("data-col-resizing", "")
+    let last: number | null = null
     onDragChange?.(true)
-    const onMove = (move: globalThis.PointerEvent) =>
-      onResize(dragWidth(spec, startWidth, move.clientX - startX, edge))
-    const onUp = () => {
-      handle.removeEventListener("pointermove", onMove)
-      handle.removeEventListener("pointerup", onUp)
-      handle.removeEventListener("pointercancel", onUp)
-      root.removeAttribute("data-col-resizing")
-      onDragChange?.(false)
-    }
-    handle.addEventListener("pointermove", onMove)
-    handle.addEventListener("pointerup", onUp)
-    handle.addEventListener("pointercancel", onUp)
+    endDrag.current = startPanelDrag({
+      target: handle,
+      marker: document.documentElement,
+      startX: event.clientX,
+      onMove: (delta) => {
+        last = dragWidth(spec, startWidth, delta, edge)
+        onResize(last, false)
+      },
+      onEnd: () => {
+        endDrag.current = null
+        if (last !== null) onResize(last, true)
+        onDragChange?.(false)
+      },
+    })
   }
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // Arrows move the separator itself, so on a left-edge handle ArrowLeft widens the panel.
-    if (event.code === "ArrowLeft") onResize(dragWidth(spec, width, -KEY_STEP, edge))
-    else if (event.code === "ArrowRight") onResize(dragWidth(spec, width, KEY_STEP, edge))
+    if (event.code === "ArrowLeft") onResize(dragWidth(spec, width, -KEY_STEP, edge), true)
+    else if (event.code === "ArrowRight") onResize(dragWidth(spec, width, KEY_STEP, edge), true)
     else return
     event.preventDefault()
   }
@@ -77,7 +89,7 @@ export function ResizeHandle({
       tabIndex={0}
       onPointerDown={onPointerDown}
       onKeyDown={onKeyDown}
-      onDoubleClick={() => onResize(spec.defaultWidth)}
+      onDoubleClick={() => onResize(spec.defaultWidth, true)}
     />
   )
 }

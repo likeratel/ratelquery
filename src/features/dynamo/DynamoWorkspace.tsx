@@ -43,7 +43,7 @@ export function DynamoWorkspace() {
         spec={PANEL_SPECS.dynamoTables}
         edge="end"
         label="Resize tables list"
-        onResize={(width) => setPanelWidth("dynamoTables", width)}
+        onResize={(width, settled) => setPanelWidth("dynamoTables", width, settled)}
       />
       <div className="dyn-main">
         {tab.table ? (
@@ -58,7 +58,7 @@ export function DynamoWorkspace() {
                   spec={PANEL_SPECS.dynamoSide}
                   edge="start"
                   label="Resize item panel"
-                  onResize={(width) => setPanelWidth("dynamoSide", width)}
+                  onResize={(width, settled) => setPanelWidth("dynamoSide", width, settled)}
                 />
               )}
               {tab.editor ? (

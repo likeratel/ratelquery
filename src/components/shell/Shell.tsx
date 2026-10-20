@@ -90,7 +90,7 @@ export function Shell() {
           spec={PANEL_SPECS.sidebar}
           edge="end"
           label="Resize connections sidebar"
-          onResize={(width) => setPanelWidth("sidebar", width)}
+          onResize={(width, settled) => setPanelWidth("sidebar", width, settled)}
           onDragChange={setResizing}
         />
       )}

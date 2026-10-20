@@ -17,7 +17,8 @@ interface UiState {
   settingsOpen: boolean
   /** Resizable panel widths in pixels, restored from the last launch. */
   panelWidths: PanelWidths
-  setPanelWidth: (panel: PanelId, width: number) => void
+  /** Sets a panel width; `persist` false skips the storage write (widths mid-drag). */
+  setPanelWidth: (panel: PanelId, width: number, persist?: boolean) => void
   toggleSidebar: () => void
   openSettings: () => void
   closeSettings: () => void
@@ -27,11 +28,11 @@ export const useUiStore = create<UiState>((set, get) => ({
   sidebarCollapsed: false,
   settingsOpen: false,
   panelWidths: loadPanelWidths(),
-  setPanelWidth: (panel, width) => {
+  setPanelWidth: (panel, width, persist = true) => {
     const next = clampWidth(PANEL_SPECS[panel], width)
-    // Drags report every pointer move; skip the write when the clamped width didn't change.
+    // A drag reports every pointer move without persisting, then its final width once.
+    if (persist) savePanelWidth(panel, next)
     if (next === get().panelWidths[panel]) return
-    savePanelWidth(panel, next)
     set((state) => ({ panelWidths: { ...state.panelWidths, [panel]: next } }))
   },
   openSettings: () => set({ settingsOpen: true }),

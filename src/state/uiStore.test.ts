@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { detectPlatform, resolveTheme, useUiStore } from "./uiStore"
 
 describe("setPanelWidth", () => {
@@ -9,6 +9,28 @@ describe("setPanelWidth", () => {
     expect(after.sidebar).toBe(480)
     expect(after.dynamoSide).toBe(before.dynamoSide)
     expect(before.sidebar).toBe(264)
+  })
+
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("writes storage only for settled widths, so a drag persists once", () => {
+    const writes: [string, string][] = []
+    const localStorage = {
+      getItem: () => null,
+      setItem: (key: string, value: string) => writes.push([key, value]),
+    }
+    vi.stubGlobal("window", { localStorage })
+    const store = useUiStore.getState()
+    store.setPanelWidth("dynamoTables", 250, false)
+    store.setPanelWidth("dynamoTables", 260, false)
+    expect(writes).toEqual([])
+    expect(useUiStore.getState().panelWidths.dynamoTables).toBe(260)
+    store.setPanelWidth("dynamoTables", 260, true)
+    store.setPanelWidth("dynamoTables", 300)
+    expect(writes).toEqual([
+      ["ratelquery.panelWidth.dynamoTables", "260"],
+      ["ratelquery.panelWidth.dynamoTables", "300"],
+    ])
   })
 })
 
