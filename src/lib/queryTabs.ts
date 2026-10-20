@@ -215,10 +215,14 @@ export function closeTab(state: TabsState, id: string): TabsState {
   if (!state.tabs.some((t) => t.id === id)) return state
   const tabs = state.tabs.filter((t) => t.id !== id)
   const closing = state.closing === id ? null : state.closing
+  const closingGroup =
+    state.closingGroup && tabs.some((t) => t.connectionId === state.closingGroup)
+      ? state.closingGroup
+      : null
   const recent = forgetRecent(state.recent, id)
-  if (state.activeId !== id) return { ...state, tabs, closing, recent }
+  if (state.activeId !== id) return { ...state, tabs, closing, closingGroup, recent }
   const activeId = nextActiveAfterClose(state, id)
-  return rememberActive({ ...state, tabs, closing, recent, activeId })
+  return rememberActive({ ...state, tabs, closing, closingGroup, recent, activeId })
 }
 
 /**

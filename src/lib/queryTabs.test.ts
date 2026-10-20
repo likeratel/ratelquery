@@ -113,6 +113,19 @@ describe("tab list", () => {
     expect(back.recent).toEqual({ a: "a1" })
   })
 
+  it("drops a pending group close once the connection has no tabs left", () => {
+    const state = [
+      { id: "a1", connectionId: "a" },
+      { id: "a2", connectionId: "a" },
+      { id: "b1", connectionId: "b" },
+    ].reduce((s, params) => openTab(s, { ...params, database: null }), INITIAL_TABS)
+    const asking = { ...state, closingGroup: "a" }
+    const one = closeTab(asking, "a1")
+    expect(one.closingGroup).toBe("a")
+    expect(closeTab(one, "a2").closingGroup).toBeNull()
+    expect(closeTab(asking, "b1").closingGroup).toBe("a")
+  })
+
   it("keeps numbering monotonic after closing", () => {
     const reopened = openTab(closeTab(three(), "c"), { id: "d", connectionId: "c", database: null })
     expect(reopened.tabs.at(-1)?.title).toBe("Query 4")

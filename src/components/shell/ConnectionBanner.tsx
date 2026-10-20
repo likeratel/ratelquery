@@ -45,7 +45,10 @@ export function ConnectionBanner() {
   const tab = useTabsStore(useShallow(selectBannerTab))
   const connectionId = tab?.connectionId ?? null
   const config = useConnectionsStore((s) => s.connections.find((c) => c.id === connectionId))
-  const database = useActiveDatabase(tab)
+  const active = useActiveDatabase(tab)
+  // Before the session connects, a MySQL run uses the connection's default database.
+  const fallback = !active && config?.kind === "mysql" ? (config.database ?? null) : null
+  const database = active ?? fallback
   if (!connectionId) return null
   const KindIcon = config ? CONNECTION_KIND_ICON[config.kind] : null
   const style = config?.color ? ({ "--conn": config.color } as CSSProperties) : undefined
@@ -64,7 +67,7 @@ export function ConnectionBanner() {
       {config && <span className="conn-banner__target">{connectionSubtitle(config)}</span>}
       {database && (
         <span className="conn-banner__database">
-          <span className="conn-banner__label">Database</span>
+          <span className="conn-banner__label">{fallback ? "Default database" : "Database"}</span>
           {database}
         </span>
       )}

@@ -100,15 +100,9 @@ function ConnectionTabItem({
       data-connection-id={connectionId}
       title={[name, kindLabel, tabsLabel].filter(Boolean).join(" · ")}
       style={connectionColorStyle(connection.color)}
+      // No middle-click close here: a stray click must not close every tab of a server.
       onMouseDown={(event) => {
-        if (event.button === MIDDLE_BUTTON) event.preventDefault()
-        else if (event.button === 0) activateConnection(connectionId)
-      }}
-      onAuxClick={(event: MouseEvent) => {
-        if (event.button === MIDDLE_BUTTON) {
-          event.preventDefault()
-          closeConnectionTabs(connectionId)
-        }
+        if (event.button === 0) activateConnection(connectionId)
       }}
     >
       <KindIcon size={13} strokeWidth={1.9} className="conn-tab__kind" aria-hidden />

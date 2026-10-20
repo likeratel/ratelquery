@@ -183,8 +183,11 @@
   text-align: center;
 }
 
-.conn-tab__close {
+/* Two classes so this wins over `.tab__close`, declared later, which fills its parent: the
+   group X must stay an 18px button, or a click anywhere on the tab would close the group. */
+.conn-tab .conn-tab__close {
   position: relative;
+  inset: auto;
   width: 18px;
   height: 18px;
   flex: none;
