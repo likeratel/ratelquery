@@ -2,7 +2,13 @@ import { create } from "zustand"
 import { athenaApi } from "../lib/athena"
 import { athenaStatements } from "../lib/athenaRun"
 import type { ConnectionId } from "../lib/connections"
-import { buildRowChanges, EMPTY_EDITS, type EditTarget, type GridEdits } from "../lib/gridEdits"
+import {
+  buildRowChanges,
+  editSchemaDatabases,
+  EMPTY_EDITS,
+  type EditTarget,
+  type GridEdits,
+} from "../lib/gridEdits"
 import type { DynamoTab } from "../lib/dynamoTabs"
 import { normalizeError } from "../lib/ipc"
 import { mysqlApi, type ApplyChangesResult, type QueryResult, type RowChange } from "../lib/mysql"
@@ -35,7 +41,7 @@ import {
 import { mergeRestoredTabs } from "../lib/workspace"
 import { useAthenaStore } from "./athenaStore"
 import { runAthenaStatements } from "./athenaRun"
-import { useSessionsStore } from "./sessionsStore"
+import { knownDatabases, useSessionsStore } from "./sessionsStore"
 import { currentSettings } from "./settingsStore"
 
 /** Row cap per statement, from Settings › Queries › Max rows (backend default 1000). */
@@ -111,6 +117,24 @@ export const useTabsStore = create<TabsStore>((set, get) => {
   const noteReconnects = (connectionId: ConnectionId, results: readonly QueryResult[]) => {
     if (results.some((r) => r.reconnected)) {
       useSessionsStore.getState().markReconnected(connectionId)
+    }
+  }
+
+  /**
+   * Fetches the schema editing needs for a run's results when it isn't cached: the database of
+   * a reopened tab or of a `FROM other.table` is otherwise only loaded by a manual refresh, and
+   * the results would stay read only until then.
+   */
+  const loadEditSchemas = (
+    connectionId: ConnectionId,
+    results: readonly QueryResult[],
+    ranDatabase: string | null,
+  ) => {
+    const sessions = useSessionsStore.getState()
+    const session = sessions.sessions[connectionId]
+    if (session?.state !== "connected") return
+    for (const database of editSchemaDatabases(results, ranDatabase, knownDatabases(session))) {
+      if (!session.schemaLoading[database]) void sessions.ensureSchema(connectionId, database)
     }
   }
 
@@ -249,6 +273,7 @@ export const useTabsStore = create<TabsStore>((set, get) => {
         const results = await mysqlApi.query(tab.connectionId, text, options)
         patchTab(id, (t) => (isCurrent(t) ? finishRun(t, text, results, ranDatabase) : t))
         noteReconnects(tab.connectionId, results)
+        loadEditSchemas(tab.connectionId, results, ranDatabase)
         return "ran"
       } catch (raw) {
         const error = normalizeError(raw)
@@ -284,7 +309,7 @@ export const useTabsStore = create<TabsStore>((set, get) => {
         return null
       }
       if (!edits) return null
-      const changes = buildRowChanges(edits, target, result.columns, result.rows)
+      const changes = buildRowChanges(edits, target, result.rows)
       if (changes.length === 0) return null
       patchTab(id, (t) => ({ ...t, applying: true }))
       try {

@@ -89,6 +89,12 @@ export function isSchemaLoading(session: MysqlSession | undefined, database: str
   return Boolean(database && session?.schemaLoading[database])
 }
 
+/** Every database name the session knows: listed ones and those with a cached schema. */
+export function knownDatabases(session: MysqlSession | undefined): string[] {
+  if (!session) return []
+  return [...new Set([...session.databases, ...Object.keys(session.schemas)])]
+}
+
 /**
  * Counts one recovery reported by `source`. A report from the other source shortly after the
  * last counted one is the same recovery and only clears the marker.

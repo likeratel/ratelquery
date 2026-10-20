@@ -1,6 +1,13 @@
 import { cellsEqual } from "./cellEdit"
 import { inferBaseTable } from "./baseTable"
-import type { Cell, ColumnInfo, RowChange, SchemaColumn, SchemaSnapshot } from "./mysql"
+import type {
+  Cell,
+  ColumnInfo,
+  QueryResult,
+  RowChange,
+  SchemaColumn,
+  SchemaSnapshot,
+} from "./mysql"
 
 /** A row the user added in the grid; `values` holds only the columns they set. */
 export interface PendingInsert {
@@ -30,8 +37,56 @@ export type EditTargetResult =
 export const EMPTY_EDITS: GridEdits = { updates: {}, deletes: [], inserts: [] }
 
 /**
+ * The item called `name`: an exact match first, otherwise the only one that differs just in
+ * letter case. MySQL column names never depend on case, and table and database names don't
+ * under `lower_case_table_names`, so a query may spell them differently from the schema.
+ */
+export function findByName<T>(
+  items: readonly T[],
+  name: string,
+  nameOf: (item: T) => string,
+): T | undefined {
+  const exact = items.find((item) => nameOf(item) === name)
+  if (exact !== undefined) return exact
+  const lower = name.toLowerCase()
+  const folded = items.filter((item) => nameOf(item).toLowerCase() === lower)
+  return folded.length === 1 ? folded[0] : undefined
+}
+
+/**
+ * The database a result's rows would be edited in: the one its table is qualified with in the
+ * statement (spelled as in `known` when that is unambiguous), else the one the run used.
+ */
+export function editDatabase(
+  statement: string,
+  ranDatabase: string | null,
+  known: readonly string[] = [],
+): string | null {
+  const qualified = inferBaseTable(statement)?.database
+  if (!qualified) return ranDatabase
+  return findByName(known, qualified, (name) => name) ?? qualified
+}
+
+/**
+ * The databases whose schema decides whether the rows results of one run can be edited. Only
+ * results read from a single table count; anything else stays read only whatever the schema.
+ */
+export function editSchemaDatabases(
+  results: readonly QueryResult[],
+  ranDatabase: string | null,
+  known: readonly string[] = [],
+): string[] {
+  const databases = results
+    .filter((r) => r.kind === "rows" && inferBaseTable(r.statement) !== null)
+    .map((r) => editDatabase(r.statement, ranDatabase, known))
+    .filter((database): database is string => database !== null)
+  return [...new Set(databases)]
+}
+
+/**
  * Decides whether a result can be edited: every column comes from the same base table, that
- * table has a primary key, and every key column is part of the result.
+ * table has a primary key, and every key column is part of the result. The target spells the
+ * table and columns as the schema does, since the apply command matches them exactly.
  */
 export function resolveEditTarget(
   columns: readonly ColumnInfo[],
@@ -47,27 +102,32 @@ export function resolveEditTarget(
   if (!table) {
     return { editable: false, reason: "Read only: rows don't come from a single table" }
   }
-  const snapshot = schema.tables.find((t) => t.name === table)
+  const snapshot = findByName(schema.tables, table, (t) => t.name)
   if (!snapshot || snapshot.kind !== "table") {
     return { editable: false, reason: `Read only: ${table} isn't a base table in ${database}` }
   }
-  const schemaColumns = columns.map((c) => snapshot.columns.find((s) => s.name === c.name))
+  const schemaColumns = columns.map((c) => findByName(snapshot.columns, c.name, (s) => s.name))
   if (
     schemaColumns.some((c) => c === undefined) ||
-    new Set(columns.map((c) => c.name)).size !== columns.length
+    new Set(schemaColumns).size !== columns.length
   ) {
     return { editable: false, reason: "Read only: some columns are aliased or computed" }
   }
   const primary = snapshot.columns.filter((c) => c.isPrimary)
   if (primary.length === 0)
-    return { editable: false, reason: `Read only: ${table} has no primary key` }
-  const keyIndexes = primary.map((p) => columns.findIndex((c) => c.name === p.name))
+    return { editable: false, reason: `Read only: ${snapshot.name} has no primary key` }
+  const keyIndexes = primary.map((p) => schemaColumns.indexOf(p))
   if (keyIndexes.some((i) => i === -1)) {
     return { editable: false, reason: "Read only: select every primary key column to edit" }
   }
   return {
     editable: true,
-    target: { database, table, keyIndexes, schemaColumns: schemaColumns as SchemaColumn[] },
+    target: {
+      database,
+      table: snapshot.name,
+      keyIndexes,
+      schemaColumns: schemaColumns as SchemaColumn[],
+    },
   }
 }
 
@@ -87,9 +147,11 @@ export function originTable(
   }
   const inferred = inferBaseTable(statement)
   if (!inferred) return null
-  if (inferred.database && database && inferred.database !== database) return null
+  if (inferred.database && database && !sameName(inferred.database, database)) return null
   return inferred.table
 }
+
+const sameName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase()
 
 /** Records an edit; setting a cell back to its original value removes the edit. */
 export function setCellEdit(
@@ -144,20 +206,14 @@ export function pendingCount(edits: GridEdits): number {
   return updatedRows(edits).length + edits.deletes.length + edits.inserts.length
 }
 
-function keyFor(
-  target: EditTarget,
-  columns: readonly ColumnInfo[],
-  row: readonly Cell[],
-): Record<string, Cell> {
-  return Object.fromEntries(target.keyIndexes.map((i) => [columns[i].name, row[i]]))
+function keyFor(target: EditTarget, row: readonly Cell[]): Record<string, Cell> {
+  return Object.fromEntries(target.keyIndexes.map((i) => [target.schemaColumns[i].name, row[i]]))
 }
 
-function byName(
-  columns: readonly ColumnInfo[],
-  values: Readonly<Record<number, Cell>>,
-): Record<string, Cell> {
+/** Values keyed by the schema's column names; the query may spell them in another case. */
+function byName(target: EditTarget, values: Readonly<Record<number, Cell>>): Record<string, Cell> {
   return Object.fromEntries(
-    Object.entries(values).map(([col, cell]) => [columns[Number(col)].name, cell]),
+    Object.entries(values).map(([col, cell]) => [target.schemaColumns[Number(col)].name, cell]),
   )
 }
 
@@ -169,22 +225,21 @@ function byName(
 export function buildRowChanges(
   edits: GridEdits,
   target: EditTarget,
-  columns: readonly ColumnInfo[],
   rows: readonly Cell[][],
 ): RowChange[] {
   const deletes: RowChange[] = edits.deletes
     .filter((row) => rows[row] !== undefined)
-    .map((row) => ({ type: "delete", key: keyFor(target, columns, rows[row]) }))
+    .map((row) => ({ type: "delete", key: keyFor(target, rows[row]) }))
   const updates: RowChange[] = updatedRows(edits)
     .filter((row) => rows[row] !== undefined)
     .map((row) => ({
       type: "update",
-      key: keyFor(target, columns, rows[row]),
-      set: byName(columns, edits.updates[row]),
+      key: keyFor(target, rows[row]),
+      set: byName(target, edits.updates[row]),
     }))
   const inserts: RowChange[] = edits.inserts.map((insert) => ({
     type: "insert",
-    values: byName(columns, insert.values),
+    values: byName(target, insert.values),
   }))
   return [...deletes, ...updates, ...inserts]
 }

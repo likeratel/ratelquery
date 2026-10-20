@@ -1,9 +1,9 @@
 import { isAthenaResult } from "../../lib/athena"
 import type { AthenaCatalog } from "../../lib/athenaCatalog"
-import { resolveEditTarget, type EditTargetResult } from "../../lib/gridEdits"
+import { editDatabase, resolveEditTarget, type EditTargetResult } from "../../lib/gridEdits"
 import type { QueryResult } from "../../lib/mysql"
 import type { QueryTab } from "../../lib/queryTabs"
-import { isSchemaLoading, type MysqlSession } from "../../state/sessionsStore"
+import { isSchemaLoading, knownDatabases, type MysqlSession } from "../../state/sessionsStore"
 
 /** The database the tab's next query runs against. */
 export function tabDatabase(tab: QueryTab, session: MysqlSession | undefined): string | null {
@@ -34,7 +34,9 @@ export function editTargetFor(
     return { editable: false, reason: ATHENA_READ_ONLY }
   }
   if (!result || result.kind !== "rows") return { editable: false, reason: "No rows" }
-  const database = tab.ranDatabase
+  // A table qualified with its database (`FROM shop.users`) is edited there, even when the
+  // run had no database or another one.
+  const database = editDatabase(result.statement, tab.ranDatabase, knownDatabases(session))
   const schema = database ? (session?.schemas[database] ?? null) : null
   if (database && !schema) {
     const reason = isSchemaLoading(session, database)

@@ -3,7 +3,10 @@ import {
   addInsert,
   buildRowChanges,
   displayRows,
+  editDatabase,
+  editSchemaDatabases,
   EMPTY_EDITS,
+  findByName,
   pendingCount,
   removeInsert,
   resolveEditTarget,
@@ -12,7 +15,7 @@ import {
   toggleRowDelete,
   type EditTarget,
 } from "./gridEdits"
-import type { Cell, ColumnInfo, SchemaSnapshot } from "./mysql"
+import type { Cell, ColumnInfo, QueryResult, SchemaSnapshot } from "./mysql"
 
 // The backend never reports a column's table (`table: null`), so these go through the same
 // statement-based path as the app.
@@ -135,7 +138,7 @@ describe("buildRowChanges", () => {
     edits = toggleRowDelete(edits, 1)
     edits = setInsertValue(addInsert(edits, "n1"), "n1", 1, { t: "str", v: "c@x" })
 
-    expect(buildRowChanges(edits, target(), columns, rows)).toEqual([
+    expect(buildRowChanges(edits, target(), rows)).toEqual([
       { type: "delete", key: { id: { t: "int", v: "2" } } },
       {
         type: "update",
@@ -148,9 +151,91 @@ describe("buildRowChanges", () => {
 
   it("sends only the delete for a row that was edited and then deleted", () => {
     const edits = toggleRowDelete(setCellEdit(EMPTY_EDITS, rows, 0, 1, { t: "str", v: "z" }), 0)
-    expect(buildRowChanges(edits, target(), columns, rows)).toEqual([
+    expect(buildRowChanges(edits, target(), rows)).toEqual([
       { type: "delete", key: { id: { t: "int", v: "1" } } },
     ])
+  })
+
+  it("names columns as the schema does, not as the query spelled them", () => {
+    const upper = columns.map((c) => ({ ...c, name: c.name.toUpperCase() }))
+    const resolved = resolveEditTarget(upper, schema, "app", "SELECT ID, EMAIL, NOTE FROM USERS")
+    if (!resolved.editable) throw new Error(resolved.reason)
+    const edits = setCellEdit(EMPTY_EDITS, rows, 0, 1, { t: "str", v: "z" })
+    expect(buildRowChanges(edits, resolved.target, rows)).toEqual([
+      { type: "update", key: { id: { t: "int", v: "1" } }, set: { email: { t: "str", v: "z" } } },
+    ])
+  })
+})
+
+describe("case-insensitive names", () => {
+  it("matches table and column names that differ only in case, using the schema's spelling", () => {
+    const upper = columns.map((c) => ({ ...c, name: c.name.toUpperCase() }))
+    expect(resolveEditTarget(upper, schema, "app", "select * from `Users` limit 5")).toMatchObject({
+      editable: true,
+      target: { table: "users", keyIndexes: [0] },
+    })
+    expect(
+      resolveEditTarget(columns, schema, "app", "select * from APP.users where id = 1"),
+    ).toMatchObject({ editable: true, target: { database: "app", table: "users" } })
+  })
+
+  it("stays read only when the case-folded name is ambiguous or repeated", () => {
+    const twin = {
+      ...schema,
+      tables: [...schema.tables, { ...schema.tables[0], name: "USERS" }],
+    }
+    expect(resolveEditTarget(columns, twin, "app", "select * from Users").editable).toBe(false)
+    const repeated = [...columns, { ...columns[1], name: "EMAIL" }]
+    expect(resolveEditTarget(repeated, schema, "app", "select *, EMAIL from users")).toEqual({
+      editable: false,
+      reason: "Read only: some columns are aliased or computed",
+    })
+  })
+
+  it("finds an exact name before a case-folded one", () => {
+    const names = ["Shop", "shop", "app"]
+    expect(findByName(names, "shop", (n) => n)).toBe("shop")
+    expect(findByName(names, "APP", (n) => n)).toBe("app")
+    expect(findByName(names, "SHOP", (n) => n)).toBeUndefined()
+  })
+})
+
+describe("editDatabase", () => {
+  it("uses the database a table is qualified with, spelled as the session knows it", () => {
+    expect(editDatabase("select * from users", "app")).toBe("app")
+    expect(editDatabase("select * from users", null)).toBeNull()
+    expect(editDatabase("select * from `Shop`.users", null, ["app", "shop"])).toBe("shop")
+    expect(editDatabase("select * from shop.users", "app")).toBe("shop")
+    expect(editDatabase("select * from a join b on a.id = b.id", "app")).toBe("app")
+  })
+
+  it("lists the databases a run's editable results need schemas for", () => {
+    const rowsOf = (statement: string): QueryResult => ({
+      kind: "rows",
+      columns,
+      rows: [],
+      rowCount: 0,
+      truncated: false,
+      elapsedMs: 1,
+      reconnected: false,
+      statement,
+    })
+    const results = [
+      rowsOf("select * from users"),
+      rowsOf("select * from SHOP.users"),
+      rowsOf("select * from app.logs"),
+      rowsOf("select 1"),
+      {
+        kind: "exec",
+        affectedRows: 1,
+        lastInsertId: null,
+        elapsedMs: 1,
+        reconnected: false,
+        statement: "update other.t set a = 1",
+      } as QueryResult,
+    ]
+    expect(editSchemaDatabases(results, "app", ["app", "shop"])).toEqual(["app", "shop"])
+    expect(editSchemaDatabases([rowsOf("select * from users")], null)).toEqual([])
   })
 })
 

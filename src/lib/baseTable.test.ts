@@ -23,6 +23,28 @@ describe("inferBaseTable", () => {
     })
   })
 
+  it("keeps commas outside the FROM list from making a select read only", () => {
+    const users = { database: null, table: "users" }
+    for (const sql of [
+      "SELECT * FROM users ORDER BY name, id DESC",
+      "select * from users order by name asc, id desc limit 5",
+      "SELECT * FROM users WHERE id IN (1, 2) ORDER BY id",
+      "SELECT * FROM `users` LIMIT 10, 20",
+      "SELECT * FROM users LIMIT 10 OFFSET 5;",
+      "/* list */ -- users\nSELECT * FROM users u WHERE u.id > 1;",
+    ]) {
+      expect(inferBaseTable(sql), sql).toEqual(users)
+    }
+  })
+
+  it("reads doubled backticks inside a quoted name", () => {
+    expect(inferBaseTable("SELECT * FROM `we``ird` LIMIT 1")).toEqual({
+      database: null,
+      table: "we`ird",
+    })
+    expect(inferBaseTable("SELECT * FROM `d``b`.`t` , `u`")).toBeNull()
+  })
+
   it("ignores comments and strings", () => {
     expect(inferBaseTable("-- from nowhere\nSELECT * FROM t WHERE name = 'x join y'")).toEqual({
       database: null,

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { EMPTY_EDITS, resolveEditTarget, setCellEdit } from "../lib/gridEdits"
 import { setTransport } from "../lib/ipc"
 import { INITIAL_TABS, type QueryTab } from "../lib/queryTabs"
@@ -99,7 +99,8 @@ describe("run", () => {
 
     useSessionsStore.setState({ sessions: {} })
     await useTabsStore.getState().run(id)
-    expect(calls[1].args?.options).toEqual({ maxRows: 1000 })
+    const queries = calls.filter((c) => c.command === "mysql_query")
+    expect(queries[1].args?.options).toEqual({ maxRows: 1000 })
   })
 
   it("runs an explicit statement and records failures", async () => {
@@ -207,6 +208,69 @@ describe("database of a result", () => {
     editEmail(id, "b@x")
     expect(useTabsStore.getState().setDatabase(id, "shop")).toBe(false)
     expect(queryTab().database).toBeNull()
+    expect(calls.some((c) => c.command === "mysql_schema")).toBe(false)
+  })
+})
+
+describe("schema for editing a result", () => {
+  /** A connected session on `currentDatabase` whose schemas come from `mysql_schema`. */
+  function connectWithoutSchemas(currentDatabase: string | null) {
+    restore()
+    restore = setTransport(async (command, args) => {
+      calls.push({ command, args })
+      if (command === "mysql_query") return queryResults
+      if (command === "mysql_schema") return { ...schema, database: String(args?.database) }
+      if (command === "mysql_apply_changes") return { affectedRows: 1, elapsedMs: 2 }
+      throw { kind: "not_found", message: command }
+    })
+    useSessionsStore.setState({
+      sessions: {
+        c1: { ...emptySession(), state: "connected", currentDatabase, databases: ["app", "shop"] },
+      },
+    })
+  }
+
+  const editTarget = () =>
+    editTargetFor(queryTab(), queryTab().results[0], useSessionsStore.getState().sessions.c1)
+
+  it("loads the schema of a reopened tab's database, which connecting didn't", async () => {
+    connectWithoutSchemas(null)
+    queryResults = [usersResult("a@x")]
+    const id = useTabsStore.getState().open("c1", "app")
+    await useTabsStore.getState().run(id, "select id, email from users")
+    expect(calls.filter((c) => c.command === "mysql_schema").map((c) => c.args)).toEqual([
+      { connectionId: "c1", database: "app" },
+    ])
+    await vi.waitFor(() => expect(editTarget().editable).toBe(true))
+    expect(editTarget()).toMatchObject({ target: { database: "app", table: "users" } })
+  })
+
+  it("edits a table qualified with its database when the tab has none", async () => {
+    connectWithoutSchemas(null)
+    queryResults = [{ ...usersResult("a@x"), statement: "SELECT id, email FROM `Shop`.users;" }]
+    const id = useTabsStore.getState().open("c1", null)
+    await useTabsStore.getState().run(id, "SELECT id, email FROM `Shop`.users;")
+    expect(queryTab().ranDatabase).toBeNull()
+    expect(calls.find((c) => c.command === "mysql_schema")?.args).toEqual({
+      connectionId: "c1",
+      database: "shop",
+    })
+    await vi.waitFor(() => expect(editTarget().editable).toBe(true))
+    editEmail(id, "b@x")
+    const resolved = editTarget()
+    if (!resolved.editable) throw new Error(resolved.reason)
+    await useTabsStore.getState().applyEdits(id, 0, resolved.target)
+    expect(calls.find((c) => c.command === "mysql_apply_changes")?.args).toMatchObject({
+      database: "shop",
+      table: "users",
+    })
+  })
+
+  it("fetches nothing for results that can't be edited anyway", async () => {
+    connectWithoutSchemas("app")
+    queryResults = [{ ...usersResult("a@x"), statement: "select 1" }]
+    const id = useTabsStore.getState().open("c1", null)
+    await useTabsStore.getState().run(id, "select 1")
     expect(calls.some((c) => c.command === "mysql_schema")).toBe(false)
   })
 })
