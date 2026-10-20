@@ -269,7 +269,9 @@ Backend rules: `database`, `table` and every column name must exist in the live 
 `database` and `table` spelled as the query wrote them (what MySQL resolved), never the cached
 snapshot's spelling. The backend takes an exact match first, otherwise the only name that differs
 just in letter case; several case-insensitive matches without an exact one reject with
-`invalid_input`. Column names are sent as the schema spells them. Identifiers are quoted with
+`invalid_input`. Column names are sent as the schema spells them and resolved the same way
+(MySQL column names ignore letter case, so a stale spelling still names one column); two names
+for the same column reject with `invalid_input`. Identifiers are quoted with
 backticks, values are always bound parameters. An `update` or `delete` whose `WHERE` matches
 anything other than exactly 1 row fails the whole batch with `kind: "query"`.
 

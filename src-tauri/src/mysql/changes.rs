@@ -26,19 +26,23 @@ pub struct BuiltStatement {
     pub expect_one: bool,
 }
 
-fn check_columns<'a>(
+/// `values` keyed by the live column names. MySQL column names ignore letter case, so a stale
+/// client snapshot that spells a column differently still maps to that one column; two keys
+/// naming the same column are rejected.
+fn live_columns(
     table: &SchemaTable,
-    names: impl IntoIterator<Item = &'a String>,
-) -> AppResult<()> {
-    for name in names {
-        if !table.columns.iter().any(|c| &c.name == name) {
-            return Err(AppError::InvalidInput(format!(
-                "column {name} does not exist in table {}",
-                table.name
-            )));
+    values: &BTreeMap<String, Cell>,
+) -> AppResult<BTreeMap<String, Cell>> {
+    let mut resolved = BTreeMap::new();
+    for (name, value) in values {
+        let live = resolve_name(table.columns.iter().map(|c| c.name.as_str()), name, || {
+            format!("column {name} does not exist in table {}", table.name)
+        })?;
+        if resolved.insert(live.to_string(), value.clone()).is_some() {
+            return Err(AppError::InvalidInput(format!("column {live} is given twice")));
         }
     }
-    Ok(())
+    Ok(resolved)
 }
 
 fn binds(values: &BTreeMap<String, Cell>) -> AppResult<Vec<BindValue>> {
@@ -67,7 +71,7 @@ pub fn build_statement(
                     "an update must set at least one column".into(),
                 ));
             }
-            check_columns(table, key.keys().chain(set.keys()))?;
+            let (key, set) = (&live_columns(table, key)?, &live_columns(table, set)?);
             let assignments: Vec<String> =
                 set.keys().map(|c| format!("{} = ?", quote_ident(c))).collect();
             let sql = format!(
@@ -79,13 +83,13 @@ pub fn build_statement(
             Ok(BuiltStatement { sql, binds: all, expect_one: true })
         }
         RowChange::Delete { key } => {
-            check_columns(table, key.keys())?;
+            let key = &live_columns(table, key)?;
             let sql =
                 format!("DELETE FROM {target} WHERE {} LIMIT {MATCH_LIMIT}", where_clause(key)?);
             Ok(BuiltStatement { sql, binds: binds(key)?, expect_one: true })
         }
         RowChange::Insert { values } => {
-            check_columns(table, values.keys())?;
+            let values = &live_columns(table, values)?;
             let columns: Vec<String> = values.keys().map(|c| quote_ident(c)).collect();
             let marks = vec!["?"; values.len()].join(", ");
             let sql = format!("INSERT INTO {target} ({}) VALUES ({marks})", columns.join(", "));
@@ -303,6 +307,19 @@ mod tests {
         let unknown = resolve_name(live.iter().copied(), "orders", missing).unwrap_err();
         assert_eq!(unknown.kind(), "invalid_input");
         assert!(unknown.to_string().contains("missing"));
+    }
+
+    #[test]
+    fn columns_use_the_live_spelling_and_cannot_repeat() {
+        let change = RowChange::Update {
+            key: cells(&[("ID", Cell::Int("1".into()))]),
+            set: cells(&[("Name", Cell::Str("x".into()))]),
+        };
+        let built = build_statement("db", &table(), &change).unwrap();
+        assert_eq!(built.sql, "UPDATE `db`.`cus``t` SET `name` = ? WHERE `id` <=> ? LIMIT 2");
+        let twice =
+            RowChange::Insert { values: cells(&[("name", Cell::Null), ("NAME", Cell::Null)]) };
+        assert_eq!(build_statement("db", &table(), &twice).unwrap_err().kind(), "invalid_input");
     }
 
     #[test]
