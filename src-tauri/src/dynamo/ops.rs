@@ -5,8 +5,8 @@ use std::time::Instant;
 use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
 
 use super::errors::{is_conditional_check_failed, map_sdk_error};
-use super::expr::{UserParts, build_query, build_scan, page_limit, put_condition};
-use super::model::{Page, PutExpectation, QueryRequest, ScanRequest};
+use super::expr::{UserParts, build_query, build_scan, build_update, page_limit, put_condition};
+use super::model::{AttributeUpdate, Page, PutExpectation, QueryRequest, ScanRequest};
 use super::registry::DynamoHandle;
 use super::schema::key_schema_for;
 use super::wire::{SdkItem, WireItem, from_wire_item, to_wire_item};
@@ -181,6 +181,48 @@ pub async fn put_item(
         Err(err) if is_conditional_check_failed(&err) => Err(AppError::Query(
             condition_failed_message(expect, hash_key.as_deref().unwrap_or("key")),
         )),
+        Err(err) => Err(fail(handle, table, err).await),
+    }
+}
+
+const UPDATE_CONFLICT_MESSAGE: &str = "the item was changed or deleted since it was loaded; \
+                                       refresh to see its current values";
+
+/// Sets some top-level attributes of one existing item with a single UpdateItem. The write is
+/// refused (nothing changes) when the item is gone or any edited attribute no longer has the
+/// value the user saw.
+pub async fn update_item_attributes(
+    handle: &DynamoHandle,
+    table: &str,
+    key: &WireItem,
+    changes: &[AttributeUpdate],
+) -> AppResult<()> {
+    require_table(table)?;
+    let key = require_attributes(key, "item key")?;
+    let schema = key_schema_for(handle, table, None).await?;
+    if !key.contains_key(&schema.hash.name) {
+        return Err(AppError::InvalidInput(format!(
+            "the item key is missing its hash key {}",
+            schema.hash.name
+        )));
+    }
+    let expressions = build_update(&schema, changes)?;
+    let output = handle
+        .client()
+        .update_item()
+        .table_name(table)
+        .set_key(Some(key))
+        .set_update_expression(expressions.update.clone())
+        .set_condition_expression(expressions.condition.clone())
+        .set_expression_attribute_names(expressions.names_or_none())
+        .set_expression_attribute_values(expressions.values_or_none())
+        .send()
+        .await;
+    match output {
+        Ok(_) => Ok(()),
+        Err(err) if is_conditional_check_failed(&err) => {
+            Err(AppError::Query(UPDATE_CONFLICT_MESSAGE.to_string()))
+        }
         Err(err) => Err(fail(handle, table, err).await),
     }
 }

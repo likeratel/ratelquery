@@ -16,11 +16,11 @@ pub use errors::{
 pub use export::run_export;
 pub use expr::{DEFAULT_LIMIT, MAX_LIMIT};
 pub use model::{
-    DynamoExportFormat, DynamoExportOptions, DynamoExportRequest, IndexDescription, IndexKind,
-    KeyAttribute, KeySchema, KeyType, Page, Projection, PutExpectation, QueryRequest,
-    RangeCondition, RangeOp, ScanRequest, TableDescription,
+    AttributeUpdate, DynamoExportFormat, DynamoExportOptions, DynamoExportRequest,
+    IndexDescription, IndexKind, KeyAttribute, KeySchema, KeyType, Page, Projection,
+    PutExpectation, QueryRequest, RangeCondition, RangeOp, ScanRequest, TableDescription,
 };
-pub use ops::{delete_item, get_item, put_item, query, scan};
+pub use ops::{delete_item, get_item, put_item, query, scan, update_item_attributes};
 pub use registry::{
     DynamoClients, DynamoHandle, aws_sdk_config, profile_credentials, resolve_credentials,
     sdk_config,

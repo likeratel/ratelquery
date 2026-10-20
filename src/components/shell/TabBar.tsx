@@ -92,7 +92,7 @@ function TabItem({ id, active }: { id: string; active: boolean }) {
 
 const UNSAVED_DETAIL: Record<WorkspaceTab["kind"], string> = {
   query: "Its pending grid changes haven't been applied and will be lost.",
-  dynamo: "Its item editor has unsaved changes that will be lost.",
+  dynamo: "Its unsaved item editor text or pending grid changes will be lost.",
   // Table tabs hold no unsaved work, so they never ask.
   table: "",
 }

@@ -6,8 +6,8 @@ use tauri::{AppHandle, State};
 use super::export::authorize_export_path;
 use crate::connections::{ConnectionConfig, DynamoAuth};
 use crate::dynamo::{
-    self, DynamoExportOptions, DynamoExportRequest, DynamoHandle, Page, PutExpectation,
-    QueryRequest, ScanRequest, TableDescription, WireItem,
+    self, AttributeUpdate, DynamoExportOptions, DynamoExportRequest, DynamoHandle, Page,
+    PutExpectation, QueryRequest, ScanRequest, TableDescription, WireItem,
 };
 use crate::error::{AppError, AppResult};
 use crate::export::ExportResult;
@@ -139,6 +139,20 @@ pub async fn dynamo_delete_item(
         &connection_id,
         |h| async move { dynamo::delete_item(&h, &table, &key).await },
     )
+    .await
+}
+
+#[tauri::command]
+pub async fn dynamo_update_item_attributes(
+    state: State<'_, AppState>,
+    connection_id: String,
+    table: String,
+    key: WireItem,
+    changes: Vec<AttributeUpdate>,
+) -> AppResult<()> {
+    with_handle(&state, &connection_id, |h| async move {
+        dynamo::update_item_attributes(&h, &table, &key, &changes).await
+    })
     .await
 }
 

@@ -372,6 +372,7 @@ interface Page {
 | `dynamo_get_item` | `connectionId`, `table`, `key: Item` | `Item \| null` |
 | `dynamo_put_item` | `connectionId`, `table`, `item: Item`, `expect: "exists" \| "not_exists" \| "any"` | `void`. `exists` adds `attribute_exists(hashKey)` (safe update), `not_exists` adds `attribute_not_exists(hashKey)` (safe create). Condition failures reject with `kind: "query"`. |
 | `dynamo_delete_item` | `connectionId`, `table`, `key: Item` | `void` |
+| `dynamo_update_item_attributes` | `connectionId`, `table`, `key: Item`, `changes: { name: string; value: AttributeValue; expected: AttributeValue \| null }[]` | `void`. One `UpdateItem` with `SET` for every change (names and values only as placeholders). Its condition requires the item to exist (`attribute_exists(hashKey)`) and each attribute to still equal `expected`, or to be missing when `expected` is null. A failed condition writes nothing and rejects with `kind: "query"` ("the item was changed or deleted since it was loaded ..."). Empty `changes`, a key attribute, a repeated name or a malformed value rejects with `kind: "invalid_input"`. |
 | `dynamo_export` | `connectionId`, `request: { scan: ScanRequest } \| { query: QueryRequest }`, `options: { format: "json" \| "jsonl" \| "csv"; path: string }` | `ExportResult` – follows `lastKey` until exhausted. CSV flattens top-level attributes; nested values are written as JSON text. |
 
 Known limitation (`dynamo_export` CSV): cells are written verbatim, so a value starting with `=`,

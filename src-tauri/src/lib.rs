@@ -80,6 +80,7 @@ pub fn run() {
             commands::dynamo::dynamo_get_item,
             commands::dynamo::dynamo_put_item,
             commands::dynamo::dynamo_delete_item,
+            commands::dynamo::dynamo_update_item_attributes,
             commands::dynamo::dynamo_export,
             commands::athena::athena_workgroups,
             commands::athena::athena_create_output_bucket,

@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react"
 import { ResizeHandle } from "../../components/ui"
+import { itemEdit, withPendingValues } from "../../lib/dynamoEdits"
 import { editorIdentity, selectedItem } from "../../lib/dynamoTabs"
 import { PANEL_SPECS } from "../../lib/panelWidths"
 import { selectActiveDynamoTab, useTabsStore } from "../../state/tabsStore"
@@ -70,7 +71,7 @@ export function DynamoWorkspace() {
               ) : (
                 detailItem && (
                   <ItemDetail
-                    item={detailItem}
+                    item={withPendingValues(detailItem, itemEdit(tab.edits, detailItem, schema))}
                     schema={schema}
                     onEdit={() => openItemEditor(tab.id, detailItem)}
                     onClose={() => selectRow(tab.id, null)}

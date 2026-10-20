@@ -4,12 +4,12 @@
 //! here use a prefix (`#dbk0`, `:dbk0` ...) that is lengthened with `_` until no user placeholder
 //! starts with it, so the two sets can never collide.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use aws_sdk_dynamodb::types::AttributeValue;
 use serde_json::Value;
 
-use super::model::{KeySchema, PutExpectation, RangeCondition, RangeOp};
+use super::model::{AttributeUpdate, KeySchema, PutExpectation, RangeCondition, RangeOp};
 use super::wire::{WireItem, from_wire};
 use crate::error::{AppError, AppResult};
 
@@ -23,6 +23,7 @@ pub struct Expressions {
     pub key_condition: Option<String>,
     pub filter: Option<String>,
     pub condition: Option<String>,
+    pub update: Option<String>,
     pub names: HashMap<String, String>,
     pub values: HashMap<String, AttributeValue>,
 }
@@ -169,6 +170,55 @@ pub fn put_condition(expect: PutExpectation, hash_key: &str) -> Expressions {
     }
 }
 
+/// UpdateItem for inline grid edits: `SET #dbka0 = :dbkv0, ...` with the condition
+/// `attribute_exists(#dbk0)` (the item is still there) and, per attribute, `#dbkaN = :dbkeN`
+/// (still the value the user saw) or `attribute_not_exists(#dbkaN)` (still missing). Names and
+/// values only ever travel as placeholders. Key attributes can't be set this way.
+pub fn build_update(schema: &KeySchema, changes: &[AttributeUpdate]) -> AppResult<Expressions> {
+    if changes.is_empty() {
+        return Err(AppError::InvalidInput("no attribute changes to apply".into()));
+    }
+    let key_name = format!("#{BASE_PREFIX}0");
+    let mut names = HashMap::from([(key_name.clone(), schema.hash.name.clone())]);
+    let mut values = HashMap::new();
+    let mut sets = Vec::with_capacity(changes.len());
+    let mut conditions = vec![format!("attribute_exists({key_name})")];
+    let mut seen = HashSet::new();
+    for (i, change) in changes.iter().enumerate() {
+        let name = change.name.as_str();
+        if name.is_empty() {
+            return Err(AppError::InvalidInput("attribute name must not be empty".into()));
+        }
+        if name == schema.hash.name || schema.range.as_ref().is_some_and(|r| r.name == name) {
+            return Err(AppError::InvalidInput(format!(
+                "{name} is part of the table key; edit the item as JSON to change it"
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(AppError::InvalidInput(format!("attribute {name} is changed twice")));
+        }
+        let (attr, value) = (format!("#{BASE_PREFIX}a{i}"), format!(":{BASE_PREFIX}v{i}"));
+        names.insert(attr.clone(), name.to_string());
+        values.insert(value.clone(), from_wire(&change.value)?);
+        sets.push(format!("{attr} = {value}"));
+        conditions.push(match &change.expected {
+            Some(expected) => {
+                let placeholder = format!(":{BASE_PREFIX}e{i}");
+                values.insert(placeholder.clone(), from_wire(expected)?);
+                format!("{attr} = {placeholder}")
+            }
+            None => format!("attribute_not_exists({attr})"),
+        });
+    }
+    Ok(Expressions {
+        update: Some(format!("SET {}", sets.join(", "))),
+        condition: Some(conditions.join(" AND ")),
+        names,
+        values,
+        ..Default::default()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +340,60 @@ mod tests {
         assert_eq!(e.names["#dbk0"], "pk");
         let e = put_condition(PutExpectation::NotExists, "pk");
         assert_eq!(e.condition.as_deref(), Some("attribute_not_exists(#dbk0)"));
+    }
+
+    fn change(name: &str, value: Value, expected: Option<Value>) -> AttributeUpdate {
+        AttributeUpdate { name: name.into(), value, expected }
+    }
+
+    #[test]
+    fn update_sets_through_placeholders_with_value_conditions() {
+        let changes = [
+            change("status", json!({ "S": "on" }), Some(json!({ "S": "off" }))),
+            change("count", json!({ "N": "2" }), None),
+        ];
+        let e = build_update(&schema(true), &changes).unwrap();
+        assert_eq!(e.update.as_deref(), Some("SET #dbka0 = :dbkv0, #dbka1 = :dbkv1"));
+        assert_eq!(
+            e.condition.as_deref(),
+            Some("attribute_exists(#dbk0) AND #dbka0 = :dbke0 AND attribute_not_exists(#dbka1)")
+        );
+        assert_eq!(e.names["#dbk0"], "pk");
+        assert_eq!(e.names["#dbka0"], "status");
+        assert_eq!(e.names["#dbka1"], "count");
+        assert_eq!(e.values[":dbkv0"], AttributeValue::S("on".into()));
+        assert_eq!(e.values[":dbke0"], AttributeValue::S("off".into()));
+        assert_eq!(e.values[":dbkv1"], AttributeValue::N("2".into()));
+        assert_eq!(e.values.len(), 3);
+        assert_eq!(e.key_condition, None);
+    }
+
+    #[test]
+    fn update_keeps_odd_attribute_names_out_of_the_expression() {
+        let name = "a = :x OR #y";
+        let changes = [change(name, json!({ "BOOL": true }), Some(json!({ "BOOL": false })))];
+        let e = build_update(&schema(false), &changes).unwrap();
+        assert!(!e.update.unwrap().contains(name));
+        assert!(!e.condition.unwrap().contains(name));
+        assert_eq!(e.names["#dbka0"], name);
+    }
+
+    #[test]
+    fn update_rejects_keys_duplicates_bad_values_and_nothing() {
+        let s = schema(true);
+        let cases = [
+            vec![],
+            vec![change("pk", json!({ "S": "x" }), None)],
+            vec![change("sk", json!({ "N": "1" }), None)],
+            vec![change("", json!({ "S": "x" }), None)],
+            vec![change("a", json!({ "S": "x" }), None), change("a", json!({ "S": "y" }), None)],
+            vec![change("a", json!({ "N": 1 }), None)],
+            vec![change("a", json!({ "S": "x" }), Some(json!({ "Q": "?" })))],
+        ];
+        for changes in cases {
+            let err = build_update(&s, &changes).unwrap_err();
+            assert_eq!(err.kind(), "invalid_input", "{changes:?}");
+        }
     }
 
     #[test]

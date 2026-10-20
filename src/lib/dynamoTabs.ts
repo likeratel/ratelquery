@@ -1,6 +1,7 @@
 import type { ConnectionId } from "./connections"
 import type { DynamoExportRequest, Item, KeySchema, Page } from "./dynamo"
 import { itemKey } from "./dynamoDiff"
+import { EMPTY_DYNAMO_EDITS, pendingEditCount, type DynamoEdits } from "./dynamoEdits"
 import { formatItem, type JsonMode } from "./dynamoJson"
 import { EMPTY_FORM, type DynamoForm, type DynamoMode } from "./dynamoRequest"
 import type { AppError } from "./ipc"
@@ -55,6 +56,10 @@ export interface DynamoTab {
   detail: Item | null
   view: ItemView
   editor: ItemEditorState | null
+  /** Inline grid edits waiting for Apply, keyed by item key so they outlive a page refresh. */
+  edits: DynamoEdits
+  /** Set while Apply writes the pending edits. */
+  applying: boolean
   /** Increments on every finished request; drives stale-response checks and count-up. */
   runId: number
   lastElapsedMs: number | null
@@ -80,6 +85,8 @@ export function createDynamoTab(id: string, connectionId: ConnectionId, title: s
     detail: null,
     view: "table",
     editor: null,
+    edits: EMPTY_DYNAMO_EDITS,
+    applying: false,
     runId: 0,
     lastElapsedMs: null,
   }
@@ -231,6 +238,10 @@ export function guardDiscard(tab: DynamoTab, intent: DiscardIntent): DynamoTab |
   return updateEditor(tab, { discard: intent })
 }
 
+export function hasPendingEdits(tab: DynamoTab): boolean {
+  return pendingEditCount(tab.edits) > 0
+}
+
 export function isDynamoTabDirty(tab: DynamoTab): boolean {
-  return isEditorDirty(tab.editor)
+  return isEditorDirty(tab.editor) || hasPendingEdits(tab)
 }

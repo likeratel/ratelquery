@@ -1,14 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import type { Item, PutExpectation, ScanRequest, TableDescription } from "../../lib/dynamo"
+import type {
+  AttributeUpdate,
+  Item,
+  PutExpectation,
+  ScanRequest,
+  TableDescription,
+} from "../../lib/dynamo"
+import { pendingEditCount } from "../../lib/dynamoEdits"
 import { setTransport } from "../../lib/ipc"
 import { selectedItem } from "../../lib/dynamoTabs"
 import { INITIAL_TABS } from "../../lib/queryTabs"
 import { useTabsStore } from "../../state/tabsStore"
 import {
+  applyDynamoEdits,
   chooseTable,
   closeItemEditor,
+  commitCellEdit,
   confirmSave,
   deleteItem,
+  discardDynamoEdits,
   discardEditorChanges,
   escapeEditor,
   openDynamoTabFor,
@@ -63,6 +73,8 @@ class FakeDynamo {
       case "dynamo_delete_item":
         this.items.delete(String((args?.key as Item).pk.S))
         return undefined
+      case "dynamo_update_item_attributes":
+        return this.update(args?.key as Item, args?.changes as AttributeUpdate[])
       default:
         throw { kind: "not_found", message: command }
     }
@@ -82,6 +94,19 @@ class FakeDynamo {
       scannedCount: items.length,
       elapsedMs: 4,
     }
+  }
+
+  /** Conditional like the backend: the item exists and every attribute is still as expected. */
+  private update(key: Item, changes: AttributeUpdate[]) {
+    const name = String(key.pk.S)
+    const stored = this.items.get(name)
+    const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b)
+    if (!stored || changes.some((c) => !same(stored[c.name], c.expected))) {
+      throw { kind: "query", message: "the item was changed or deleted since it was loaded" }
+    }
+    const updates = Object.fromEntries(changes.map((c) => [c.name, c.value]))
+    this.items.set(name, { ...stored, ...updates })
+    return undefined
   }
 
   private put(item: Item, expect: PutExpectation) {
@@ -326,5 +351,66 @@ describe("editing", () => {
     await expect(deleteItem(id, { pk: { S: "z" } })).resolves.toBe(true)
     expect(tab(id)).toMatchObject({ error: null, detail: null })
     expect(fake.items.has("z")).toBe(false)
+  })
+})
+
+describe("inline edits", () => {
+  it("stages typed values, then applies them and re-reads the page", async () => {
+    const id = await openUsers()
+    expect(commitCellEdit(id, 0, "n", "x")).toMatch(/isn't a number/)
+    expect(commitCellEdit(id, 0, "pk", "z")).toMatch(/item editor/)
+    expect(commitCellEdit(id, 0, "n", "5")).toBeNull()
+    expect(commitCellEdit(id, 1, "note", "hi")).toBeNull()
+    expect(pendingEditCount(tab(id).edits)).toBe(2)
+    // The page under the edits is kept until they are applied or discarded.
+    await expect(runDynamo(id, "next")).resolves.toBeNull()
+    expect(fake.calls.filter((c) => c.command === "dynamo_scan")).toHaveLength(1)
+
+    await applyDynamoEdits(id)
+    const updates = fake.calls.filter((c) => c.command === "dynamo_update_item_attributes")
+    expect(updates.map((c) => c.args)).toEqual([
+      {
+        connectionId: "c1",
+        table: "users",
+        key: { pk: { S: "a" } },
+        changes: [{ name: "n", value: { N: "5" }, expected: { N: "1" } }],
+      },
+      {
+        connectionId: "c1",
+        table: "users",
+        key: { pk: { S: "b" } },
+        changes: [{ name: "note", value: { S: "hi" }, expected: null }],
+      },
+    ])
+    expect(tab(id)).toMatchObject({ applying: false, edits: {} })
+    expect(tab(id).page?.items.map((i) => i.n)).toEqual([{ N: "5" }, { N: "1" }])
+    expect(tab(id).page?.items[1].note).toEqual({ S: "hi" })
+  })
+
+  it("keeps the edits of items that failed and drops the written ones", async () => {
+    const id = await openUsers()
+    commitCellEdit(id, 0, "n", "5")
+    commitCellEdit(id, 1, "n", "6")
+    fake.items.set("b", { pk: { S: "b" }, n: { N: "9" } })
+    await applyDynamoEdits(id)
+    expect(fake.items.get("a")?.n).toEqual({ N: "5" })
+    expect(fake.items.get("b")?.n).toEqual({ N: "9" })
+    const left = Object.values(tab(id).edits)
+    expect(left.map((e) => e.key)).toEqual([{ pk: { S: "b" } }])
+    // Edits are keyed by item, so they still apply to the refreshed page.
+    expect(tab(id).page?.items.map((i) => i.pk.S)).toEqual(["a", "b"])
+
+    discardDynamoEdits(id)
+    expect(tab(id).edits).toEqual({})
+  })
+
+  it("keeps an item with pending edits out of the JSON editor and forgets edits of deleted items", async () => {
+    const id = await openUsers()
+    commitCellEdit(id, 0, "n", "5")
+    const first = tab(id).page?.items[0] as Item
+    openItemEditor(id, first)
+    expect(tab(id).editor).toBeNull()
+    await deleteItem(id, first)
+    expect(tab(id).edits).toEqual({})
   })
 })

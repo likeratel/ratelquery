@@ -72,6 +72,16 @@ export interface Page {
 
 export type PutExpectation = "exists" | "not_exists" | "any"
 
+/**
+ * One attribute for `dynamo_update_item_attributes`. `expected` is the value the edit started
+ * from, or null when the attribute was missing; the write fails if it no longer matches.
+ */
+export interface AttributeUpdate {
+  name: string
+  value: AttributeValue
+  expected: AttributeValue | null
+}
+
 export type DynamoExportRequest = { scan: ScanRequest } | { query: QueryRequest }
 
 export interface DynamoExportOptions {
@@ -93,6 +103,12 @@ export const dynamoApi = {
     ipc<void>("dynamo_put_item", { connectionId, table, item, expect }),
   deleteItem: (connectionId: ConnectionId, table: string, key: Item) =>
     ipc<void>("dynamo_delete_item", { connectionId, table, key }),
+  updateItemAttributes: (
+    connectionId: ConnectionId,
+    table: string,
+    key: Item,
+    changes: readonly AttributeUpdate[],
+  ) => ipc<void>("dynamo_update_item_attributes", { connectionId, table, key, changes }),
   export: (
     connectionId: ConnectionId,
     request: DynamoExportRequest,

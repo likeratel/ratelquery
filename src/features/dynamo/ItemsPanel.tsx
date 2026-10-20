@@ -1,7 +1,7 @@
 import { ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { SegmentedControl } from "../../components/ui"
-import type { KeySchema } from "../../lib/dynamo"
+import type { KeySchema, Page } from "../../lib/dynamo"
 import { findLossyAttributes, formatItem } from "../../lib/dynamoJson"
 import {
   canGoNext,
@@ -11,8 +11,16 @@ import {
   type DynamoTab,
   type ItemView,
 } from "../../lib/dynamoTabs"
-import { deleteItem, openItemEditor, runDynamo, selectRow, setItemView } from "./actions"
+import {
+  commitCellEdit,
+  deleteItem,
+  openItemEditor,
+  runDynamo,
+  selectRow,
+  setItemView,
+} from "./actions"
 import { DynamoExportMenu } from "./DynamoExportMenu"
+import { DynamoPendingBar } from "./DynamoPendingBar"
 import { editorReturnTarget } from "./editorFocus"
 import { DynamoErrorPanel } from "./errors"
 import { ItemsGrid } from "./ItemsGrid"
@@ -134,13 +142,44 @@ function Body({ tab, schema }: { tab: DynamoTab; schema: KeySchema | null }) {
     return <div className="results__empty">No items on this page</div>
   }
   if (tab.view === "json") return <JsonView tab={tab} />
+  return <TableView tab={tab} page={tab.page} schema={schema} />
+}
+
+function TableView({
+  tab,
+  page,
+  schema,
+}: {
+  tab: DynamoTab
+  page: Page
+  schema: KeySchema | null
+}) {
+  const tabId = tab.id
+  // ResultGrid is memoized; stable callbacks keep its rows from re-rendering on every change.
+  const onSelect = useCallback((index: number) => selectRow(tabId, index), [tabId])
+  const onCommit = useCallback(
+    (index: number, attribute: string, text: string) =>
+      commitCellEdit(tabId, index, attribute, text),
+    [tabId],
+  )
+  const onOpenEditor = useCallback(
+    (index: number) => {
+      const item = page.items[index]
+      if (item) openItemEditor(tabId, item)
+    },
+    [tabId, page.items],
+  )
   return (
     <ItemsGrid
-      page={tab.page}
+      page={page}
       schema={schema}
       selected={tab.selected}
-      runKey={`${tab.id}:${tab.runId}`}
-      onSelect={(index) => selectRow(tab.id, index)}
+      runKey={`${tabId}:${tab.runId}`}
+      edits={tab.edits}
+      editable={schema !== null && !tab.applying}
+      onSelect={onSelect}
+      onCommit={onCommit}
+      onOpenEditor={onOpenEditor}
     />
   )
 }
@@ -204,6 +243,7 @@ export function ItemsPanel({ tab, schema }: { tab: DynamoTab; schema: KeySchema 
         <DynamoExportMenu connectionId={tab.connectionId} table={tab.table} request={tab.request} />
       </div>
       <Body tab={tab} schema={schema} />
+      <DynamoPendingBar tab={tab} />
       <Pager tab={tab} />
     </section>
   )

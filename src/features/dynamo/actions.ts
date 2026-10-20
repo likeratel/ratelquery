@@ -7,6 +7,15 @@ import {
   sameKey,
   validateKeyAttributes,
 } from "../../lib/dynamoDiff"
+import {
+  buildItemUpdates,
+  EMPTY_DYNAMO_EDITS,
+  itemEdit,
+  keyId,
+  keyLabel,
+  stageCellEdit,
+  withoutItems,
+} from "../../lib/dynamoEdits"
 import { findLossyAttributes, formatItem, parseItem, type JsonMode } from "../../lib/dynamoJson"
 import {
   buildDynamoRequest,
@@ -19,9 +28,11 @@ import {
   failDynamoRun,
   finishDynamoRun,
   guardDiscard,
+  hasPendingEdits,
   isEditorDirty,
   nextStartKeys,
   openEditor,
+  selectedItem,
   selectItem,
   selectTable,
   setForm,
@@ -50,6 +61,13 @@ const patch = (id: string, update: (tab: DynamoTab) => DynamoTab) => tabs().upda
 
 const messageOf = (raw: unknown, fallback: string) => (isAppError(raw) ? raw.message : fallback)
 
+/** Like the SQL grid: pending edits block anything that would replace the page under them. */
+function refusePendingEdits(tab: DynamoTab, action: string): boolean {
+  if (!hasPendingEdits(tab)) return false
+  showToast({ tone: "info", message: `Apply or discard pending changes before ${action}` })
+  return true
+}
+
 /** Opens a DynamoDB tab for the connection and starts listing its tables. */
 export function openDynamoTabFor(connectionId: ConnectionId): string {
   const id = tabs().openDynamo(connectionId)
@@ -66,6 +84,7 @@ export function openDynamoTabFor(connectionId: ConnectionId): string {
 export async function chooseTable(tabId: string, table: string): Promise<void> {
   const tab = findTab(tabId)
   if (!tab || tab.table === table) return
+  if (refusePendingEdits(tab, "switching tables")) return
   const guarded = guardDiscard(tab, { kind: "table", table })
   if (guarded) {
     patch(tabId, () => guarded)
@@ -114,6 +133,8 @@ async function fetchPage(tab: DynamoTab, request: DynamoTab["request"], startKey
 export async function runDynamo(tabId: string, move: PageMove = "first"): Promise<Page | null> {
   const tab = findTab(tabId)
   if (!tab || tab.running) return null
+  // Re-reading the current page keeps the edits (they are keyed by item), as after Apply.
+  if (move !== "current" && refusePendingEdits(tab, "running again")) return null
   if (!tab.table) {
     showToast({ tone: "info", message: "Choose a table first" })
     return null
@@ -175,6 +196,13 @@ function keyTemplate(schema: KeySchema | null): Item {
 export function openItemEditor(tabId: string, item: Item | null): void {
   const tab = findTab(tabId)
   if (!tab?.table || tab.editor?.saving) return
+  if (item && itemEdit(tab.edits, item, tableKeySchema(tab))) {
+    showToast({
+      tone: "info",
+      message: "Apply or discard this item's pending changes before editing it as JSON",
+    })
+    return
+  }
   const guarded = guardDiscard(tab, { kind: "open", item })
   if (guarded) {
     patch(tabId, () => guarded)
@@ -254,9 +282,11 @@ export function reviewEdit(tabId: string): void {
   )
 }
 
+/** Mod+S in a DynamoDB tab: reviews the open item editor, otherwise applies grid edits. */
 export function reviewActiveEdit(): void {
   const tab = selectActiveDynamoTab(tabs())
   if (tab?.editor) reviewEdit(tab.id)
+  else if (tab && hasPendingEdits(tab)) void applyDynamoEdits(tab.id)
 }
 
 export function backToEdit(tabId: string): void {
@@ -377,7 +407,94 @@ export async function deleteItem(tabId: string, item: Item): Promise<boolean> {
     return false
   }
   showToast({ tone: "success", message: "Deleted item" })
-  patch(tabId, (t) => (t.detail && sameKey(t.detail, key, schema) ? { ...t, detail: null } : t))
+  patch(tabId, (t) => ({
+    ...t,
+    detail: t.detail && sameKey(t.detail, key, schema) ? null : t.detail,
+    // Edits of a deleted item can only fail now.
+    edits: withoutItems(t.edits, [keyId(key)]),
+  }))
   await refreshAndSelect(tabId, null, schema)
   return true
+}
+
+/**
+ * Stages a typed cell value of the page item at `index`. Returns an error message to keep the
+ * cell editor open, or null once the edit is pending.
+ */
+export function commitCellEdit(
+  tabId: string,
+  index: number,
+  name: string,
+  text: string,
+): string | null {
+  const tab = findTab(tabId)
+  const item = tab?.page?.items[index]
+  const schema = tab ? tableKeySchema(tab) : null
+  if (!tab || !item) return "This item is no longer on the page"
+  if (!schema) return "Table details are still loading; try again in a moment"
+  if (tab.applying) return "Changes are being applied"
+  const original = tab.editor?.original
+  if (original && sameKey(original, item, schema)) return "Close the item editor first"
+  const staged = stageCellEdit(tab.edits, { item, schema, name, text })
+  if (!staged.ok) return staged.error
+  patch(tabId, (t) => ({ ...t, edits: staged.value }))
+  return null
+}
+
+export function discardDynamoEdits(tabId: string): void {
+  patch(tabId, (t) => (t.applying ? t : { ...t, edits: EMPTY_DYNAMO_EDITS }))
+}
+
+const MAX_LISTED_FAILURES = 3
+
+function failureDetail(failures: readonly { key: Item; message: string }[]): string {
+  const listed = failures
+    .slice(0, MAX_LISTED_FAILURES)
+    .map((f) => `${keyLabel(f.key)}: ${f.message}`)
+  const more = failures.length - listed.length
+  return more > 0 ? `${listed.join("; ")}; and ${more} more` : listed.join("; ")
+}
+
+/**
+ * Writes the pending grid edits, one conditional UpdateItem per item. Items that were written
+ * leave the pending list; failed ones stay pending and are reported. Then the page is re-read.
+ */
+export async function applyDynamoEdits(tabId: string): Promise<void> {
+  const tab = findTab(tabId)
+  const schema = tab ? tableKeySchema(tab) : null
+  if (!tab?.table || !schema || tab.applying || tab.running) return
+  const updates = buildItemUpdates(tab.edits)
+  if (updates.length === 0) return
+  const { connectionId, table } = tab
+  patch(tabId, (t) => ({ ...t, applying: true }))
+  const written: string[] = []
+  const failures: { key: Item; message: string }[] = []
+  for (const update of updates) {
+    try {
+      await dynamoApi.updateItemAttributes(connectionId, table, update.key, update.changes)
+      written.push(update.id)
+    } catch (raw) {
+      failures.push({ key: update.key, message: messageOf(raw, "unknown error") })
+    }
+  }
+  patch(tabId, (t) => ({ ...t, applying: false, edits: withoutItems(t.edits, written) }))
+  const noun = (n: number) => (n === 1 ? "item" : "items")
+  if (failures.length === 0) {
+    showToast({
+      tone: "success",
+      message: `Applied changes · ${written.length} ${noun(written.length)} updated`,
+    })
+  } else {
+    showToast({
+      tone: "error",
+      message:
+        written.length > 0
+          ? `Updated ${written.length} of ${updates.length} items; ${failures.length} still pending`
+          : `Couldn't update ${failures.length} ${noun(failures.length)}; changes are still pending`,
+      detail: failureDetail(failures),
+    })
+  }
+  const current = findTab(tabId)
+  const selected = current ? selectedItem(current) : null
+  await refreshAndSelect(tabId, selected ? itemKey(selected, schema) : null, schema)
 }

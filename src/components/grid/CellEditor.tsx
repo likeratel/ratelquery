@@ -13,9 +13,11 @@ interface CellEditorProps {
   onCancel: () => void
   /** Called after a successful commit made with Tab, to move right. */
   onTab?: (backwards: boolean) => void
+  /** Tooltip of the input; defaults to the SQL NULL hint. */
+  hint?: string
 }
 
-export function CellEditor({ initial, onCommit, onCancel, onTab }: CellEditorProps) {
+export function CellEditor({ initial, onCommit, onCancel, onTab, hint }: CellEditorProps) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [text, setText] = useState(initial)
   const [error, setError] = useState<string | null>(null)
@@ -76,7 +78,7 @@ export function CellEditor({ initial, onCommit, onCancel, onTab }: CellEditorPro
         spellCheck={false}
         aria-invalid={error !== null}
         aria-label="Cell value"
-        title={`Type ${NULL_INPUT} for SQL NULL`}
+        title={hint ?? `Type ${NULL_INPUT} for SQL NULL`}
         onChange={(event) => {
           setText(event.target.value)
           setError(null)

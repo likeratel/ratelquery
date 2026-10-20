@@ -10,9 +10,9 @@ use aws_sdk_dynamodb::types::{
 use futures_util::FutureExt;
 use ratelquery_lib::connections::{DynamoAuth, DynamoConnectionConfig};
 use ratelquery_lib::dynamo::{
-    self, DynamoClients, DynamoExportFormat, DynamoExportOptions, DynamoExportRequest,
-    DynamoHandle, IndexKind, KeyType, Page, Projection, PutExpectation, QueryRequest,
-    RangeCondition, ScanRequest, WireItem,
+    self, AttributeUpdate, DynamoClients, DynamoExportFormat, DynamoExportOptions,
+    DynamoExportRequest, DynamoHandle, IndexKind, KeyType, Page, Projection, PutExpectation,
+    QueryRequest, RangeCondition, ScanRequest, WireItem,
 };
 use serde_json::{Value, json};
 
@@ -242,6 +242,45 @@ async fn check_items(handle: &DynamoHandle, table: &str) {
     );
 }
 
+fn update(name: &str, value: Value, expected: Option<Value>) -> AttributeUpdate {
+    AttributeUpdate { name: name.into(), value, expected }
+}
+
+async fn check_attribute_updates(handle: &DynamoHandle, table: &str) {
+    let key = item(json!({ "pk": s("u8"), "sk": s("y") }));
+    let original = item(json!({ "pk": s("u8"), "sk": s("y"), "cat": s("red"), "n": { "N": "1" } }));
+    dynamo::put_item(handle, table, &original, PutExpectation::NotExists).await.unwrap();
+    let changes = [
+        update("cat", s("blue"), Some(s("red"))),
+        update("n", json!({ "N": "2" }), Some(json!({ "N": "1.0" }))),
+        update("flag", json!({ "BOOL": true }), None),
+    ];
+    dynamo::update_item_attributes(handle, table, &key, &changes).await.unwrap();
+    let stored = dynamo::get_item(handle, table, &key).await.unwrap().unwrap();
+    assert_eq!(stored["cat"], s("blue"));
+    assert_eq!(stored["n"], json!({ "N": "2" }));
+    assert_eq!(stored["flag"], json!({ "BOOL": true }));
+
+    // The same edit again: `cat` is no longer "red", so nothing is written.
+    let err = dynamo::update_item_attributes(handle, table, &key, &changes[..1]).await.unwrap_err();
+    assert_eq!(err.kind(), "query");
+    assert!(err.to_string().contains("changed or deleted"), "{err}");
+    let err = dynamo::update_item_attributes(handle, table, &key, &changes[2..]).await.unwrap_err();
+    assert!(err.to_string().contains("changed or deleted"), "{err}");
+
+    // A deleted item is not recreated.
+    dynamo::delete_item(handle, table, &key).await.unwrap();
+    let recreate = [update("cat", s("x"), None)];
+    let err = dynamo::update_item_attributes(handle, table, &key, &recreate).await.unwrap_err();
+    assert!(err.to_string().contains("changed or deleted"), "{err}");
+    assert!(dynamo::get_item(handle, table, &key).await.unwrap().is_none());
+
+    let err = dynamo::update_item_attributes(handle, table, &key, &[update("pk", s("z"), None)])
+        .await
+        .unwrap_err();
+    assert_eq!(err.kind(), "invalid_input");
+}
+
 async fn export(
     handle: &DynamoHandle,
     request: &DynamoExportRequest,
@@ -349,6 +388,7 @@ async fn run_all(handle: &DynamoHandle, table: &str) {
     check_queries(handle, table).await;
     check_pagination_and_scan(handle, table).await;
     check_items(handle, table).await;
+    check_attribute_updates(handle, table).await;
     check_exports(handle, table).await;
 }
 

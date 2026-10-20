@@ -157,6 +157,18 @@ pub enum PutExpectation {
     Any,
 }
 
+/// One attribute set by `dynamo_update_item_attributes`. `expected` is the value the user saw
+/// when editing, or `None` when the attribute was missing; the write only goes through while
+/// the stored attribute still matches it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttributeUpdate {
+    pub name: String,
+    pub value: Value,
+    #[serde(default)]
+    pub expected: Option<Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DynamoExportRequest {
@@ -204,6 +216,19 @@ mod tests {
         assert!(
             serde_json::from_value::<RangeCondition>(json!({ "op": "ne", "value": {} })).is_err()
         );
+    }
+
+    #[test]
+    fn deserializes_attribute_updates() {
+        let update: AttributeUpdate = serde_json::from_value(
+            json!({ "name": "n", "value": { "N": "2" }, "expected": { "N": "1" } }),
+        )
+        .unwrap();
+        assert_eq!(update.expected, Some(json!({ "N": "1" })));
+        let added: AttributeUpdate =
+            serde_json::from_value(json!({ "name": "n", "value": { "S": "" }, "expected": null }))
+                .unwrap();
+        assert_eq!(added.expected, None);
     }
 
     #[test]

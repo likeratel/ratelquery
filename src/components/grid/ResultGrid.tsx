@@ -63,6 +63,14 @@ export interface ResultGridProps {
   onSelect: (selection: GridSelection) => void
   /** Returns an error message to keep the editor open, or null once the edit is recorded. */
   onCommit?: (row: DisplayRow, col: number, text: string) => string | null
+  /**
+   * Whether one cell of an editable grid can be edited inline. Without it every cell can.
+   * Double-click or Enter on a cell that can't calls `onEditUnavailable` instead.
+   */
+  canEditCell?: (target: GridSelection) => boolean
+  onEditUnavailable?: (target: GridSelection) => void
+  /** Tooltip of the cell editor; defaults to the SQL NULL hint. */
+  editorHint?: string
   /** Text shown for unset cells of inserted rows, per column (e.g. "default", "auto"). */
   insertPlaceholder?: (col: number) => string
   /** Identity of the grid (tab and result); resized column widths are kept per key. */
@@ -118,14 +126,37 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
   const totalWidth = leadWidth + widths.reduce((sum, w) => sum + w, 0)
 
   // Rows receive stable callbacks that read the latest props, so GridRow's memo holds.
-  const latest = useRef({ rows, editable, onCommit, selection, onSelect, changeRows })
+  const { canEditCell, onEditUnavailable } = props
+  const latest = useRef({
+    rows,
+    editable,
+    onCommit,
+    selection,
+    onSelect,
+    changeRows,
+    canEditCell,
+    onEditUnavailable,
+  })
   useEffect(() => {
-    latest.current = { rows, editable, onCommit, selection, onSelect, changeRows }
+    latest.current = {
+      rows,
+      editable,
+      onCommit,
+      selection,
+      onSelect,
+      changeRows,
+      canEditCell,
+      onEditUnavailable,
+    }
   })
   const startEdit = useCallback((target: GridSelection) => {
     const current = latest.current
     const row = current.rows[target.row]
     if (!current.editable || !current.onCommit || !row || row.deleted) return
+    if (current.canEditCell && !current.canEditCell(target)) {
+      current.onEditUnavailable?.(target)
+      return
+    }
     setEditing(target)
   }, [])
 
@@ -313,6 +344,7 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
                       // Tab moves to the next cell; a fresh editor starts from that cell's value.
                       key={editCol}
                       initial={editInitial(row.cells[editCol])}
+                      hint={props.editorHint}
                       onCommit={(text) => {
                         const error = onCommit(row, editCol, text)
                         if (error === null) finishEdit()
@@ -321,8 +353,11 @@ export const ResultGrid = memo(function ResultGrid(props: ResultGridProps) {
                       onCancel={finishEdit}
                       onTab={(backwards) => {
                         const col = clamp(editCol + (backwards ? -1 : 1), 0, columns.length - 1)
-                        onSelect({ row: item.index, col })
-                        setEditing({ row: item.index, col })
+                        const next = { row: item.index, col }
+                        onSelect(next)
+                        // Tab stops on a cell that can't be edited inline instead of opening it.
+                        if (canEditCell && !canEditCell(next)) finishEdit()
+                        else setEditing(next)
                       }}
                     />
                   </div>
