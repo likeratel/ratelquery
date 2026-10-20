@@ -3,10 +3,12 @@ import type { Item, KeySchema } from "./dynamo"
 import {
   buildItemUpdates,
   EMPTY_DYNAMO_EDITS,
+  failedEditHint,
   inlineEditType,
   itemEdit,
   keyId,
   keyLabel,
+  markFailed,
   parseDynamoNumber,
   parseInlineValue,
   pendingEditCount,
@@ -182,6 +184,21 @@ describe("withPendingValues / buildItemUpdates / withoutItems", () => {
     const left = withoutItems(edits, [first.id])
     expect(Object.keys(left)).toEqual([second.id])
     expect(withoutItems(edits, ["missing"])).toBe(edits)
+  })
+})
+
+describe("failed items", () => {
+  it("marks only the failed items and picks the hint by error kind", () => {
+    const edits: DynamoEdits = {
+      a: { key: { pk: { S: "a" } }, changes: {} },
+      b: { key: { pk: { S: "b" } }, changes: {} },
+    }
+    const marked = markFailed(edits, { b: "query" })
+    expect(marked.a).toBe(edits.a)
+    expect(marked.b).toEqual({ ...edits.b, failed: "query" })
+    expect(failedEditHint("query")).toMatch(/changed on the server/)
+    expect(failedEditHint("connection")).toMatch(/couldn't be reached/)
+    expect(failedEditHint("unknown")).toMatch(/^Not written\. /)
   })
 })
 

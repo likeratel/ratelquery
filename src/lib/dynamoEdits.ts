@@ -2,6 +2,7 @@ import type { AttributeUpdate, AttributeValue, Item, KeySchema } from "./dynamo"
 import { attributesEqual, itemKey } from "./dynamoDiff"
 import { attributeTag, canonicalDecimal, type Result } from "./dynamoJson"
 import { attributeSummary, type KeyRole } from "./dynamoView"
+import type { AppErrorKind } from "./ipc"
 
 /**
  * Pending inline edits of DynamoDB grid cells, applied together with one UpdateItem per item.
@@ -27,6 +28,8 @@ export interface PendingAttribute {
 export interface PendingItemEdit {
   key: Item
   changes: Readonly<Record<string, PendingAttribute>>
+  /** Error kind of the last Apply that couldn't write the item; editing it again clears this. */
+  failed?: AppErrorKind
 }
 
 /** Pending edits by `keyId` of the item. */
@@ -161,6 +164,33 @@ function unstage(edits: DynamoEdits, id: string, name: string): DynamoEdits {
 export function withoutItems(edits: DynamoEdits, ids: readonly string[]): DynamoEdits {
   if (!ids.some((id) => id in edits)) return edits
   return Object.fromEntries(Object.entries(edits).filter(([id]) => !ids.includes(id)))
+}
+
+/** Marks the edits of items an Apply couldn't write with the kind of error it got. */
+export function markFailed(
+  edits: DynamoEdits,
+  failures: Readonly<Record<string, AppErrorKind>>,
+): DynamoEdits {
+  return Object.fromEntries(
+    Object.entries(edits).map(([id, edit]) =>
+      failures[id] ? [id, { ...edit, failed: failures[id] }] : [id, edit],
+    ),
+  )
+}
+
+/**
+ * Why a pending item wasn't written and what to do about it. A conditional write the server
+ * refused is a `query` error: the item changed or was deleted since it was loaded (or IAM
+ * refused the write), so the pending values hide what the server holds now.
+ */
+export function failedEditHint(kind: AppErrorKind): string {
+  if (kind === "query") {
+    return "Not written: the item changed on the server or the write was refused. Discard this item's changes to see its current values."
+  }
+  if (kind === "connection" || kind === "credential") {
+    return "Not written: DynamoDB couldn't be reached. Apply again, or discard this item's changes."
+  }
+  return "Not written. Apply again, or discard this item's changes."
 }
 
 export interface ItemUpdate {

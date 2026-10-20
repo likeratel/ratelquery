@@ -13,6 +13,7 @@ import {
   itemEdit,
   keyId,
   keyLabel,
+  markFailed,
   stageCellEdit,
   withoutItems,
 } from "../../lib/dynamoEdits"
@@ -44,7 +45,7 @@ import {
   type ItemView,
   type PageMove,
 } from "../../lib/dynamoTabs"
-import { isAppError, normalizeError } from "../../lib/ipc"
+import { isAppError, normalizeError, type AppErrorKind } from "../../lib/ipc"
 import { currentSettings } from "../../state/settingsStore"
 import { selectActiveDynamoTab, useTabsStore } from "../../state/tabsStore"
 import { showToast } from "../../components/ui"
@@ -445,6 +446,17 @@ export function discardDynamoEdits(tabId: string): void {
   patch(tabId, (t) => (t.applying ? t : { ...t, edits: EMPTY_DYNAMO_EDITS }))
 }
 
+/** Drops the pending edits of the selected item only, e.g. one whose write was refused. */
+export function discardSelectedItemEdits(tabId: string): void {
+  const tab = findTab(tabId)
+  const schema = tab ? tableKeySchema(tab) : null
+  const item = tab ? selectedItem(tab) : null
+  const key = item && schema ? itemKey(item, schema) : null
+  if (!key) return
+  const id = keyId(key)
+  patch(tabId, (t) => (t.applying ? t : { ...t, edits: withoutItems(t.edits, [id]) }))
+}
+
 const MAX_LISTED_FAILURES = 3
 
 function failureDetail(failures: readonly { key: Item; message: string }[]): string {
@@ -468,16 +480,22 @@ export async function applyDynamoEdits(tabId: string): Promise<void> {
   const { connectionId, table } = tab
   patch(tabId, (t) => ({ ...t, applying: true }))
   const written: string[] = []
-  const failures: { key: Item; message: string }[] = []
+  const failures: { id: string; key: Item; message: string; kind: AppErrorKind }[] = []
   for (const update of updates) {
     try {
       await dynamoApi.updateItemAttributes(connectionId, table, update.key, update.changes)
       written.push(update.id)
     } catch (raw) {
-      failures.push({ key: update.key, message: messageOf(raw, "unknown error") })
+      const error = normalizeError(raw)
+      failures.push({ id: update.id, key: update.key, message: error.message, kind: error.kind })
     }
   }
-  patch(tabId, (t) => ({ ...t, applying: false, edits: withoutItems(t.edits, written) }))
+  const failedKinds = Object.fromEntries(failures.map((f) => [f.id, f.kind]))
+  patch(tabId, (t) => ({
+    ...t,
+    applying: false,
+    edits: markFailed(withoutItems(t.edits, written), failedKinds),
+  }))
   const noun = (n: number) => (n === 1 ? "item" : "items")
   if (failures.length === 0) {
     showToast({

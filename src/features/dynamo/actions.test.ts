@@ -20,12 +20,14 @@ import {
   deleteItem,
   discardDynamoEdits,
   discardEditorChanges,
+  discardSelectedItemEdits,
   escapeEditor,
   openDynamoTabFor,
   openItemEditor,
   patchForm,
   reviewEdit,
   runDynamo,
+  selectRow,
   setDynamoMode,
   setEditorText,
   switchEditorMode,
@@ -402,6 +404,25 @@ describe("inline edits", () => {
 
     discardDynamoEdits(id)
     expect(tab(id).edits).toEqual({})
+  })
+
+  it("marks refused items with the error kind and discards one item's edits alone", async () => {
+    const id = await openUsers()
+    commitCellEdit(id, 0, "n", "5")
+    commitCellEdit(id, 1, "n", "6")
+    fake.items.set("a", { pk: { S: "a" }, n: { N: "7" } })
+    fake.items.set("b", { pk: { S: "b" }, n: { N: "9" } })
+    await applyDynamoEdits(id)
+    expect(Object.values(tab(id).edits).map((e) => e.failed)).toEqual(["query", "query"])
+    // The pending value still covers what the server holds now.
+    expect(tab(id).page?.items[1].n).toEqual({ N: "9" })
+
+    selectRow(id, 1)
+    discardSelectedItemEdits(id)
+    expect(Object.values(tab(id).edits).map((e) => e.key)).toEqual([{ pk: { S: "a" } }])
+    // Editing the item again clears the failure mark.
+    commitCellEdit(id, 0, "n", "8")
+    expect(Object.values(tab(id).edits)[0].failed).toBeUndefined()
   })
 
   it("keeps an item with pending edits out of the JSON editor and forgets edits of deleted items", async () => {

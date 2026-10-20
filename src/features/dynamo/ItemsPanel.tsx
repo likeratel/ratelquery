@@ -243,7 +243,7 @@ export function ItemsPanel({ tab, schema }: { tab: DynamoTab; schema: KeySchema 
         <DynamoExportMenu connectionId={tab.connectionId} table={tab.table} request={tab.request} />
       </div>
       <Body tab={tab} schema={schema} />
-      <DynamoPendingBar tab={tab} />
+      <DynamoPendingBar tab={tab} schema={schema} />
       <Pager tab={tab} />
     </section>
   )
