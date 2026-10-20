@@ -248,7 +248,10 @@ impl ConnectionsService {
                     eprintln!("could not remove the copied secret of {}: {cleanup}", copy.id());
                 }
             }
-            restored?;
+            if let Err(restore) = restored {
+                eprintln!("could not copy the secrets of {id}: {err}");
+                return Err(restore);
+            }
             return Err(err);
         }
         Ok(copy)
