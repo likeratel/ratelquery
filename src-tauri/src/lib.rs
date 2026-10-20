@@ -9,6 +9,7 @@ mod fsutil;
 mod legacy_config;
 mod menu;
 pub mod mysql;
+pub mod query_output;
 pub mod settings;
 pub mod ssh;
 mod state;
@@ -97,6 +98,8 @@ pub fn run() {
             commands::ssh::ssh_trust_host,
             commands::workspace::workspace_load,
             commands::workspace::workspace_save,
+            commands::query_output::query_output_load,
+            commands::query_output::query_output_save,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

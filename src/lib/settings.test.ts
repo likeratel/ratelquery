@@ -21,6 +21,8 @@ describe("settingsSchema", () => {
       mergeSettings(DEFAULT_SETTINGS, { query: { defaultLimit: 100_001 } }),
       mergeSettings(DEFAULT_SETTINGS, { query: { maxRows: 1.5 } }),
       mergeSettings(DEFAULT_SETTINGS, { dynamo: { pageSize: 1001 } }),
+      mergeSettings(DEFAULT_SETTINGS, { query: { outputRetentionDays: 366 } }),
+      mergeSettings(DEFAULT_SETTINGS, { query: { outputRetentionDays: -1 } }),
       { ...DEFAULT_SETTINGS, theme: "sepia" },
       { ...DEFAULT_SETTINGS, secretStore: "vault" },
     ]
@@ -34,6 +36,22 @@ describe("normalizeSettings", () => {
     expect(normalizeSettings({ dynamo: { pageSize: 25 }, extra: true })).toEqual(
       mergeSettings(DEFAULT_SETTINGS, { dynamo: { pageSize: 25 } }),
     )
+  })
+})
+
+describe("outputRetentionDays", () => {
+  it("defaults to 30 days and accepts 0 (session only) up to a year", () => {
+    expect(DEFAULT_SETTINGS.query.outputRetentionDays).toBe(30)
+    expect(normalizeSettings({ query: { maxRows: 5 } }).query.outputRetentionDays).toBe(30)
+    expect(
+      normalizeSettings({ query: { outputRetentionDays: 999 } }).query.outputRetentionDays,
+    ).toBe(30)
+    expect(parseNumericSetting("outputRetentionDays", "0")).toEqual({ ok: true, value: 0 })
+    expect(parseNumericSetting("outputRetentionDays", "365")).toEqual({ ok: true, value: 365 })
+    expect(parseNumericSetting("outputRetentionDays", "366")).toEqual({
+      ok: false,
+      error: "Enter a whole number from 0 to 365",
+    })
   })
 })
 

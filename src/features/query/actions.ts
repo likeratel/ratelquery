@@ -3,11 +3,13 @@ import { forgetTabColumnWidths } from "../../components/grid/useColumnWidths"
 import type { AthenaConnectionConfig, ConnectionId } from "../../lib/connections"
 import { onAppEvent } from "../../lib/events"
 import { isAppError } from "../../lib/ipc"
+import { sqlInsertion } from "../../lib/queryOutput"
 import { tabPendingCount, tabsForConnection, type QueryTab } from "../../lib/queryTabs"
 import { runScopeText, type RunScope } from "../../lib/runScope"
 import { dialectFor } from "../../lib/sqlDialect"
 import { useAthenaStore } from "../../state/athenaStore"
 import { useConnectionsStore } from "../../state/connectionsStore"
+import { useQueryOutputStore } from "../../state/queryOutputStore"
 import { useSessionsStore } from "../../state/sessionsStore"
 import { currentSettings } from "../../state/settingsStore"
 import {
@@ -91,9 +93,13 @@ export function newTabFromActive(): void {
   } else useTabsStore.getState().open(active.connectionId, active.database)
 }
 
-/** Drops everything kept per tab outside the tabs store: editor state, badges, widths. */
+/**
+ * Drops everything kept per tab outside the tabs store: editor state, badges, widths, the
+ * bottom panel choice. Its Output entries stay.
+ */
 function forgetTabState(id: string): void {
   forgetEditorState(id)
+  useQueryOutputStore.getState().forgetTab(id)
   useRunGuardStore.getState().forgetTab(id)
   forgetTabColumnWidths(id)
   forgetTabCountUps(id)
@@ -155,7 +161,10 @@ export function closeActiveTab(): void {
   if (active) closeQueryTab(active.id)
 }
 
-/** Closes every tab of a deleted connection and drops its session and table catalog. */
+/**
+ * Closes every tab of a deleted connection and drops its session, table catalog and query
+ * output (the saved file follows on the next output save).
+ */
 export function forgetConnection(connectionId: ConnectionId): void {
   // The connection is gone, so its tabs close without asking.
   // The backend already dropped its client, so running Athena executions finish on AWS.
@@ -163,6 +172,7 @@ export function forgetConnection(connectionId: ConnectionId): void {
   useSessionsStore.getState().forget(connectionId)
   useDynamoCatalog.getState().forget(connectionId)
   useAthenaStore.getState().forget(connectionId)
+  useQueryOutputStore.getState().forgetConnection(connectionId)
 }
 
 /**
@@ -275,6 +285,29 @@ async function runGuarded(tab: QueryTab, sql: string | null): Promise<void> {
   // A run that never started leaves the previous results, and their badges, on screen.
   if (outcome !== "ran" && outcome !== "failed") guard.setLimited(tab.id, previous)
   reportOutcome(outcome)
+}
+
+/**
+ * Puts `sql` (from the Output log) into the tab's editor over the selection, on lines of its
+ * own, and focuses the editor. Without a mounted editor it is appended to the tab's text.
+ */
+export function insertSqlIntoEditor(tabId: string, sql: string): void {
+  const view = editorFor(tabId)
+  if (view) {
+    const { from, to } = view.state.selection.main
+    const insert = sqlInsertion(view.state.doc.toString(), from, to, sql)
+    view.dispatch({
+      changes: { from, to, insert },
+      selection: { anchor: from + insert.length },
+      scrollIntoView: true,
+    })
+    view.focus()
+    return
+  }
+  const tab = useTabsStore.getState().tabs.find((t) => t.id === tabId)
+  if (tab?.kind !== "query") return
+  const end = tab.sql.length
+  useTabsStore.getState().setSql(tabId, tab.sql + sqlInsertion(tab.sql, end, end, sql))
 }
 
 /** Mod+S: apply the active result's pending edits. */

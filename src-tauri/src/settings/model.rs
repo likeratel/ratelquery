@@ -11,6 +11,8 @@ pub const EDITOR_FONT_SIZE_RANGE: RangeInclusive<u32> = 11..=20;
 pub const DEFAULT_LIMIT_RANGE: RangeInclusive<u32> = 1..=100_000;
 pub const MAX_ROWS_RANGE: RangeInclusive<u32> = 1..=100_000;
 pub const DYNAMO_PAGE_SIZE_RANGE: RangeInclusive<u32> = 1..=1000;
+/// Days the query output log is kept on disk; 0 keeps it for the session only.
+pub const OUTPUT_RETENTION_DAYS_RANGE: RangeInclusive<u32> = 0..=365;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -51,6 +53,8 @@ pub struct QuerySettings {
     pub add_limit_to_select: bool,
     pub confirm_destructive: bool,
     pub max_rows: u32,
+    /// Days to keep the query output log (SQL text and outcomes) in `query-output.json`.
+    pub output_retention_days: u32,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -83,6 +87,7 @@ impl Default for QuerySettings {
             add_limit_to_select: true,
             confirm_destructive: true,
             max_rows: 1000,
+            output_retention_days: 30,
             extra: Map::new(),
         }
     }
@@ -112,6 +117,11 @@ impl Settings {
         check_range("editorFontSize", self.editor_font_size, &EDITOR_FONT_SIZE_RANGE)?;
         check_range("query.defaultLimit", self.query.default_limit, &DEFAULT_LIMIT_RANGE)?;
         check_range("query.maxRows", self.query.max_rows, &MAX_ROWS_RANGE)?;
+        check_range(
+            "query.outputRetentionDays",
+            self.query.output_retention_days,
+            &OUTPUT_RETENTION_DAYS_RANGE,
+        )?;
         check_range("dynamo.pageSize", self.dynamo.page_size, &DYNAMO_PAGE_SIZE_RANGE)
     }
 
@@ -186,6 +196,7 @@ mod tests {
         assert_eq!(s.editor_font_size, 13);
         assert_eq!(s.query.max_rows, 50);
         assert_eq!(s.query.default_limit, 1000);
+        assert_eq!(s.query.output_retention_days, 30);
         assert!(s.query.add_limit_to_select && s.query.confirm_destructive);
         assert_eq!(s.dynamo.page_size, 100);
         assert_eq!(s.secret_store, SecretStoreKind::Keychain);
@@ -220,6 +231,8 @@ mod tests {
             json!({ "query": { "defaultLimit": 0 } }),
             json!({ "query": { "defaultLimit": 100_001 } }),
             json!({ "query": { "maxRows": 0 } }),
+            json!({ "query": { "outputRetentionDays": 366 } }),
+            json!({ "query": { "outputRetentionDays": -1 } }),
             json!({ "dynamo": { "pageSize": 1001 } }),
             json!({ "dynamo": { "pageSize": -1 } }),
             json!({ "theme": "neon" }),
@@ -234,6 +247,26 @@ mod tests {
             Settings::from_value(json!({ "editorFontSize": 11, "dynamo": { "pageSize": 1000 } }))
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn output_retention_accepts_zero_to_a_year() {
+        for days in [0, 1, 365] {
+            let s =
+                Settings::from_value(json!({ "query": { "outputRetentionDays": days } })).unwrap();
+            assert_eq!(s.query.output_retention_days, days);
+        }
+        let out = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(out["query"]["outputRetentionDays"], json!(30));
+    }
+
+    #[test]
+    fn older_files_without_output_retention_load_with_the_default() {
+        let s = sanitize(&json!({ "query": { "maxRows": 10, "outputRetentionDays": 999 } }));
+        assert_eq!(s.query.output_retention_days, 30);
+        assert_eq!(s.query.max_rows, 10);
+        let s = sanitize(&json!({ "query": { "maxRows": 10 } }));
+        assert_eq!(s.query.output_retention_days, 30);
     }
 
     #[test]

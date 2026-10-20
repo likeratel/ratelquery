@@ -41,6 +41,7 @@ import {
 import { mergeRestoredTabs } from "../lib/workspace"
 import { useAthenaStore } from "./athenaStore"
 import { runAthenaStatements } from "./athenaRun"
+import { logRunFailure, logRunResults } from "./queryOutputStore"
 import { knownDatabases, useSessionsStore } from "./sessionsStore"
 import { currentSettings } from "./settingsStore"
 
@@ -181,16 +182,23 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     const ranDatabase = tab.database ?? catalog?.currentDatabase ?? null
     const options = { maxRows: maxRows(), ...(ranDatabase ? { database: ranDatabase } : {}) }
     const key = runKey(id, runId)
+    const startedAt = Date.now()
     try {
       const results = await runAthenaStatements(connectionId, statements, options, {
         onExecution: (executionId) => patchTab(id, (t) => setExecutionId(t, runId, executionId)),
         cancelled: () => cancelledRuns.has(key) || !findTab(id),
       })
       patchTab(id, (t) => (isCurrent(t) ? finishRun(t, text, results, ranDatabase) : t))
+      logRunResults(connectionId, id, results)
       return "ran"
     } catch (raw) {
       const error = normalizeError(raw)
       patchTab(id, (t) => (isCurrent(t) ? failRun(t, text, error) : t))
+      logRunFailure(connectionId, id, text, {
+        error,
+        cancelled: cancelledRuns.has(key),
+        elapsedMs: Date.now() - startedAt,
+      })
       return "failed"
     } finally {
       cancelledRuns.delete(key)
@@ -268,16 +276,23 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       // explicitly, so the backend can't run in another database than the one recorded here.
       const session = useSessionsStore.getState().sessions[tab.connectionId]
       const ranDatabase = tab.database ?? session?.currentDatabase ?? null
+      const startedAt = Date.now()
       try {
         const options = { maxRows: maxRows(), ...(ranDatabase ? { database: ranDatabase } : {}) }
         const results = await mysqlApi.query(tab.connectionId, text, options)
         patchTab(id, (t) => (isCurrent(t) ? finishRun(t, text, results, ranDatabase) : t))
+        logRunResults(tab.connectionId, id, results)
         noteReconnects(tab.connectionId, results)
         loadEditSchemas(tab.connectionId, results, ranDatabase)
         return "ran"
       } catch (raw) {
         const error = normalizeError(raw)
         patchTab(id, (t) => (isCurrent(t) ? failRun(t, text, error) : t))
+        logRunFailure(tab.connectionId, id, text, {
+          error,
+          cancelled: false,
+          elapsedMs: Date.now() - startedAt,
+        })
         return "failed"
       }
     },

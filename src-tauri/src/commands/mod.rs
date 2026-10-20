@@ -4,6 +4,7 @@ pub mod connections;
 pub mod dynamo;
 pub mod export;
 pub mod mysql;
+pub mod query_output;
 pub mod settings;
 pub mod ssh;
 pub mod system;

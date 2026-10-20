@@ -10,6 +10,7 @@ use crate::connections::{
 };
 use crate::dynamo::DynamoClients;
 use crate::mysql::{MysqlSessions, MysqlStateEvent, STATE_EVENT, StateSink};
+use crate::query_output::QueryOutputStore;
 use crate::settings::{SettingsService, SettingsStore};
 use crate::ssh::KnownHosts;
 use crate::workspace::WorkspaceStore;
@@ -29,6 +30,8 @@ pub struct AppState {
     pub workspace: Arc<WorkspaceStore>,
     /// `connection-layout.json`: sidebar order and folders of the connections.
     pub connection_layout: Arc<ConnectionLayoutStore>,
+    /// `query-output.json`: the query output log, kept for the days set in Settings.
+    pub query_output: Arc<QueryOutputStore>,
 }
 
 impl AppState {
@@ -60,6 +63,7 @@ impl AppState {
             known_hosts,
             workspace: Arc::new(WorkspaceStore::new(config_dir)),
             connection_layout: Arc::new(ConnectionLayoutStore::new(config_dir)),
+            query_output: Arc::new(QueryOutputStore::new(config_dir)),
         }
     }
 }

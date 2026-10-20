@@ -108,6 +108,13 @@ function SettingsForm() {
           value={query.maxRows}
           onCommit={(maxRows) => save({ query: { maxRows } })}
         />
+        <NumberSetting
+          field="outputRetentionDays"
+          label="Keep query output for (days)"
+          hint="The Output log, including the SQL text you ran, is saved on this computer. 0 keeps it until the app quits; up to 365."
+          value={query.outputRetentionDays}
+          onCommit={(outputRetentionDays) => save({ query: { outputRetentionDays } })}
+        />
       </Section>
       <Section title="DynamoDB">
         <NumberSetting

@@ -296,6 +296,7 @@ default. Sessions with `sql_mode` `NO_BACKSLASH_ESCAPES` are not supported: a st
 - `src/state/sessionsStore.ts` – per connection: `state`, `serverVersion`, `currentDatabase`, `schema` cache. Owned by the query feature.
 - `src/state/tabsStore.ts` – open tabs, active tab, per-tab sql text and last result. Owned by the query feature.
 - `src/state/workspaceSync.ts` – no state of its own; mirrors the tabs store's query tabs into `workspace.json` (see Workspace). Owned by the shell.
+- `src/state/queryOutputStore.ts` – the query Output log per connection, unseen-error marks and each query tab's bottom panel (Results or Output). `src/state/queryOutputSync.ts` mirrors the log into `query-output.json` (see Query output). Owned by the query feature.
 - `src/state/athenaStore.ts` – per Athena connection: `databases`, `schemas` cache (same `SchemaSnapshot` shape as MySQL), `currentDatabase`, loading flags. Owned by the query feature (filled by the schema tree and the query tab); completion and the database switcher read it.
 
 ## DynamoDB
@@ -445,6 +446,7 @@ interface Settings {
     addLimitToSelect: boolean                   // append LIMIT when a SELECT has none, default true
     confirmDestructive: boolean                 // confirm UPDATE/DELETE without WHERE, DROP, TRUNCATE, ALTER, RENAME TABLE; default true
     maxRows: number                             // rows kept in memory per result, default 1000
+    outputRetentionDays: number                 // 0..365, default 30; days the Output log (with SQL text) is kept in query-output.json, 0 = session only
   }
   dynamo: {
     pageSize: number                            // 1..1000, default 100
@@ -509,6 +511,54 @@ last save (through the window's close request, which is why the capability grant
 `pagehide` starts a save then, and the process may exit before it is written. Text typed in the
 last second before such a quit, or before a crash, can be lost. A failed save is logged to the console once per
 failure streak, without a toast.
+
+## Query output
+
+The Output tab of a query tab's bottom panel logs what the database returned: one entry per
+executed statement, and one per run that failed as a whole or was cancelled. Only the SQL text
+(cut to 10,000 characters) and a summary are kept, never row data. Persisted per connection at
+`<app config dir>/query-output.json`, written atomically with owner-only (0600) permissions on
+unix, for `query.outputRetentionDays` days.
+
+```ts
+interface OutputFile {
+  version: 1
+  connections: Record<ConnectionId, OutputEntry[]> // oldest first, at most 2000 per connection
+}
+interface OutputEntry {
+  id: string
+  connectionId: ConnectionId                    // the key it is filed under
+  tabId: string                                 // query tab that ran it; may be closed
+  at: number                                    // epoch ms when the run finished
+  sql: string
+  sqlTruncated: boolean
+  elapsedMs: number | null
+  outcome:
+    | { kind: "rows"; rowCount: number; truncated: boolean }
+    | { kind: "exec"; affectedRows: number; lastInsertId: string | null }
+    | { kind: "error"; message: string }
+    | { kind: "cancelled" }
+}
+```
+
+The backend checks only the envelope (an object with `version: 1` whose `connections` maps
+non-empty ids to arrays) and the size; the entries are the frontend's to validate.
+
+| command | args | returns |
+| --- | --- | --- |
+| `query_output_load` | – | the stored JSON, or `null`. A missing file is `null`; so is one larger than 16 MiB or with another envelope (logged to stderr, left as is until the next save). A file that exists but cannot be read rejects with `kind: "io"`. |
+| `query_output_save` | `output: OutputFile \| null` | `void`. Replaces the file; `null` removes it. Another envelope or a body over 16 MiB → `invalid_input` and nothing is written. |
+
+Frontend (`src/state/queryOutputSync.ts`, started when a query tab is first shown and kept for
+the life of the window): once settings and the connection list have loaded, `query_output_load`
+runs once (not at all with a retention of 0). Entries that don't parse are dropped, as are
+connections that no longer exist and entries older than the retention; the result goes in front
+of the entries logged meanwhile and is written back. Later changes to the log are saved 1000 ms
+after the last one, and on window close (best effort, as for the workspace). Every save drops
+entries older than the retention and, past 12 MiB encoded, the oldest entries. Setting the
+retention to 0 removes the file; the log then lives for the session only. A deleted connection's
+entries are dropped from the log and from the next save. A failed load leaves saving off for
+that run; a failed save is logged once per failure streak.
 
 ## Secret storage
 

@@ -5,6 +5,11 @@ import { setTransport } from "../../lib/ipc"
 import { INITIAL_TABS, type QueryTab } from "../../lib/queryTabs"
 import { useAthenaStore } from "../../state/athenaStore"
 import { useConnectionsStore } from "../../state/connectionsStore"
+import {
+  logRunResults,
+  resetQueryOutputStore,
+  useQueryOutputStore,
+} from "../../state/queryOutputStore"
 import { emptySession, useSessionsStore } from "../../state/sessionsStore"
 import { useTabsStore } from "../../state/tabsStore"
 import { emptyCatalog, useDynamoCatalog } from "../dynamo/catalogStore"
@@ -65,12 +70,24 @@ describe("deleting a connection", () => {
     const keep = tabs.open("m2", null)
     tabs.openDynamo("d1")
     const keepDynamo = tabs.openDynamo("d2")
+    resetQueryOutputStore()
+    const exec = {
+      kind: "exec",
+      affectedRows: 1,
+      lastInsertId: null,
+      elapsedMs: 1,
+      reconnected: false,
+      statement: "delete from t",
+    } as const
+    logRunResults("m1", "t1", [exec])
+    logRunResults("m2", keep, [exec])
 
     await useConnectionsStore.getState().remove("m1")
     await useConnectionsStore.getState().remove("d1")
     expect(useTabsStore.getState().tabs.map((t) => t.id)).toEqual([keep, keepDynamo])
     expect(Object.keys(useSessionsStore.getState().sessions)).toEqual(["m2"])
     expect(Object.keys(useDynamoCatalog.getState().catalogs)).toEqual(["d2"])
+    expect(Object.keys(useQueryOutputStore.getState().log)).toEqual(["m2"])
 
     fail = true
     await expect(useConnectionsStore.getState().remove("m2")).resolves.toMatchObject({ ok: false })

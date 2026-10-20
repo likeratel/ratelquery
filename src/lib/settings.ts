@@ -15,6 +15,8 @@ export interface QuerySettings {
   confirmDestructive: boolean
   /** Rows kept in memory per result. */
   maxRows: number
+  /** Days the query output log (SQL text and outcomes) is kept on disk; 0 keeps it for the session only. */
+  outputRetentionDays: number
 }
 
 export interface DynamoSettings {
@@ -49,6 +51,7 @@ export const SETTING_RANGES = {
   editorFontSize: { min: 11, max: 20 },
   defaultLimit: { min: 1, max: 100_000 },
   maxRows: { min: 1, max: 100_000 },
+  outputRetentionDays: { min: 0, max: 365 },
   pageSize: { min: 1, max: 1000 },
 } as const satisfies Record<string, Range>
 
@@ -62,6 +65,7 @@ export const DEFAULT_SETTINGS: Settings = {
     addLimitToSelect: true,
     confirmDestructive: true,
     maxRows: 1000,
+    outputRetentionDays: 30,
   },
   dynamo: { pageSize: 100 },
   secretStore: "keychain",
@@ -81,6 +85,7 @@ export const settingsSchema = z.object({
     addLimitToSelect: z.boolean(),
     confirmDestructive: z.boolean(),
     maxRows: intIn(SETTING_RANGES.maxRows),
+    outputRetentionDays: intIn(SETTING_RANGES.outputRetentionDays),
   }),
   dynamo: z.object({ pageSize: intIn(SETTING_RANGES.pageSize) }),
   secretStore: z.enum(SECRET_STORES),
@@ -98,6 +103,9 @@ const lenientSchema = z.object({
       addLimitToSelect: z.boolean().catch(D.query.addLimitToSelect),
       confirmDestructive: z.boolean().catch(D.query.confirmDestructive),
       maxRows: intIn(SETTING_RANGES.maxRows).catch(D.query.maxRows),
+      outputRetentionDays: intIn(SETTING_RANGES.outputRetentionDays).catch(
+        D.query.outputRetentionDays,
+      ),
     })
     .catch(D.query),
   dynamo: z

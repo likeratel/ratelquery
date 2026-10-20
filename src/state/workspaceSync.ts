@@ -19,7 +19,7 @@ export const SQL_SAVE_DELAY_MS = 1000
 export const CLOSE_SAVE_TIMEOUT_MS = 1500
 
 /** Resolves when `work` settles or after `ms`, whichever comes first; never rejects. */
-function withTimeout(work: Promise<void>, ms: number): Promise<void> {
+export function withTimeout(work: Promise<void>, ms: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<void>((resolve) => (timer = setTimeout(resolve, ms)))
   return Promise.race([work.catch(() => undefined), timeout]).finally(() => clearTimeout(timer))
