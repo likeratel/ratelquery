@@ -457,6 +457,43 @@
   overflow-wrap: anywhere;
 }
 
+/* Side panel resize handle: a 6px hit area over the panel edge, line shown on hover/focus.
+   The owner positions it (absolute, centred on the edge) with its own class. */
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 5;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms var(--ease-out);
+}
+
+.resize-handle:hover::after,
+.resize-handle:focus-visible::after,
+:root[data-col-resizing] .resize-handle:active::after {
+  background: var(--accent-ring);
+}
+
+/* Keeps the resize cursor and stops text selection while a handle is being dragged. */
+:root[data-col-resizing],
+:root[data-col-resizing] * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ui-dialog[open],
   .ui-dialog::backdrop,

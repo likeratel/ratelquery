@@ -1,5 +1,16 @@
 import { describe, expect, it } from "vitest"
-import { detectPlatform, resolveTheme } from "./uiStore"
+import { detectPlatform, resolveTheme, useUiStore } from "./uiStore"
+
+describe("setPanelWidth", () => {
+  it("clamps to the panel's range and leaves the other panels alone", () => {
+    const before = useUiStore.getState().panelWidths
+    useUiStore.getState().setPanelWidth("sidebar", 2000)
+    const after = useUiStore.getState().panelWidths
+    expect(after.sidebar).toBe(480)
+    expect(after.dynamoSide).toBe(before.dynamoSide)
+    expect(before.sidebar).toBe(264)
+  })
+})
 
 describe("resolveTheme", () => {
   it("follows the system only for the system preference", () => {

@@ -1,10 +1,15 @@
 /* DynamoDB table browser. Shares buttons, toolbar, menu and run-line styles with query.css. */
 
 .dyn {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: var(--dyn-tables-width, 220px) minmax(0, 1fr);
+}
+
+.dyn-tables-resize {
+  left: calc(var(--dyn-tables-width, 220px) - 3px);
 }
 
 .dyn-main {
@@ -15,6 +20,7 @@
 }
 
 .dyn-body {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -436,9 +442,10 @@
 
 /* Side panel: item detail and editor */
 
+/* Detail and editor share one width, set by the resize handle on their left edge. */
 .dyn-side {
   flex: none;
-  width: 360px;
+  width: var(--dyn-side-width, 400px);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -446,8 +453,8 @@
   background: var(--bg);
 }
 
-.dyn-editor {
-  width: 440px;
+.dyn-side-resize {
+  right: calc(var(--dyn-side-width, 400px) - 3px);
 }
 
 .dyn-side__head {

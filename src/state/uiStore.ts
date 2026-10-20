@@ -1,4 +1,12 @@
 import { create } from "zustand"
+import {
+  clampWidth,
+  loadPanelWidths,
+  PANEL_SPECS,
+  savePanelWidth,
+  type PanelId,
+  type PanelWidths,
+} from "../lib/panelWidths"
 import type { ThemePreference } from "../lib/settings"
 
 // The theme preference is a persisted setting (`settingsStore`); this module only applies it.
@@ -7,14 +15,25 @@ export type { ThemePreference }
 interface UiState {
   sidebarCollapsed: boolean
   settingsOpen: boolean
+  /** Resizable panel widths in pixels, restored from the last launch. */
+  panelWidths: PanelWidths
+  setPanelWidth: (panel: PanelId, width: number) => void
   toggleSidebar: () => void
   openSettings: () => void
   closeSettings: () => void
 }
 
-export const useUiStore = create<UiState>((set) => ({
+export const useUiStore = create<UiState>((set, get) => ({
   sidebarCollapsed: false,
   settingsOpen: false,
+  panelWidths: loadPanelWidths(),
+  setPanelWidth: (panel, width) => {
+    const next = clampWidth(PANEL_SPECS[panel], width)
+    // Drags report every pointer move; skip the write when the clamped width didn't change.
+    if (next === get().panelWidths[panel]) return
+    savePanelWidth(panel, next)
+    set((state) => ({ panelWidths: { ...state.panelWidths, [panel]: next } }))
+  },
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),

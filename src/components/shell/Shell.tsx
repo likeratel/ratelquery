@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { useEffect, useState, type CSSProperties } from "react"
 import {
   ConnectionDialog,
   HostKeyPromptDialog,
@@ -20,7 +20,8 @@ import { applyEditorFontSize, useSettingsStore } from "../../state/settingsStore
 import { useTabsStore } from "../../state/tabsStore"
 import { applyPlatformAttribute, applyTheme, useUiStore } from "../../state/uiStore"
 import { startWorkspaceSync } from "../../state/workspaceSync"
-import { isModalOpen, Toaster } from "../ui"
+import { PANEL_SPECS } from "../../lib/panelWidths"
+import { isModalOpen, ResizeHandle, Toaster } from "../ui"
 import { EmptyWorkspace } from "./EmptyWorkspace"
 import { Sidebar } from "./Sidebar"
 import { TabBar } from "./TabBar"
@@ -30,6 +31,9 @@ export function Shell() {
   const theme = useSettingsStore((s) => s.settings.theme)
   const editorFontSize = useSettingsStore((s) => s.settings.editorFontSize)
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
+  const sidebarWidth = useUiStore((s) => s.panelWidths.sidebar)
+  const setPanelWidth = useUiStore((s) => s.setPanelWidth)
+  const [resizing, setResizing] = useState(false)
   const activeKind = useTabsStore((s) => s.tabs.find((t) => t.id === s.activeId)?.kind ?? null)
   const openDialog = useConnectionsStore((s) => s.openDialog)
 
@@ -71,8 +75,25 @@ export function Shell() {
   }, [])
 
   return (
-    <div className="shell" data-sidebar={collapsed ? "collapsed" : "open"}>
+    <div
+      className="shell"
+      data-sidebar={collapsed ? "collapsed" : "open"}
+      data-resizing={resizing || undefined}
+      style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+    >
       <Sidebar onAddConnection={() => openDialog()} inert={collapsed} />
+      {/* Not rendered while collapsed, so it can't be focused or dragged. */}
+      {!collapsed && (
+        <ResizeHandle
+          className="shell__resize"
+          width={sidebarWidth}
+          spec={PANEL_SPECS.sidebar}
+          edge="end"
+          label="Resize connections sidebar"
+          onResize={(width) => setPanelWidth("sidebar", width)}
+          onDragChange={setResizing}
+        />
+      )}
       <div className="workspace">
         <TabBar />
         <div className="workspace__main">

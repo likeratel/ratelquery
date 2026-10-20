@@ -1,4 +1,5 @@
 .shell {
+  position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width) 1fr;
   grid-template-rows: 1fr;
@@ -9,6 +10,15 @@
 
 .shell[data-sidebar="collapsed"] {
   grid-template-columns: 0 1fr;
+}
+
+/* The collapse animation stays; a drag follows the pointer without easing. */
+.shell[data-resizing] {
+  transition: none;
+}
+
+.shell__resize {
+  left: calc(var(--sidebar-width) - 3px);
 }
 
 .sidebar {
