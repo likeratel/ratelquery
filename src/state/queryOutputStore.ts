@@ -9,6 +9,7 @@ import {
   entriesFromResults,
   entryFromCancel,
   entryFromError,
+  pruneLog,
   type EntryContext,
   type OutputEntry,
   type OutputLog,
@@ -35,6 +36,8 @@ interface QueryOutputStore {
   markSeen: (tabId: string) => void
   setPanel: (tabId: string, panel: BottomPanel) => void
   setScope: (scope: OutputScope) => void
+  /** Drops entries older than `retentionDays` before `now` (see `pruneLog`). */
+  prune: (retentionDays: number, now: number) => void
   /** Drops every entry of a deleted connection. */
   forgetConnection: (connectionId: ConnectionId) => void
   /** Drops a closed tab's view state; its entries stay for "All on this connection". */
@@ -79,6 +82,12 @@ export const useQueryOutputStore = create<QueryOutputStore>((set) => ({
   setPanel: (tabId, panel) => set((state) => ({ panels: { ...state.panels, [tabId]: panel } })),
 
   setScope: (scope) => set({ scope }),
+
+  prune: (retentionDays, now) =>
+    set((state) => {
+      const log = pruneLog(state.log, retentionDays, now)
+      return log === state.log ? state : { log }
+    }),
 
   forgetConnection: (connectionId) =>
     set((state) => {

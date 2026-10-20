@@ -16,6 +16,9 @@ import { CLOSE_SAVE_TIMEOUT_MS, onWindowClose, withTimeout } from "./workspaceSy
 /** New entries are saved once runs pause this long. */
 export const OUTPUT_SAVE_DELAY_MS = 1000
 
+/** Shortest time between two age prunes of the log in memory triggered by new entries. */
+export const MEMORY_PRUNE_INTERVAL_MS = 60 * 1000
+
 export interface QueryOutputSyncDeps {
   load: () => Promise<OutputLog>
   /** Null removes the file. */
@@ -30,11 +33,15 @@ export interface QueryOutputSyncDeps {
 
 export interface QueryOutputSync {
   /**
-   * Loads the saved log once settings and the connection list are ready, then saves the log
-   * after new entries (debounced), a deleted connection or a retention change. Each save prunes
-   * entries older than the retention; a retention of 0 removes the file instead and keeps the
-   * log for the session only. Nothing is saved before the load finished, and a failed load
-   * leaves saving off for this run. Returns the stop function, which writes a pending change.
+   * Loads the saved log once settings (without a load error) and the connection list are
+   * ready, then saves the log after new entries (debounced), a deleted connection or a
+   * retention change. Each save prunes entries older than the retention; a retention of 0
+   * removes the file instead and keeps the log for the session only. Nothing is saved before
+   * the load finished, a failed output load leaves saving off for this run, and while settings
+   * failed to load (so the retention is only the default) nothing is loaded or saved until a
+   * later settings load succeeds. Entries past the retention also leave the log in memory when
+   * the retention changes, and when entries are added (at most once per
+   * `MEMORY_PRUNE_INTERVAL_MS`). Returns the stop function, which writes a pending change.
    */
   start: () => () => void
 }
@@ -50,6 +57,22 @@ export function createQueryOutputSync(deps: QueryOutputSyncDeps): QueryOutputSyn
   let warned = false
 
   const retentionDays = () => useSettingsStore.getState().settings.query.outputRetentionDays
+
+  /** Settings were read from disk; after a failed load they are only the defaults. */
+  const settingsKnown = () => {
+    const settings = useSettingsStore.getState()
+    return settings.status === "ready" && settings.loadError === null
+  }
+
+  let lastPrune = Number.NEGATIVE_INFINITY
+
+  /** Drops entries past the retention from the log in memory; 0 keeps the session's log. */
+  const pruneMemory = () => {
+    const days = retentionDays()
+    if (days <= 0 || !settingsKnown()) return
+    lastPrune = deps.now()
+    useQueryOutputStore.getState().prune(days, lastPrune)
+  }
 
   /** What goes to disk now: null when output is kept for the session only. */
   const current = (): OutputFile | null => {
@@ -79,14 +102,16 @@ export function createQueryOutputSync(deps: QueryOutputSyncDeps): QueryOutputSyn
     return chain
   }
 
+  const canSave = () => restored && settingsKnown()
+
   const flush = (): Promise<void> => {
     if (timer !== null) clearTimeout(timer)
     timer = null
-    return restored ? write() : Promise.resolve()
+    return canSave() ? write() : Promise.resolve()
   }
 
   const flushLater = () => {
-    if (!restored) return
+    if (!canSave()) return
     if (timer !== null) clearTimeout(timer)
     timer = setTimeout(() => void flush(), deps.delayMs)
   }
@@ -121,18 +146,25 @@ export function createQueryOutputSync(deps: QueryOutputSyncDeps): QueryOutputSyn
   const maybeRestore = () => {
     if (restored || restoring || loadFailed) return
     const connections = useConnectionsStore.getState()
-    if (useSettingsStore.getState().status !== "ready" || connections.status !== "ready") return
+    if (!settingsKnown() || connections.status !== "ready") return
     void runRestore(connections.byId)
   }
 
   const start = () => {
     const offLog = useQueryOutputStore.subscribe((state, prev) => {
-      if (state.log !== prev.log) flushLater()
+      if (state.log === prev.log) return
+      // Entries age out slowly, so new entries prune the log at most once per interval.
+      if (deps.now() - lastPrune >= MEMORY_PRUNE_INTERVAL_MS) pruneMemory()
+      flushLater()
     })
     const offSettings = useSettingsStore.subscribe((state, prev) => {
       maybeRestore()
       const days = state.settings.query.outputRetentionDays
-      if (days !== prev.settings.query.outputRetentionDays) void flush()
+      if (days === prev.settings.query.outputRetentionDays) return
+      pruneMemory()
+      // Turning saving off removes the file even when the saved log never loaded.
+      if (days <= 0 && settingsKnown() && !canSave()) void write()
+      else void flush()
     })
     const offConnections = useConnectionsStore.subscribe(maybeRestore)
     maybeRestore()

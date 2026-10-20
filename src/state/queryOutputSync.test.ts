@@ -4,7 +4,11 @@ import type { OutputEntry, OutputFile, OutputLog } from "../lib/queryOutput"
 import { DEFAULT_SETTINGS, mergeSettings } from "../lib/settings"
 import { useConnectionsStore } from "./connectionsStore"
 import { resetQueryOutputStore, useQueryOutputStore } from "./queryOutputStore"
-import { createQueryOutputSync, type QueryOutputSync } from "./queryOutputSync"
+import {
+  createQueryOutputSync,
+  MEMORY_PRUNE_INTERVAL_MS,
+  type QueryOutputSync,
+} from "./queryOutputSync"
 import { useSettingsStore } from "./settingsStore"
 
 const DAY = 24 * 60 * 60 * 1000
@@ -52,6 +56,8 @@ class FakeFile {
 let file: FakeFile
 let sync: QueryOutputSync
 let stop: () => void = () => {}
+/** What `now` returns; entries are dated relative to `NOW`. */
+let clock = NOW
 let beforeClose: (() => Promise<void>) | null = null
 
 const settle = () => vi.advanceTimersByTimeAsync(0)
@@ -70,6 +76,7 @@ const ready = (days = 30) => {
 const ids = (log: OutputLog | null | undefined, id = "m1") => (log?.[id] ?? []).map((e) => e.id)
 
 beforeEach(() => {
+  clock = NOW
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
   file = new FakeFile()
   sync = createQueryOutputSync({
@@ -77,7 +84,7 @@ beforeEach(() => {
     save: (f) => file.save(f),
     warn: file.warn,
     delayMs: 1000,
-    now: () => NOW,
+    now: () => clock,
     onClose: (handler) => {
       beforeClose = handler
       return () => {
@@ -86,7 +93,7 @@ beforeEach(() => {
     },
   })
   resetQueryOutputStore()
-  useSettingsStore.setState({ settings: DEFAULT_SETTINGS, status: "idle" })
+  useSettingsStore.setState({ settings: DEFAULT_SETTINGS, status: "idle", loadError: null })
   useConnectionsStore.setState({ connections: [], status: "idle" })
 })
 
@@ -126,6 +133,25 @@ describe("loading", () => {
     expect(ids(useQueryOutputStore.getState().log)).toEqual(["old"])
   })
 
+  it("neither loads nor saves while settings failed to load, then resumes", async () => {
+    file.stored = { m1: [entry("old", { at: NOW - 200 * DAY })] }
+    // A failed settings load is "ready" with the defaults (30 days), not the user's 365.
+    ready(30)
+    useSettingsStore.setState({ loadError: "denied" })
+    stop = sync.start()
+    useQueryOutputStore.getState().record([entry("a")])
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(file.loads).toBe(0)
+    expect(file.saves).toEqual([])
+
+    const settings = mergeSettings(DEFAULT_SETTINGS, { query: { outputRetentionDays: 365 } })
+    useSettingsStore.setState({ settings, saved: settings, loadError: null })
+    await settle()
+    expect(file.loads).toBe(1)
+    expect(ids(useQueryOutputStore.getState().log)).toEqual(["old", "a"])
+    expect(ids(file.stored)).toEqual(["old", "a"])
+  })
+
   it("turns saving off when the load fails", async () => {
     file.failLoad = true
     ready()
@@ -161,11 +187,34 @@ describe("saving", () => {
     expect(ids(file.stored, "m2")).toEqual(["b"])
   })
 
-  it("prunes on save without dropping the session's view of older entries", async () => {
+  it("prunes entries past the retention on save and, now and then, in memory", async () => {
     await startReady()
+    // The restore pruned the log just now, so new entries don't prune it again yet.
     useQueryOutputStore.getState().record([entry("stale", { at: NOW - 40 * DAY }), entry("a")])
+    expect(ids(useQueryOutputStore.getState().log)).toEqual(["stale", "a"])
+    clock = NOW + MEMORY_PRUNE_INTERVAL_MS
+    useQueryOutputStore.getState().record([entry("b")])
+    expect(ids(useQueryOutputStore.getState().log)).toEqual(["a", "b"])
     await vi.advanceTimersByTimeAsync(1000)
-    expect(ids(file.stored)).toEqual(["a"])
+    expect(ids(file.stored)).toEqual(["a", "b"])
+  })
+
+  it("prunes the log in memory when the retention shrinks", async () => {
+    await startReady(365)
+    useQueryOutputStore.getState().record([entry("month", { at: NOW - 40 * DAY }), entry("a")])
+    expect(ids(useQueryOutputStore.getState().log)).toEqual(["month", "a"])
+    setRetention(30)
+    expect(ids(useQueryOutputStore.getState().log)).toEqual(["a"])
+  })
+
+  it("removes the file when the retention becomes 0 even after a failed load", async () => {
+    file.stored = { m1: [entry("saved")] }
+    file.failLoad = true
+    await startReady()
+    setRetention(0)
+    await settle()
+    expect(file.saves).toEqual([null])
+    expect(file.stored).toBeNull()
   })
 
   it("saves a deleted connection's removal", async () => {
