@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use serde_json::Value;
 use tauri::State;
 
 use crate::connections::{
@@ -64,6 +65,21 @@ pub async fn connections_duplicate(
     id: String,
 ) -> AppResult<ConnectionConfig> {
     blocking(&state, move |c| c.duplicate(&id)).await
+}
+
+/// The saved sidebar order and folders, or null when none was saved or the file is corrupt
+/// (logged). The frontend validates the shape.
+#[tauri::command]
+pub async fn connection_layout_load(state: State<'_, AppState>) -> AppResult<Option<Value>> {
+    let store = Arc::clone(&state.connection_layout);
+    run_blocking(move || store.load()).await
+}
+
+/// Takes raw JSON; anything but a version 1 object of bounded size is `invalid_input`.
+#[tauri::command]
+pub async fn connection_layout_save(state: State<'_, AppState>, layout: Value) -> AppResult<()> {
+    let store = Arc::clone(&state.connection_layout);
+    run_blocking(move || store.save(layout)).await
 }
 
 #[tauri::command]

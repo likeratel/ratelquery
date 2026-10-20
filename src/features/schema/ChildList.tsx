@@ -3,6 +3,7 @@ import type { ReactNode } from "react"
 import { errorLine } from "../../lib/errorHints"
 import type { AppError } from "../../lib/ipc"
 import { useTreeTabIndex } from "./treeKeyboard"
+import { useTreeLevel } from "./treeLevel"
 import { depthStyle } from "./TreeNode"
 import { childKey, filterChildren, TABLE_FILTER_THRESHOLD, type TreeChild } from "./treeState"
 import { useSchemaTree } from "./treeStore"
@@ -25,19 +26,20 @@ function TreeStatus({
 }) {
   const key = statusKey(parentKey)
   const tabIndex = useTreeTabIndex(key)
+  const ariaLevel = useTreeLevel(level)
   return (
     <li
       role="treeitem"
       className="tree-item tree-status"
       data-tone={tone}
-      aria-level={level}
+      aria-level={ariaLevel}
       aria-disabled={tone === "error" ? undefined : true}
       aria-label={message}
       data-tree-key={key}
       tabIndex={tabIndex}
     >
       <div className="tree-line">
-        <div className="tree-row" style={depthStyle(level)}>
+        <div className="tree-row" style={depthStyle(ariaLevel)}>
           <span className="tree-row__twisty" aria-hidden />
           {tone === "loading" && (
             <LoaderCircle size={13} className="tree-spin tree-status__icon" aria-hidden />
@@ -73,8 +75,9 @@ function TreeFilter({
   noun: string
 }) {
   const value = useSchemaTree((s) => s.filters[parentKey] ?? "")
+  const depth = useTreeLevel(level)
   return (
-    <li role="none" className="tree-filter" style={depthStyle(level)}>
+    <li role="none" className="tree-filter" style={depthStyle(depth)}>
       <label className="tree-filter__box">
         <Search size={12} aria-hidden className="tree-filter__icon" />
         <input

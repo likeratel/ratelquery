@@ -531,3 +531,148 @@
 .conn-test[data-status="warn"] svg {
   color: var(--warn);
 }
+
+/* Folders, hand-made order and drag and drop. */
+
+.conn-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.conn-row,
+.conn-folder {
+  position: relative;
+}
+
+.conn-row[aria-level="2"] > .conn-row__line {
+  padding-left: 18px;
+}
+
+.conn-folder {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+}
+
+.conn-folder:focus-visible {
+  outline: none;
+}
+
+.conn-folder:focus-visible > .conn-folder__line {
+  box-shadow: inset 0 0 0 2px var(--accent-ring);
+}
+
+.conn-folder__line {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding-left: 4px;
+  border-radius: var(--radius-md);
+}
+
+.conn-folder__line:hover,
+.conn-folder__line[data-menu] {
+  background: var(--surface-hover);
+}
+
+.conn-folder__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 4px 5px 6px;
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+
+.conn-folder__icon {
+  flex: none;
+  color: var(--text-muted);
+}
+
+.conn-folder__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.conn-folder__count {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.conn-folder__input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  margin: 0 4px 0 6px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  outline: none;
+  font-size: var(--text-sm);
+  color: var(--text);
+  user-select: text;
+}
+
+.conn-folder__more {
+  margin-right: 4px;
+  opacity: 0;
+}
+
+.conn-folder__line:hover .conn-folder__more,
+.conn-folder__more:focus-visible,
+.conn-folder__line[data-menu] .conn-folder__more {
+  opacity: 1;
+}
+
+.conn-list[data-dragging],
+.conn-list[data-dragging] * {
+  cursor: grabbing;
+}
+
+.conn-row[data-dragging],
+.conn-folder[data-dragging] {
+  opacity: 0.5;
+}
+
+.conn-row[data-drop="before"]::before,
+.conn-row[data-drop="after"]::after,
+.conn-folder[data-drop="before"]::before,
+.conn-folder[data-drop="after"]::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  z-index: 2;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.conn-row[data-drop="before"]::before,
+.conn-folder[data-drop="before"]::before {
+  top: -1px;
+}
+
+.conn-row[data-drop="after"]::after,
+.conn-folder[data-drop="after"]::after {
+  bottom: -1px;
+}
+
+.conn-folder[data-drop="inside"] > .conn-folder__line {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}

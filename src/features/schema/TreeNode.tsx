@@ -2,6 +2,7 @@ import { ChevronRight, Ellipsis } from "lucide-react"
 import { useCallback, useRef, useState, type CSSProperties, type ReactNode } from "react"
 import { Menu, type MenuItem } from "../../components/ui"
 import { useTreeTabIndex } from "./treeKeyboard"
+import { useTreeLevel } from "./treeLevel"
 
 /** Indentation for a row at `level` (1 is a connection); the CSS multiplies it by 14px. */
 export const depthStyle = (level: number) => ({ "--tree-depth": level - 1 }) as CSSProperties
@@ -35,7 +36,7 @@ export function TreeChevron({
 
 interface TreeNodeProps {
   nodeKey: string
-  /** aria-level; connections are 1. */
+  /** aria-level for a top-level connection's subtree (connections are 1); `TreeLevelOffset` adds to it. */
   level: number
   label: string
   icon: ReactNode
@@ -69,6 +70,7 @@ export function TreeNode({
   const itemRef = useRef<HTMLLIElement>(null)
   const moreRef = useRef<HTMLButtonElement>(null)
   const tabIndex = useTreeTabIndex(nodeKey)
+  const ariaLevel = useTreeLevel(level)
   const closeMenu = useCallback(() => {
     setMenuOpen(false)
     const item = itemRef.current
@@ -82,7 +84,7 @@ export function TreeNode({
       ref={itemRef}
       role="treeitem"
       className="tree-item"
-      aria-level={level}
+      aria-level={ariaLevel}
       aria-expanded={expanded}
       aria-selected={selected}
       aria-label={label}
@@ -92,7 +94,7 @@ export function TreeNode({
       <div className="tree-line" data-menu={menuOpen || undefined}>
         <div
           className="tree-row"
-          style={depthStyle(level)}
+          style={depthStyle(ariaLevel)}
           title={title}
           data-tree-action={onActivate ? "" : undefined}
           onClick={onActivate ?? onToggle}

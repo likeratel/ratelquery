@@ -1,17 +1,44 @@
 import { Search } from "lucide-react"
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Button } from "../../components/ui"
+import { layoutEntries, reconcileLayout, type LayoutEntry } from "../../lib/connectionLayout"
+import { useConnectionLayout } from "../../state/connectionLayoutStore"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { handleTreeFocus, handleTreeKeyDown, isDescendant, useSchemaTree } from "../schema"
 import { ConnectionRow } from "./ConnectionRow"
 import { filterConnections, SEARCH_THRESHOLD } from "./filter"
+import { FolderRow } from "./FolderRow"
+import { folderKey } from "./layoutTree"
+import { useDragState, useLayoutDrag } from "./useLayoutDrag"
+
+/** Whether tree node `focused` is one of the rows `entries` render (or lies under one). */
+function showsNode(entries: readonly LayoutEntry[], focused: string, forceOpen: boolean): boolean {
+  const showsConnection = (id: string) => focused === id || isDescendant(focused, id)
+  return entries.some((entry) => {
+    if (entry.type === "connection") return showsConnection(entry.config.id)
+    if (focused === folderKey(entry.folder.id)) return true
+    const open = forceOpen || !entry.folder.collapsed
+    return open && entry.connections.some((c) => showsConnection(c.id))
+  })
+}
 
 export function ConnectionList() {
   const connections = useConnectionsStore((s) => s.connections)
   const status = useConnectionsStore((s) => s.status)
   const loadError = useConnectionsStore((s) => s.loadError)
+  const savedLayout = useConnectionLayout((s) => s.layout)
+  const layoutStatus = useConnectionLayout((s) => s.status)
   const [query, setQuery] = useState("")
   const focused = useSchemaTree((s) => s.focused)
+  const dragging = useDragState((s) => s.dragging !== null)
+  const layout = useMemo(
+    () => reconcileLayout(savedLayout, connections),
+    [savedLayout, connections],
+  )
+
+  const searchable = connections.length >= SEARCH_THRESHOLD
+  const filtering = searchable && query.trim() !== ""
+  const drag = useLayoutDrag(!filtering)
 
   if (status === "error" && loadError && connections.length === 0) {
     return (
@@ -25,7 +52,10 @@ export function ConnectionList() {
     )
   }
 
-  if (connections.length === 0) {
+  // Wait for the saved order so the list doesn't jump from name order to it.
+  if (layoutStatus === "loading") return null
+
+  if (connections.length === 0 && layout.folders.length === 0) {
     if (status !== "ready") return null
     return (
       <div className="sidebar__empty">
@@ -35,11 +65,10 @@ export function ConnectionList() {
     )
   }
 
-  const searchable = connections.length >= SEARCH_THRESHOLD
-  const visible = searchable ? filterConnections(connections, query) : connections
+  const matches = filtering ? new Set(filterConnections(connections, query).map((c) => c.id)) : null
+  const entries = layoutEntries(layout, connections, matches ? (c) => matches.has(c.id) : undefined)
   // The first row takes the tab stop while the focused node is gone (deleted or filtered out).
-  const stopShown =
-    focused !== null && visible.some((c) => c.id === focused || isDescendant(focused, c.id))
+  const stopShown = focused !== null && showsNode(entries, focused, filtering)
 
   return (
     <>
@@ -57,19 +86,32 @@ export function ConnectionList() {
           />
         </label>
       )}
-      {visible.length === 0 ? (
+      {entries.length === 0 ? (
         <p className="conn-list__none">No connections match “{query.trim()}”</p>
       ) : (
         <ul
           className="conn-list"
           role="tree"
           aria-label="Connections"
+          data-dragging={dragging || undefined}
           onKeyDown={handleTreeKeyDown}
           onFocus={handleTreeFocus}
+          onPointerDown={drag.onPointerDown}
         >
-          {visible.map((config, index) => (
-            <ConnectionRow key={config.id} config={config} tabStop={index === 0 && !stopShown} />
-          ))}
+          {entries.map((entry, index) => {
+            const tabStop = index === 0 && !stopShown
+            return entry.type === "connection" ? (
+              <ConnectionRow key={entry.config.id} config={entry.config} tabStop={tabStop} />
+            ) : (
+              <FolderRow
+                key={folderKey(entry.folder.id)}
+                folder={entry.folder}
+                connections={entry.connections}
+                forceOpen={filtering}
+                tabStop={tabStop}
+              />
+            )
+          })}
         </ul>
       )}
     </>

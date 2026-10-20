@@ -1,15 +1,6 @@
-import {
-  Cloud,
-  Copy,
-  Database,
-  Ellipsis,
-  Pencil,
-  ScanSearch,
-  Trash,
-  type LucideIcon,
-} from "lucide-react"
+import { Cloud, Database, Ellipsis, ScanSearch, type LucideIcon } from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react"
-import { Button, Menu, showToast } from "../../components/ui"
+import { Button, showToast } from "../../components/ui"
 import type { ConnectionConfig, ConnectionId } from "../../lib/connections"
 import { normalizeError } from "../../lib/ipc"
 import { openQueryTabFor } from "../query"
@@ -17,17 +8,21 @@ import {
   connectionKey,
   SchemaChildren,
   TreeChevron,
+  TreeLevelOffset,
   useSchemaTree,
   useTreeTabIndex,
 } from "../schema"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useSessionsStore } from "../../state/sessionsStore"
+import { ConnectionMenu } from "./ConnectionMenu"
 import { isPasswordCancelled } from "./connectSession"
 import { errorDetail } from "./errors"
 import { connectionSubtitle } from "./filter"
+import { dragAttributes, sameRef } from "./layoutTree"
 import { hasNewRecovery, sessionStatus } from "./sessionStatus"
+import { useDragState } from "./useLayoutDrag"
 
-type RowMode = "idle" | "menu" | "confirm" | "deleting"
+type RowMode = "idle" | "menu" | "move" | "confirm" | "deleting"
 
 const KIND_ICON: Record<ConnectionConfig["kind"], LucideIcon> = {
   mysql: Database,
@@ -51,13 +46,6 @@ function openTab(config: ConnectionConfig): void {
       detail: errorDetail(normalizeError(raw)),
     })
   })
-}
-
-async function duplicate(config: ConnectionConfig): Promise<void> {
-  const result = await useConnectionsStore.getState().duplicate(config.id)
-  if (!result.ok) {
-    showToast({ tone: "error", message: result.error.summary, detail: result.error.detail })
-  }
 }
 
 function DeleteConfirm({
@@ -121,19 +109,27 @@ interface ConnectionRowProps {
   config: ConnectionConfig
   /** Holds the tree's tab stop while no other node does. */
   tabStop?: boolean
+  /** aria-level: 1 at the top of the list, 2 inside a folder. */
+  level?: 1 | 2
 }
 
-export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
+export function ConnectionRow({ config, tabStop = false, level = 1 }: ConnectionRowProps) {
   const [mode, setMode] = useState<RowMode>("idle")
-  const closeMenu = useCallback(() => setMode((m) => (m === "menu" ? "idle" : m)), [])
+  const closeMenu = useCallback(
+    () => setMode((m) => (m === "menu" || m === "move" ? "idle" : m)),
+    [],
+  )
   const moreRef = useRef<HTMLButtonElement>(null)
   const Icon = KIND_ICON[config.kind]
   const key = connectionKey(config.id)
+  const ref = { type: "connection", id: config.id } as const
   const expanded = useSchemaTree((s) => Boolean(s.expanded[key]))
   const tabIndex = useTreeTabIndex(key, tabStop)
+  const drop = useDragState((s) => (sameRef(s.over?.ref ?? null, ref) ? s.over?.position : null))
+  const dragging = useDragState((s) => sameRef(s.dragging, ref))
   const treeItem = {
     role: "treeitem",
-    "aria-level": 1,
+    "aria-level": level,
     "aria-label": config.name,
     "data-tree-key": key,
   } as const
@@ -173,8 +169,10 @@ export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
       {...treeItem}
       aria-expanded={expanded}
       tabIndex={tabIndex}
+      data-drop={drop ?? undefined}
+      data-dragging={dragging || undefined}
     >
-      <div className="conn-row__line">
+      <div className="conn-row__line" {...dragAttributes(ref)}>
         <TreeChevron
           expanded={expanded}
           label={config.name}
@@ -217,44 +215,27 @@ export function ConnectionRow({ config, tabStop = false }: ConnectionRowProps) {
           data-tree-menu=""
           aria-label={`Actions for ${config.name}`}
           aria-haspopup="menu"
-          aria-expanded={mode === "menu"}
-          onClick={() => setMode(mode === "menu" ? "idle" : "menu")}
+          aria-expanded={mode === "menu" || mode === "move"}
+          onClick={() => setMode(mode === "idle" ? "menu" : "idle")}
         >
           <Ellipsis size={14} strokeWidth={2} />
         </button>
-        {mode === "menu" && (
-          <Menu
-            label={`Actions for ${config.name}`}
-            className="conn-row__menu"
+        {(mode === "menu" || mode === "move") && (
+          <ConnectionMenu
+            config={config}
+            kind={mode === "menu" ? "actions" : "move"}
             triggerRef={moreRef}
             onClose={closeMenu}
-            items={[
-              {
-                id: "edit",
-                label: "Edit",
-                icon: <Pencil size={13} aria-hidden />,
-                onSelect: () => useConnectionsStore.getState().openDialog(config),
-              },
-              {
-                id: "duplicate",
-                label: "Duplicate",
-                icon: <Copy size={13} aria-hidden />,
-                onSelect: () => void duplicate(config),
-              },
-              {
-                id: "delete",
-                label: "Delete",
-                tone: "danger",
-                icon: <Trash size={13} aria-hidden />,
-                onSelect: () => setMode("confirm"),
-              },
-            ]}
+            onMove={() => setMode("move")}
+            onDelete={() => setMode("confirm")}
           />
         )}
       </div>
       {expanded && (
         <ul role="group" className="tree-group">
-          <SchemaChildren config={config} />
+          <TreeLevelOffset value={level - 1}>
+            <SchemaChildren config={config} />
+          </TreeLevelOffset>
         </ul>
       )}
     </li>

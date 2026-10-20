@@ -3,6 +3,7 @@ export { loadTableDetails, openTable, selectRows, subscribeTreeCleanup } from ".
 export { SchemaChildren } from "./SchemaChildren"
 export { TableWorkspace } from "./TableWorkspace"
 export { handleTreeFocus, handleTreeKeyDown, useTreeTabIndex } from "./treeKeyboard"
+export { TreeLevelOffset } from "./treeLevel"
 export { TreeChevron } from "./TreeNode"
 export { connectionKey, isDescendant } from "./treeState"
 export { useSchemaTree } from "./treeStore"

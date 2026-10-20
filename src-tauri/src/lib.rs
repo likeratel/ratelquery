@@ -63,6 +63,8 @@ pub fn run() {
             commands::connections::connections_save,
             commands::connections::connections_delete,
             commands::connections::connections_duplicate,
+            commands::connections::connection_layout_load,
+            commands::connections::connection_layout_save,
             commands::connections::connections_has_secret,
             commands::connections::connections_test,
             commands::mysql::mysql_connect,

@@ -5,7 +5,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::athena::AthenaClients;
 use crate::connections::{
-    ConnectionStore, ConnectionsService, FileSecretStore, SecretStore, SwitchableSecretStore,
+    ConnectionLayoutStore, ConnectionStore, ConnectionsService, FileSecretStore, SecretStore,
+    SwitchableSecretStore,
 };
 use crate::dynamo::DynamoClients;
 use crate::mysql::{MysqlSessions, MysqlStateEvent, STATE_EVENT, StateSink};
@@ -26,6 +27,8 @@ pub struct AppState {
     pub known_hosts: KnownHosts,
     /// `workspace.json`: the query tabs to reopen on the next launch.
     pub workspace: Arc<WorkspaceStore>,
+    /// `connection-layout.json`: sidebar order and folders of the connections.
+    pub connection_layout: Arc<ConnectionLayoutStore>,
 }
 
 impl AppState {
@@ -56,6 +59,7 @@ impl AppState {
             settings,
             known_hosts,
             workspace: Arc::new(WorkspaceStore::new(config_dir)),
+            connection_layout: Arc::new(ConnectionLayoutStore::new(config_dir)),
         }
     }
 }

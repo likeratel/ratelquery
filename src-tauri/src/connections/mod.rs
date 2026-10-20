@@ -2,6 +2,7 @@
 
 mod duplicate;
 mod file_secrets;
+mod layout_store;
 mod model;
 mod probe;
 mod secret_migration;
@@ -13,6 +14,7 @@ mod validate;
 mod validate_athena;
 
 pub use file_secrets::FileSecretStore;
+pub use layout_store::ConnectionLayoutStore;
 pub use model::{
     AthenaConnectionConfig, AwsAuth, ConnectionConfig, ConnectionTestResult,
     DEFAULT_ATHENA_WORKGROUP, DynamoAuth, DynamoConnectionConfig, MysqlConnectionConfig,
