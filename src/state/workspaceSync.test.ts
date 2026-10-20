@@ -4,7 +4,7 @@ import { INITIAL_TABS } from "../lib/queryTabs"
 import type { Workspace, WorkspaceTab } from "../lib/workspace"
 import { useConnectionsStore } from "./connectionsStore"
 import { useTabsStore } from "./tabsStore"
-import { createWorkspaceSync, type WorkspaceSync } from "./workspaceSync"
+import { createCloseRegistry, createWorkspaceSync, type WorkspaceSync } from "./workspaceSync"
 
 const connections: ConnectionConfig[] = [
   { kind: "mysql", id: "m1", name: "A", host: "h", port: 3306, user: "u" },
@@ -284,5 +284,52 @@ describe("saving", () => {
     await vi.advanceTimersByTimeAsync(500)
     expect(most).toBe(1)
     expect(file.saves.at(-1)?.tabs).toHaveLength(4)
+  })
+})
+
+describe("createCloseRegistry", () => {
+  it("runs every registered callback from one listener and waits for all of them", async () => {
+    const listener: { runAll?: () => Promise<void> } = {}
+    let attached = 0
+    let detached = 0
+    const register = createCloseRegistry((run) => {
+      attached += 1
+      listener.runAll = run
+      return () => (detached += 1)
+    })
+    const done: string[] = []
+    let releaseSlow: () => void = () => {}
+    const offFast = register(async () => {
+      done.push("fast")
+    })
+    const offSlow = register(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSlow = () => {
+            done.push("slow")
+            resolve()
+          }
+        }),
+    )
+    expect(attached).toBe(1)
+    let closed = false
+    const closing = listener.runAll?.().then(() => {
+      closed = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(done).toEqual(["fast"])
+    expect(closed).toBe(false)
+    releaseSlow()
+    await closing
+    expect(done).toEqual(["fast", "slow"])
+
+    offFast()
+    expect(detached).toBe(0)
+    offSlow()
+    offSlow()
+    expect(detached).toBe(1)
+    register(async () => {})
+    expect(attached).toBe(2)
   })
 })

@@ -26,19 +26,50 @@ export function withTimeout(work: Promise<void>, ms: number): Promise<void> {
 }
 
 /**
- * In the desktop shell, the main window's close request waits for `beforeClose` (the window is
- * then destroyed by the API, which needs `core:window:allow-destroy`). Quitting from the app
- * menu does not send a close request, so `pagehide` also starts a save; the page may be gone
- * before it finishes.
+ * Runs every registered before-close callback from one listener. The window API destroys the
+ * window as soon as a close-requested handler settles, so two listeners would let the first
+ * save to finish close the window under the other one. `attach` installs the listener with a
+ * function that runs all callbacks together; it is installed with the first registration and
+ * removed with the last.
  */
-export function onWindowClose(beforeClose: () => Promise<void>): () => void {
-  const onPageHide = () => void beforeClose()
+export function createCloseRegistry(
+  attach: (runAll: () => Promise<void>) => () => void,
+): (beforeClose: () => Promise<void>) => () => void {
+  let callbacks: readonly (() => Promise<void>)[] = []
+  let detach: (() => void) | null = null
+  const runAll = async () => {
+    await Promise.all(callbacks.map((callback) => callback()))
+  }
+  return (beforeClose) => {
+    // Wrapped so registering the same function twice still gives two independent entries.
+    const entry = () => beforeClose()
+    callbacks = [...callbacks, entry]
+    detach ??= attach(runAll)
+    return () => {
+      if (!callbacks.includes(entry)) return
+      callbacks = callbacks.filter((c) => c !== entry)
+      if (callbacks.length === 0 && detach) {
+        detach()
+        detach = null
+      }
+    }
+  }
+}
+
+/**
+ * In the desktop shell, the main window's close request waits for `runAll` (the window is then
+ * destroyed by the API, which needs `core:window:allow-destroy`). Quitting from the app menu
+ * does not send a close request, so `pagehide` also starts the saves; the page may be gone
+ * before they finish.
+ */
+function attachWindowClose(runAll: () => Promise<void>): () => void {
+  const onPageHide = () => void runAll()
   window.addEventListener("pagehide", onPageHide)
   let unlisten: (() => void) | null = null
   let disposed = false
   if (isTauri()) {
     getCurrentWindow()
-      .onCloseRequested(() => beforeClose())
+      .onCloseRequested(() => runAll())
       .then((fn) => {
         if (disposed) fn()
         else unlisten = fn
@@ -51,6 +82,12 @@ export function onWindowClose(beforeClose: () => Promise<void>): () => void {
     unlisten?.()
   }
 }
+
+/**
+ * Registers `beforeClose` to run, together with every other registered callback, before the
+ * app window closes (see `attachWindowClose`). Returns the unregister function.
+ */
+export const onWindowClose = createCloseRegistry(attachWindowClose)
 
 export interface WorkspaceSyncDeps {
   load: () => Promise<Workspace | null>
