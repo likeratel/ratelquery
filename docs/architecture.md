@@ -12,8 +12,8 @@ Tauri commands and events, documented in [ipc-contract.md](ipc-contract.md).
 | --- | --- |
 | `features/` | One folder per screen: `connections/` (connection list and dialog), `query/` (MySQL editor, results grid, edits and export), `dynamo/` (table browser, query form, item editor). Athena has no screen of its own: the connection dialog gains its fields, the schema tree its catalog branch (`schema/athenaActions.ts`) and the query tab its start/wait/cancel path. Components here stay thin and call into `lib/` and `state/`. |
 | `lib/` | Pure, unit-tested helpers: the typed IPC wrapper (`ipc.ts`), MySQL, DynamoDB and Athena types, cell formatting, grid edits, DynamoDB JSON conversion and diffing, SQL context for autocomplete, and physical-key shortcut matching (`shortcuts.ts`). |
-| `state/` | zustand stores: `connectionsStore` (saved configs, dialog state), `sessionsStore` (per-connection session state and schema cache), `tabsStore` (open tabs, SQL text, last result), `athenaStore` (per-connection Glue catalog cache), `uiStore`. Updates are immutable. |
-| `components/` | Shared UI: the shell (sidebar, tab bar, editor bar), CodeMirror SQL and JSON editors, the virtualized result grid, and small UI primitives. |
+| `state/` | zustand stores: `connectionsStore` (saved configs, dialog state), `sessionsStore` (per-connection session state and schema cache), `tabsStore` (open tabs grouped by connection with the last active tab of each, SQL text, last result), `athenaStore` (per-connection Glue catalog cache), `uiStore`. Updates are immutable. |
+| `components/` | Shared UI: the shell (sidebar, two-row tab bar with connection tabs above the active connection's tabs, the connection banner above every tab, editor bar), CodeMirror SQL and JSON editors, the virtualized result grid, and small UI primitives. |
 
 ### Backend (`src-tauri/src/`)
 

@@ -11,7 +11,10 @@ import type { QueryTab } from "../../lib/queryTabs"
 import { isSchemaLoading, knownDatabases, type MysqlSession } from "../../state/sessionsStore"
 
 /** The database the tab's next query runs against. */
-export function tabDatabase(tab: QueryTab, session: MysqlSession | undefined): string | null {
+export function tabDatabase(
+  tab: Pick<QueryTab, "database">,
+  session: MysqlSession | undefined,
+): string | null {
   return tab.database ?? session?.currentDatabase ?? null
 }
 

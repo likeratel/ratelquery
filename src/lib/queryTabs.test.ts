@@ -79,6 +79,40 @@ describe("tab list", () => {
     expect(none).toMatchObject({ tabs: [], activeId: null })
   })
 
+  it("keeps a connection's tabs together and remembers its active tab", () => {
+    const state = [
+      { id: "a1", connectionId: "a" },
+      { id: "b1", connectionId: "b" },
+      { id: "a2", connectionId: "a" },
+    ].reduce((s, params) => openTab(s, { ...params, database: null }), INITIAL_TABS)
+    expect(state.tabs.map((t) => t.id)).toEqual(["a1", "a2", "b1"])
+    expect(state.recent).toEqual({ a: "a2", b: "b1" })
+    const table = openTableTab(state, {
+      id: "b2",
+      connectionId: "b",
+      database: "app",
+      table: "users",
+    })
+    expect(table.tabs.map((t) => t.id)).toEqual(["a1", "a2", "b1", "b2"])
+    expect(activateTab(table, "a1").recent).toEqual({ a: "a1", b: "b2" })
+  })
+
+  it("never jumps to another connection while the closed tab's connection has tabs", () => {
+    const state = [
+      { id: "a1", connectionId: "a" },
+      { id: "b1", connectionId: "b" },
+      { id: "a2", connectionId: "a" },
+    ].reduce((s, params) => openTab(s, { ...params, database: null }), INITIAL_TABS)
+    // a1 a2 | b1, with a2 active: the right neighbour in the flat list would be b1.
+    const closed = closeTab(state, "a2")
+    expect(closed.activeId).toBe("a1")
+    expect(closed.recent).toEqual({ a: "a1", b: "b1" })
+    // The last tab of b goes back to the tab last used on a.
+    const back = closeTab(activateTab(closed, "b1"), "b1")
+    expect(back.activeId).toBe("a1")
+    expect(back.recent).toEqual({ a: "a1" })
+  })
+
   it("keeps numbering monotonic after closing", () => {
     const reopened = openTab(closeTab(three(), "c"), { id: "d", connectionId: "c", database: null })
     expect(reopened.tabs.at(-1)?.title).toBe("Query 4")

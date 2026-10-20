@@ -4,6 +4,13 @@ import type { GridEdits } from "./gridEdits"
 import { pendingCount } from "./gridEdits"
 import type { AppError } from "./ipc"
 import type { QueryResult, TableDetails } from "./mysql"
+import {
+  forgetRecent,
+  insertTab,
+  nextActiveAfterClose,
+  rememberActive,
+  type RecentTabs,
+} from "./tabGroups"
 
 /** What runs a query tab's SQL: a MySQL session, or Athena query executions. */
 export type QueryEngine = "mysql" | "athena"
@@ -69,9 +76,20 @@ export interface TabsState {
   seq: number
   /** Tab whose close waits for confirmation because it holds unsaved work. */
   closing: string | null
+  /** Connection whose tabs wait to close together because some of them hold unsaved work. */
+  closingGroup: ConnectionId | null
+  /** Last active tab per connection (see `rememberActive`). */
+  recent: RecentTabs
 }
 
-export const INITIAL_TABS: TabsState = { tabs: [], activeId: null, seq: 0, closing: null }
+export const INITIAL_TABS: TabsState = {
+  tabs: [],
+  activeId: null,
+  seq: 0,
+  closing: null,
+  closingGroup: null,
+  recent: {},
+}
 
 export function createTab(
   id: string,
@@ -103,7 +121,7 @@ export function createTab(
   }
 }
 
-/** Appends a tab titled "Query N" and activates it. */
+/** Adds a tab titled "Query N" after its connection's tabs and activates it. */
 export function openTab(
   state: TabsState,
   params: {
@@ -121,17 +139,17 @@ export function openTab(
     params.database,
     params.engine,
   )
-  return { ...state, tabs: [...state.tabs, tab], activeId: tab.id, seq }
+  return rememberActive({ ...state, tabs: insertTab(state.tabs, tab), activeId: tab.id, seq })
 }
 
-/** Appends a DynamoDB tab titled "DynamoDB N" and activates it. */
+/** Adds a DynamoDB tab titled "DynamoDB N" after its connection's tabs and activates it. */
 export function openDynamoTab(
   state: TabsState,
   params: { id: string; connectionId: ConnectionId },
 ): TabsState {
   const seq = state.seq + 1
   const tab = createDynamoTab(params.id, params.connectionId, `DynamoDB ${seq}`)
-  return { ...state, tabs: [...state.tabs, tab], activeId: tab.id, seq }
+  return rememberActive({ ...state, tabs: insertTab(state.tabs, tab), activeId: tab.id, seq })
 }
 
 export function createTableTab(
@@ -169,15 +187,18 @@ export function findTableTab(
   return found?.kind === "table" ? found : null
 }
 
-/** Activates the table's tab when it is already open, otherwise appends one and activates it. */
+/**
+ * Activates the table's tab when it is already open, otherwise adds one after its connection's
+ * tabs and activates it.
+ */
 export function openTableTab(
   state: TabsState,
   params: { id: string; connectionId: ConnectionId; database: string; table: string },
 ): TabsState {
   const existing = findTableTab(state, params)
-  if (existing) return { ...state, activeId: existing.id }
+  if (existing) return rememberActive({ ...state, activeId: existing.id })
   const tab = createTableTab(params.id, params.connectionId, params.database, params.table)
-  return { ...state, tabs: [...state.tabs, tab], activeId: tab.id }
+  return rememberActive({ ...state, tabs: insertTab(state.tabs, tab), activeId: tab.id })
 }
 
 /** Ids of every tab, of any kind, opened on `connectionId`. */
@@ -185,15 +206,19 @@ export function tabsForConnection(state: TabsState, connectionId: ConnectionId):
   return state.tabs.filter((t) => t.connectionId === connectionId).map((t) => t.id)
 }
 
-/** Removes a tab; when it was active, the right neighbour (or else the left) becomes active. */
+/**
+ * Removes a tab. When it was active, its right neighbour on the same connection (or else the
+ * left one) becomes active; closing a connection's last tab moves to a neighbouring connection's
+ * remembered tab (see `nextActiveAfterClose`).
+ */
 export function closeTab(state: TabsState, id: string): TabsState {
-  const index = state.tabs.findIndex((t) => t.id === id)
-  if (index === -1) return state
+  if (!state.tabs.some((t) => t.id === id)) return state
   const tabs = state.tabs.filter((t) => t.id !== id)
   const closing = state.closing === id ? null : state.closing
-  if (state.activeId !== id) return { ...state, tabs, closing }
-  const neighbour = tabs[index] ?? tabs[index - 1] ?? null
-  return { ...state, tabs, closing, activeId: neighbour ? neighbour.id : null }
+  const recent = forgetRecent(state.recent, id)
+  if (state.activeId !== id) return { ...state, tabs, closing, recent }
+  const activeId = nextActiveAfterClose(state, id)
+  return rememberActive({ ...state, tabs, closing, recent, activeId })
 }
 
 /**
@@ -223,7 +248,7 @@ export function cancelCloseTab(state: TabsState): TabsState {
 }
 
 export function activateTab(state: TabsState, id: string): TabsState {
-  return state.tabs.some((t) => t.id === id) ? { ...state, activeId: id } : state
+  return state.tabs.some((t) => t.id === id) ? rememberActive({ ...state, activeId: id }) : state
 }
 
 /** Updates a query tab; tabs of another kind are left alone. */

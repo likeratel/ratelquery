@@ -23,6 +23,7 @@ import { applyPlatformAttribute, applyTheme, useUiStore } from "../../state/uiSt
 import { startWorkspaceSync } from "../../state/workspaceSync"
 import { PANEL_SPECS } from "../../lib/panelWidths"
 import { isModalOpen, ResizeHandle, Toaster } from "../ui"
+import { ConnectionBanner } from "./ConnectionBanner"
 import { EmptyWorkspace } from "./EmptyWorkspace"
 import { Sidebar } from "./Sidebar"
 import { TabBar } from "./TabBar"
@@ -101,6 +102,7 @@ export function Shell() {
       )}
       <div className="workspace">
         <TabBar />
+        <ConnectionBanner />
         <div className="workspace__main">
           {activeKind === "dynamo" ? (
             <DynamoWorkspace />

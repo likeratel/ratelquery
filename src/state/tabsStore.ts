@@ -38,6 +38,13 @@ import {
   type TabsState,
   type WorkspaceTab,
 } from "../lib/queryTabs"
+import {
+  groupedOrder,
+  rememberActive,
+  rememberedTab,
+  slotGroupTab,
+  slotTab,
+} from "../lib/tabGroups"
 import { mergeRestoredTabs } from "../lib/workspace"
 import { useAthenaStore } from "./athenaStore"
 import { runAthenaStatements } from "./athenaRun"
@@ -74,6 +81,15 @@ interface TabsStore extends TabsState {
   confirmClose: () => void
   cancelClose: () => void
   activate: (id: string) => void
+  /** Activates the connection's last active tab (else its last tab). */
+  activateConnection: (connectionId: ConnectionId) => void
+  /** Mod+1..9: the tab at `slot` of the active connection, 9 being its last. */
+  activateTabSlot: (slot: number) => void
+  /** Mod+Alt+1..9: the connection group at `slot`, 9 being the last. */
+  activateConnectionSlot: (slot: number) => void
+  /** Marks the connection's tabs as waiting for one confirmation to close together. */
+  requestCloseGroup: (connectionId: ConnectionId) => void
+  cancelCloseGroup: () => void
   setSql: (id: string, sql: string) => void
   setActiveResult: (id: string, index: number) => void
   /**
@@ -231,7 +247,10 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     updateTable: (id, update) => set((state) => updateTableTab(state, id, update)),
 
     restore: (tabs, activeId, seq) =>
-      set((state) => mergeRestoredTabs(state, { tabs, activeId, seq })),
+      set((state) => {
+        const merged = mergeRestoredTabs(state, { tabs, activeId, seq })
+        return rememberActive({ ...merged, tabs: groupedOrder(merged.tabs) })
+      }),
 
     close: (id) => set((state) => closeTab(state, id)),
 
@@ -242,6 +261,33 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     cancelClose: () => set((state) => cancelCloseTab(state)),
 
     activate: (id) => set((state) => activateTab(state, id)),
+
+    activateConnection: (connectionId) =>
+      set((state) => {
+        const id = rememberedTab(state, connectionId)
+        return id ? activateTab(state, id) : state
+      }),
+
+    activateTabSlot: (slot) =>
+      set((state) => {
+        const id = slotTab(state, slot)
+        return id ? activateTab(state, id) : state
+      }),
+
+    activateConnectionSlot: (slot) =>
+      set((state) => {
+        const id = slotGroupTab(state, slot)
+        return id ? activateTab(state, id) : state
+      }),
+
+    requestCloseGroup: (connectionId) =>
+      set((state) =>
+        state.tabs.some((t) => t.connectionId === connectionId)
+          ? { closingGroup: connectionId }
+          : state,
+      ),
+
+    cancelCloseGroup: () => set({ closingGroup: null }),
 
     setSql: (id, sql) => patchTab(id, (tab) => ({ ...tab, sql })),
 

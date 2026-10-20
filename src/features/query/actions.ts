@@ -4,7 +4,12 @@ import type { AthenaConnectionConfig, ConnectionId } from "../../lib/connections
 import { onAppEvent } from "../../lib/events"
 import { isAppError } from "../../lib/ipc"
 import { sqlInsertion } from "../../lib/queryOutput"
-import { tabPendingCount, tabsForConnection, type QueryTab } from "../../lib/queryTabs"
+import {
+  hasUnsavedWork,
+  tabPendingCount,
+  tabsForConnection,
+  type QueryTab,
+} from "../../lib/queryTabs"
 import { runScopeText, type RunScope } from "../../lib/runScope"
 import { dialectFor } from "../../lib/sqlDialect"
 import { useAthenaStore } from "../../state/athenaStore"
@@ -154,6 +159,34 @@ export function confirmCloseTab(): void {
 
 export function cancelCloseTab(): void {
   useTabsStore.getState().cancelClose()
+}
+
+/**
+ * Closes every tab of a connection (the X on its connection tab). When any of them holds unsaved
+ * work, nothing closes until the user confirms once for the whole group (`closingGroup`);
+ * `confirmCloseGroup` then closes them all.
+ */
+export function closeConnectionTabs(connectionId: ConnectionId): void {
+  const store = useTabsStore.getState()
+  const ids = tabsForConnection(store, connectionId)
+  if (store.tabs.some((t) => t.connectionId === connectionId && hasUnsavedWork(t))) {
+    store.requestCloseGroup(connectionId)
+    return
+  }
+  for (const id of ids) removeTab(id)
+}
+
+/** Confirms closing the connection's tabs and throws their unsaved work away. */
+export function confirmCloseGroup(): void {
+  const store = useTabsStore.getState()
+  const connectionId = store.closingGroup
+  if (!connectionId) return
+  store.cancelCloseGroup()
+  for (const id of tabsForConnection(useTabsStore.getState(), connectionId)) removeTab(id)
+}
+
+export function cancelCloseGroup(): void {
+  useTabsStore.getState().cancelCloseGroup()
 }
 
 export function closeActiveTab(): void {

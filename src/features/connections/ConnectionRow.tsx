@@ -1,4 +1,4 @@
-import { Cloud, Database, Ellipsis, ScanSearch, type LucideIcon } from "lucide-react"
+import { Ellipsis } from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { Button, showToast } from "../../components/ui"
 import type { ConnectionConfig, ConnectionId } from "../../lib/connections"
@@ -18,23 +18,12 @@ import { ConnectionMenu } from "./ConnectionMenu"
 import { isPasswordCancelled } from "./connectSession"
 import { errorDetail } from "./errors"
 import { connectionSubtitle } from "./filter"
+import { CONNECTION_KIND_ICON as KIND_ICON, CONNECTION_KIND_LABEL as KIND_LABEL } from "./kind"
 import { dragAttributes, sameRef } from "./layoutTree"
 import { hasNewRecovery, sessionStatus } from "./sessionStatus"
 import { useDragState } from "./useLayoutDrag"
 
 type RowMode = "idle" | "menu" | "move" | "confirm" | "deleting"
-
-const KIND_ICON: Record<ConnectionConfig["kind"], LucideIcon> = {
-  mysql: Database,
-  dynamodb: Cloud,
-  athena: ScanSearch,
-}
-
-const KIND_LABEL: Record<ConnectionConfig["kind"], string> = {
-  mysql: "MySQL",
-  dynamodb: "DynamoDB",
-  athena: "Athena",
-}
 
 function openTab(config: ConnectionConfig): void {
   openQueryTabFor(config.id).catch((raw: unknown) => {
