@@ -385,13 +385,21 @@
 .pending-bar {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  height: 36px;
-  padding: 0 12px;
+  gap: 4px 8px;
+  min-height: 36px;
+  padding: 4px 12px;
   border-top: 1px solid var(--line);
   background: var(--accent-soft);
   font-size: var(--text-xs);
+}
+
+/* Narrow bars (e.g. beside the DynamoDB item panel) wrap whole items, never words; the hint
+   is the only part cut short. */
+.pending-bar > :not(.pending-bar__hint) {
+  flex: none;
+  white-space: nowrap;
 }
 
 .pending-bar__count {
@@ -404,6 +412,7 @@
 }
 
 .pending-bar__hint {
+  min-width: 0;
   margin-left: auto;
   overflow: hidden;
   color: var(--text-faint);
