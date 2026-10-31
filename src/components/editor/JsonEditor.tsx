@@ -1,7 +1,14 @@
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete"
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
+import { json } from "@codemirror/lang-json"
 import { runPhysicalEditingShortcut } from "./physicalKeys"
-import { bracketMatching, indentOnInput } from "@codemirror/language"
+import {
+  bracketMatching,
+  foldGutter,
+  foldKeymap,
+  indentOnInput,
+  syntaxHighlighting,
+} from "@codemirror/language"
 import { searchKeymap } from "@codemirror/search"
 import { EditorState } from "@codemirror/state"
 import {
@@ -13,7 +20,7 @@ import {
   lineNumbers,
 } from "@codemirror/view"
 import { useEffect, useRef } from "react"
-import { tokenTheme } from "./editorTheme"
+import { tokenHighlightStyle, tokenTheme } from "./editorTheme"
 import "./editor.css"
 
 export interface JsonEditorProps {
@@ -26,7 +33,7 @@ export interface JsonEditorProps {
   ariaLabel?: string
 }
 
-/** Small CodeMirror editor for JSON text: no language package, just the token theme. */
+/** Small CodeMirror editor for JSON text, with highlighting and folding. */
 export function JsonEditor({
   value,
   onChange,
@@ -52,6 +59,7 @@ export function JsonEditor({
         doc: value,
         extensions: [
           lineNumbers(),
+          foldGutter(),
           highlightActiveLineGutter(),
           highlightActiveLine(),
           history(),
@@ -64,8 +72,11 @@ export function JsonEditor({
             ...defaultKeymap,
             ...historyKeymap,
             ...searchKeymap,
+            ...foldKeymap,
             indentWithTab,
           ]),
+          json(),
+          syntaxHighlighting(tokenHighlightStyle),
           tokenTheme,
           EditorState.readOnly.of(readOnly),
           EditorView.contentAttributes.of({ "aria-label": ariaLabel }),

@@ -64,6 +64,16 @@ export const tokenTheme = EditorView.theme({
     paddingRight: "4px",
   },
   ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--text-muted)" },
+  ".cm-foldGutter .cm-gutterElement": { padding: "0 4px", cursor: "pointer" },
+  ".cm-foldGutter .cm-gutterElement:hover": { color: "var(--text)" },
+  ".cm-foldPlaceholder": {
+    margin: "0 2px",
+    padding: "0 4px",
+    border: "none",
+    borderRadius: "var(--radius-sm)",
+    backgroundColor: "var(--accent-soft)",
+    color: "var(--text-muted)",
+  },
   ".cm-lineNumbers .cm-gutterElement": { padding: "0 8px 0 14px", minWidth: "36px" },
   ".cm-matchingBracket, .cm-nonmatchingBracket": {
     backgroundColor: "var(--accent-soft)",
