@@ -13,6 +13,11 @@ describe("formatCell", () => {
     expect(formatCell({ t: "bool", v: false })).toBe("false")
     expect(formatCell({ t: "str", v: "a\nb" })).toBe("a b")
     expect(formatCell({ t: "bytes", v: "AAEC" })).toBe("(binary, 3 bytes)")
+    // The 400th code unit starts an emoji: the cut leaves the whole pair out, never half of it.
+    const long = `${"a".repeat(399)}😀${"b".repeat(10)}`
+    expect(formatCell({ t: "str", v: long })).toBe(`${"a".repeat(399)}…`)
+    const even = `${"a".repeat(398)}😀${"b".repeat(10)}`
+    expect(formatCell({ t: "str", v: even })).toBe(`${"a".repeat(398)}😀…`)
   })
 
   it("maps tags to data tones", () => {
