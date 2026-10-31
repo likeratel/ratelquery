@@ -16,8 +16,8 @@ pub use errors::{
 pub use export::run_export;
 pub use expr::{DEFAULT_LIMIT, MAX_LIMIT};
 pub use model::{
-    AttributeUpdate, DynamoExportFormat, DynamoExportOptions, DynamoExportRequest,
-    IndexDescription, IndexKind, KeyAttribute, KeySchema, KeyType, Page, Projection,
+    AttributeUpdate, DynamoExportFormat, DynamoExportOptions, DynamoExportRequest, ExpectedValue,
+    IndexDescription, IndexKind, KeyAttribute, KeySchema, KeyType, Page, PathSegment, Projection,
     PutExpectation, QueryRequest, RangeCondition, RangeOp, ScanRequest, TableDescription,
 };
 pub use ops::{delete_item, get_item, put_item, query, scan, update_item_attributes};

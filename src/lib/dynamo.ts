@@ -72,14 +72,31 @@ export interface Page {
 
 export type PutExpectation = "exists" | "not_exists" | "any"
 
+/** One step into a map (its key) or a list (its index). */
+export type PathSegment = string | number
+
 /**
- * One attribute for `dynamo_update_item_attributes`. `expected` is the value the edit started
- * from, or null when the attribute was missing; the write fails if it no longer matches.
+ * One value for `dynamo_update_item_attributes`: the attribute `name`, or the value `path` leads
+ * to inside its maps and lists. `expected` is the value the edit started from, or null when it
+ * was missing; the write fails if it no longer matches.
  */
 export interface AttributeUpdate {
   name: string
+  path?: readonly PathSegment[]
   value: AttributeValue
   expected: AttributeValue | null
+}
+
+/**
+ * A value the stored item must still hold for a write to go through: the attribute `name`, or
+ * the value `path` leads to inside it; null means it must be missing. Inline edits send the
+ * whole list for every list index on an edited path, so a list that shifted refuses the write
+ * instead of changing whatever element now sits at the old index.
+ */
+export interface ExpectedValue {
+  name: string
+  path?: readonly PathSegment[]
+  value: AttributeValue | null
 }
 
 export type DynamoExportRequest = { scan: ScanRequest } | { query: QueryRequest }
@@ -99,8 +116,20 @@ export const dynamoApi = {
     ipc<Page>("dynamo_scan", { connectionId, request }),
   getItem: (connectionId: ConnectionId, table: string, key: Item) =>
     ipc<Item | null>("dynamo_get_item", { connectionId, table, key }),
-  putItem: (connectionId: ConnectionId, table: string, item: Item, expect: PutExpectation) =>
-    ipc<void>("dynamo_put_item", { connectionId, table, item, expect }),
+  putItem: (
+    connectionId: ConnectionId,
+    table: string,
+    item: Item,
+    expect: PutExpectation,
+    expected: readonly ExpectedValue[] = [],
+  ) =>
+    ipc<void>("dynamo_put_item", {
+      connectionId,
+      table,
+      item,
+      expect,
+      ...(expected.length > 0 ? { expected } : {}),
+    }),
   deleteItem: (connectionId: ConnectionId, table: string, key: Item) =>
     ipc<void>("dynamo_delete_item", { connectionId, table, key }),
   updateItemAttributes: (
@@ -108,7 +137,15 @@ export const dynamoApi = {
     table: string,
     key: Item,
     changes: readonly AttributeUpdate[],
-  ) => ipc<void>("dynamo_update_item_attributes", { connectionId, table, key, changes }),
+    expected: readonly ExpectedValue[] = [],
+  ) =>
+    ipc<void>("dynamo_update_item_attributes", {
+      connectionId,
+      table,
+      key,
+      changes,
+      ...(expected.length > 0 ? { expected } : {}),
+    }),
   export: (
     connectionId: ConnectionId,
     request: DynamoExportRequest,
