@@ -74,7 +74,7 @@ What I did: decided what to build and what to leave out, picked the stack (Tauri
 **All**
 
 - Tabs are grouped under their connection, and a coloured strip above every tab names the server and database it talks to, so a statement never goes to the wrong place
-- Folders and your own order for connections; duplicate a connection with its saved password
+- Nested folders and your own order for connections; duplicate a connection with its saved password
 - An Output log next to the results with every statement's outcome, kept for the number of days you choose
 - Resizable sidebar and DynamoDB panels
 - Secrets live in the OS keyring, never in the settings file
@@ -91,7 +91,7 @@ Press `⌘N` (or **+** in the sidebar) and pick MySQL, DynamoDB or Athena. **Tes
 - **DynamoDB**: a region and either an AWS profile from `~/.aws` or access keys. Set an endpoint such as `http://localhost:8000` for DynamoDB Local.
 - **Athena**: a region and an AWS profile or keys. Workgroups are listed for you; the result location comes from the workgroup unless you set one.
 
-Organise the sidebar with **New folder** (next to **+**) and drag connections to reorder them or drop them on a folder. The **…** menu on a row has the same moves (**Move up**, **Move down**, **Move to folder…**) plus **Edit**, **Duplicate** and **Delete**. Duplicate copies the saved password too. Deleting a folder keeps its connections.
+Organise the sidebar with **New folder** (next to **+**). Folders nest up to 32 levels deep: pick **New subfolder** in a folder's **…** menu, or drag a folder onto another one. Drag connections and folders to reorder them or drop them on a folder. The **…** menu on a row has the same moves (**Move up**, **Move down**, **Move to folder…**, which names each folder by its full path) plus **Edit**, **Duplicate** and **Delete**. Duplicate copies the saved password too. Deleting a folder keeps what it holds: its connections and subfolders move up a level.
 
 Passwords go to the macOS keychain (or the Windows credential store). If the keychain keeps asking after an update, choose the file store in Settings, which keeps them in a `0600` file in the config folder.
 

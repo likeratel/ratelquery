@@ -1,26 +1,14 @@
 import { Search } from "lucide-react"
 import { useMemo, useState } from "react"
 import { Button } from "../../components/ui"
-import { layoutEntries, reconcileLayout, type LayoutEntry } from "../../lib/connectionLayout"
+import { layoutEntries, reconcileLayout } from "../../lib/connectionLayout"
 import { useConnectionLayout } from "../../state/connectionLayoutStore"
 import { useConnectionsStore } from "../../state/connectionsStore"
-import { handleTreeFocus, handleTreeKeyDown, isDescendant, useSchemaTree } from "../schema"
-import { ConnectionRow } from "./ConnectionRow"
+import { handleTreeFocus, handleTreeKeyDown, useSchemaTree } from "../schema"
 import { filterConnections, SEARCH_THRESHOLD } from "./filter"
-import { FolderRow } from "./FolderRow"
-import { folderKey } from "./layoutTree"
+import { LayoutEntryRow } from "./FolderRow"
+import { entryKey, showsNode } from "./layoutTree"
 import { useDragState, useLayoutDrag } from "./useLayoutDrag"
-
-/** Whether tree node `focused` is one of the rows `entries` render (or lies under one). */
-function showsNode(entries: readonly LayoutEntry[], focused: string, forceOpen: boolean): boolean {
-  const showsConnection = (id: string) => focused === id || isDescendant(focused, id)
-  return entries.some((entry) => {
-    if (entry.type === "connection") return showsConnection(entry.config.id)
-    if (focused === folderKey(entry.folder.id)) return true
-    const open = forceOpen || !entry.folder.collapsed
-    return open && entry.connections.some((c) => showsConnection(c.id))
-  })
-}
 
 export function ConnectionList() {
   const connections = useConnectionsStore((s) => s.connections)
@@ -98,20 +86,15 @@ export function ConnectionList() {
           onFocus={handleTreeFocus}
           onPointerDown={drag.onPointerDown}
         >
-          {entries.map((entry, index) => {
-            const tabStop = index === 0 && !stopShown
-            return entry.type === "connection" ? (
-              <ConnectionRow key={entry.config.id} config={entry.config} tabStop={tabStop} />
-            ) : (
-              <FolderRow
-                key={folderKey(entry.folder.id)}
-                folder={entry.folder}
-                connections={entry.connections}
-                forceOpen={filtering}
-                tabStop={tabStop}
-              />
-            )
-          })}
+          {entries.map((entry, index) => (
+            <LayoutEntryRow
+              key={entryKey(entry)}
+              entry={entry}
+              level={1}
+              forceOpen={filtering}
+              tabStop={index === 0 && !stopShown}
+            />
+          ))}
         </ul>
       )}
     </>

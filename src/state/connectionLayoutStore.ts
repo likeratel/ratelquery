@@ -26,8 +26,8 @@ interface ConnectionLayoutState {
    * Ignored while the saved layout is loading.
    */
   update: (change: (layout: ConnectionLayout) => ConnectionLayout) => void
-  /** Adds a "New folder" at the end of the list and starts renaming it. */
-  createFolder: () => FolderId
+  /** Adds a "New folder" at the end of the list, or of folder `parent`, and starts renaming it. */
+  createFolder: (parent?: FolderId) => FolderId
   setRenaming: (id: FolderId | null) => void
 }
 
@@ -92,9 +92,9 @@ export const useConnectionLayout = create<ConnectionLayoutState>((set, get) => (
     save(next)
   },
 
-  createFolder: () => {
+  createFolder: (parent) => {
     const id = crypto.randomUUID()
-    get().update((layout) => createFolder(layout, id, newFolderName(layout)))
+    get().update((layout) => createFolder(layout, id, newFolderName(layout), parent))
     if (get().layout.folders.some((f) => f.id === id)) set({ renaming: id })
     return id
   },
