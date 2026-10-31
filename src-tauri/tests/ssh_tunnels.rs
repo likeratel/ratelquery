@@ -33,7 +33,7 @@ struct Bastion {
 
 fn bastion() -> Option<Bastion> {
     let Ok(address) = std::env::var(SSH_VAR) else {
-        eprintln!("SKIPPED live SSH test: {SSH_VAR} is not set (e.g. 127.0.0.1:2222).");
+        common::skipped(&format!("live SSH test: {SSH_VAR} is not set (e.g. 127.0.0.1:2222)."));
         return None;
     };
     let db = test_db()?;

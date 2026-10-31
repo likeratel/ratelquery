@@ -1,4 +1,4 @@
-//! Shared helpers for tests that need a live MySQL (`RATELQUERY_TEST_MYSQL_URL`).
+//! Shared helpers for live tests: reporting skips, and a live MySQL (`RATELQUERY_TEST_MYSQL_URL`).
 #![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
@@ -11,6 +11,13 @@ use ratelquery_lib::mysql::{
 use sqlx::{Connection, Executor};
 
 pub const URL_VAR: &str = "RATELQUERY_TEST_MYSQL_URL";
+
+/// Reports a skipped live test. It writes to stderr directly rather than through `eprintln!`,
+/// which libtest captures, so a plain `cargo test` shows the skip instead of a bare `ok`.
+pub fn skipped(message: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "SKIPPED {message}");
+}
 const URL_EXAMPLE: &str = "mysql://dev:dev@127.0.0.1:3307/sample";
 
 pub struct TestDb {
@@ -22,10 +29,10 @@ pub struct TestDb {
 /// is not set.
 pub fn test_db() -> Option<TestDb> {
     let Ok(url) = std::env::var(URL_VAR) else {
-        eprintln!(
-            "SKIPPED live MySQL test: {URL_VAR} is not set. Run `pnpm db:up` and set \
+        skipped(&format!(
+            "live MySQL test: {URL_VAR} is not set. Run `pnpm db:up` and set \
              {URL_VAR}={URL_EXAMPLE} to run it."
-        );
+        ));
         return None;
     };
     let rest = url.strip_prefix("mysql://").expect("URL must start with mysql://");
