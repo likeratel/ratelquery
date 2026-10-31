@@ -1,11 +1,18 @@
 import type { KeySchema } from "../../lib/dynamo"
-import { failedEditHint, itemEdit, pendingEditCount } from "../../lib/dynamoEdits"
+import {
+  CONFLICT_HINT,
+  conflictingChanges,
+  failedEditHint,
+  itemEdit,
+  pendingEditCount,
+} from "../../lib/dynamoEdits"
 import { selectedItem, type DynamoTab } from "../../lib/dynamoTabs"
 import { formatShortcut } from "../../lib/shortcuts"
 import { APP_SHORTCUTS } from "../query/appShortcuts"
 import { applyDynamoEdits, discardDynamoEdits, discardSelectedItemEdits } from "./actions"
 
-const EDITOR_HINT = "Keys, NULL, binary, maps, lists and sets are edited in the item editor"
+const EDITOR_HINT =
+  "Nested values are edited in the item tree; keys, NULL, binary, sets and structure in the item editor"
 
 /**
  * Pending inline edits of a DynamoDB tab, with Apply and Discard like the SQL grid's bar. When
@@ -17,7 +24,13 @@ export function DynamoPendingBar({ tab, schema }: { tab: DynamoTab; schema: KeyS
   if (count === 0) return null
   const item = selectedItem(tab)
   const selectedEdit = item ? itemEdit(tab.edits, item, schema) : undefined
-  const hint = selectedEdit?.failed ? failedEditHint(selectedEdit.failed) : EDITOR_HINT
+  const conflict = item !== null && conflictingChanges(selectedEdit, item).length > 0
+  const warning = selectedEdit?.failed
+    ? failedEditHint(selectedEdit.failed)
+    : conflict
+      ? CONFLICT_HINT
+      : null
+  const hint = warning ?? EDITOR_HINT
 
   return (
     <div className="pending-bar" role="region" aria-label="Pending changes">
@@ -57,11 +70,7 @@ export function DynamoPendingBar({ tab, schema }: { tab: DynamoTab; schema: KeyS
         </>
       )}
       {/* The hint is cut to one line; the title carries the whole text. */}
-      <span
-        className="pending-bar__hint"
-        role={selectedEdit?.failed ? "status" : undefined}
-        title={hint}
-      >
+      <span className="pending-bar__hint" role={warning ? "status" : undefined} title={hint}>
         {hint}
       </span>
     </div>

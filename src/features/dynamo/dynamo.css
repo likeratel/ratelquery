@@ -494,31 +494,106 @@
   border-top: 1px solid var(--line);
 }
 
-.dyn-attrs {
+/* Item tree: one row per value, indented by depth, with copy actions on hover. */
+
+.dyn-tree__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.dyn-tree {
   flex: 1;
   min-height: 0;
-  margin: 0;
+  padding: 2px 0;
   overflow: auto;
 }
 
-.dyn-attrs__row {
-  display: grid;
-  grid-template-columns: minmax(0, 130px) minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--line);
+.dyn-tree__row {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 24px;
+  padding: 3px 6px 3px calc(8px + var(--depth, 0) * 14px);
   font-size: var(--text-sm);
   line-height: 18px;
 }
 
-.dyn-attrs__name {
-  display: flex;
-  flex-direction: column;
+.dyn-tree__row:hover {
+  background: var(--surface-hover);
+}
+
+.dyn-tree__row[data-changed],
+.dyn-tree__table td[data-changed] {
+  background-color: var(--accent-soft);
+}
+
+.dyn-tree__row[data-changed]::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  left: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.dyn-tree__row[data-conflict] {
+  background-color: var(--danger-soft);
+}
+
+.dyn-tree__row[data-conflict]::before {
+  background: var(--danger);
+}
+
+.dyn-tree__toggle {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 14px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+}
+
+.dyn-tree__toggle:hover {
+  color: var(--text);
+}
+
+.dyn-tree__toggle svg {
+  transition: transform 120ms var(--ease-out);
+}
+
+.dyn-tree__toggle[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.dyn-tree__name {
+  flex: 0 1 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 45%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-muted);
+}
+
+.dyn-tree__row .dyn-type {
+  margin-top: 1px;
+}
+
+.dyn-tree__json {
+  border-color: var(--accent-ring);
+  color: var(--accent);
 }
 
 .dyn-attrs__key {
@@ -527,40 +602,126 @@
   font-size: var(--text-xs);
 }
 
-.dyn-attrs__value {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  min-width: 0;
-  margin: 0;
-}
-
-.dyn-attrs__value .dyn-type {
-  margin-top: 1px;
-}
-
-.dyn-attrs__text {
+.dyn-tree__value {
+  flex: 1;
   min-width: 0;
   color: var(--data-string);
   word-break: break-word;
   user-select: text;
 }
 
-.dyn-attrs__text[data-tone="number"] {
+.dyn-tree__value[data-editable] {
+  border-radius: var(--radius-sm);
+  cursor: text;
+}
+
+.dyn-tree__value[data-editable]:hover {
+  box-shadow: inset 0 -1px 0 var(--line-strong);
+}
+
+.dyn-tree__value[data-tone="number"] {
   color: var(--data-number);
 }
 
-.dyn-attrs__text[data-tone="bool"] {
+.dyn-tree__value[data-tone="bool"] {
   color: var(--data-bool);
 }
 
-.dyn-attrs__text[data-tone="json"] {
-  color: var(--data-json);
+.dyn-tree__value[data-tone="json"],
+.dyn-tree__count {
+  color: var(--text-faint);
 }
 
-.dyn-attrs__text[data-tone="null"],
-.dyn-attrs__text[data-tone="bytes"] {
+.dyn-tree__value[data-tone="null"],
+.dyn-tree__value[data-tone="bytes"] {
   color: var(--data-null);
+  font-style: italic;
+}
+
+.dyn-tree__actions {
+  flex: none;
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  visibility: hidden;
+}
+
+.dyn-tree__row:hover .dyn-tree__actions,
+.dyn-tree__row:focus-within .dyn-tree__actions,
+.dyn-tree__actions .ui-icon-button[aria-pressed="true"] {
+  visibility: visible;
+}
+
+.dyn-tree__edit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dyn-tree__input {
+  width: 100%;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--accent-ring);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-sm);
+}
+
+.dyn-tree__input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.dyn-tree__error {
+  color: var(--danger);
+  font-size: var(--text-xs);
+}
+
+.dyn-tree__table-wrap {
+  padding: 2px 8px 6px calc(8px + var(--depth, 0) * 14px);
+  overflow-x: auto;
+}
+
+.dyn-tree__table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  line-height: 18px;
+}
+
+.dyn-tree__table th,
+.dyn-tree__table td {
+  max-width: 220px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.dyn-tree__table th {
+  color: var(--text-muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.dyn-tree__table tbody th {
+  color: var(--text-faint);
+}
+
+.dyn-tree__missing {
+  color: var(--text-faint);
+}
+
+.dyn-tree__follow {
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.dyn-tree__follow:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 
 .dyn-editor__code {

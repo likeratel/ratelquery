@@ -8,8 +8,10 @@ import {
   failDynamoRun,
   finishDynamoRun,
   isDynamoTabDirty,
+  jsonModeFor,
   nextStartKeys,
   openEditor,
+  panelApplyStep,
   pageNumber,
   selectedItem,
   selectItem,
@@ -17,6 +19,7 @@ import {
   setForm,
   startDynamoRun,
   updateEditor,
+  updatePanel,
   type DynamoTab,
   type PageMove,
 } from "./dynamoTabs"
@@ -142,5 +145,46 @@ describe("editorIdentity", () => {
     expect(editorIdentity(editorOn({ pk: { S: "a" } }), null)).not.toBe(
       editorIdentity(editorOn({ pk: { S: "b" } }), null),
     )
+  })
+})
+
+describe("item panel", () => {
+  const schema = { hash: { name: "pk", type: "S" as const }, range: null }
+
+  it("opens wire mode only when plain would change the item or the key is binary", () => {
+    expect(jsonModeFor(key(1), "plain", schema)).toBe("plain")
+    expect(jsonModeFor(key(1), "wire", schema)).toBe("wire")
+    expect(jsonModeFor({ ...key(1), tags: { SS: ["a"] } }, "plain", schema)).toBe("wire")
+    const binary = { hash: { name: "pk", type: "B" as const }, range: null }
+    expect(jsonModeFor(key(1), "plain", binary)).toBe("wire")
+  })
+
+  it("starts a dirty editor when pending changes are carried into it", () => {
+    const original: Item = { pk: { S: "a" }, n: { N: "1" } }
+    const seed: Item = { pk: { S: "a" }, n: { N: "2" } }
+    const carried = { count: 1, expected: [{ name: "n", value: { N: "1" } }] }
+    const editor = openEditor(fresh(), original, "plain", seed, carried).editor
+    expect(editor).toMatchObject({ carried: 1, initialText: '{\n  "pk": "a",\n  "n": 1\n}' })
+    expect(editor?.text).toBe('{\n  "pk": "a",\n  "n": 2\n}')
+    expect(isDynamoTabDirty({ ...fresh(), editor })).toBe(true)
+    expect(openEditor(fresh(), original, "plain").editor?.carried).toBe(0)
+  })
+
+  it("stops a review when another item is selected or the page changes", () => {
+    const reviewing = updatePanel(selectItem(move(fresh(), "first"), 0), { reviewing: true })
+    expect(selectItem(reviewing, 0)).toBe(reviewing)
+    expect(selectItem(reviewing, 1).panel.reviewing).toBe(false)
+    expect(finishDynamoRun(reviewing, request, [null], page(0, false)).panel.reviewing).toBe(false)
+  })
+})
+
+describe("panelApplyStep", () => {
+  it("reviews, then applies, only the item's own changes", () => {
+    const panel = fresh().panel
+    expect(panelApplyStep(panel, true)).toBe("review")
+    expect(panelApplyStep({ ...panel, reviewing: true }, true)).toBe("apply")
+    // Other items' pending changes are never applied from the item panel.
+    expect(panelApplyStep(panel, false)).toBe("nothing")
+    expect(panelApplyStep({ ...panel, reviewing: true }, false)).toBe("nothing")
   })
 })

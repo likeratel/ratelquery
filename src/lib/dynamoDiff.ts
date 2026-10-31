@@ -5,6 +5,8 @@ export type ChangeKind = "added" | "changed" | "removed"
 
 export interface AttributeChange {
   name: string
+  /** Stable row identity when `name` is a display path (see `pendingChangeList`). */
+  id?: string
   kind: ChangeKind
   before: AttributeValue | null
   after: AttributeValue | null

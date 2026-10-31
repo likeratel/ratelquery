@@ -232,6 +232,39 @@ export function inexactNumberLiterals(text: string): string[] {
     .filter((token) => !token.startsWith('"') && !isExactNumber(token))
 }
 
+/** A JSON object or array stored in a string attribute. */
+export interface JsonInString {
+  value: PlainObject | PlainValue[]
+  /**
+   * False when a number literal would change through `JSON.parse` (beyond 2^53 or too precise),
+   * so the parsed value can't be shown or edited.
+   */
+  exact: boolean
+  /**
+   * True when re-stringifying gives the same text back. Only then can an edit be written as
+   * `JSON.stringify` of the edited value without reformatting anything else.
+   */
+  compact: boolean
+}
+
+/** The JSON a string holds when it is an object or array, otherwise null. */
+export function jsonInString(text: string): JsonInString | null {
+  const trimmed = text.trimStart()
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null
+  const parsed = parseJson(text)
+  if (!parsed.ok) return null
+  const value = parsed.value as PlainObject | PlainValue[]
+  const exact = inexactNumberLiterals(text).length === 0
+  return { value, exact, compact: exact && JSON.stringify(value) === text }
+}
+
+/** Why the JSON in a string is read-only, or null when it can be edited. */
+export function jsonStringReadOnlyReason(json: JsonInString): string | null {
+  if (!json.exact) return "Has numbers beyond 2^53 or too precise to show exactly"
+  if (!json.compact) return "Not compact JSON, so an edit would reformat it"
+  return null
+}
+
 /** Parses a plain JSON object and converts it to a wire item. */
 export function parsePlainItem(text: string): Result<Item> {
   const parsed = parseJson(text)

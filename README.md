@@ -61,8 +61,8 @@ What I did: decided what to build and what to leave out, picked the stack (Tauri
 
 - Browse tables with their key schema and indexes
 - Scan and Query with key conditions, filter expressions and paging
-- Table and JSON views, item detail, a wire/plain JSON editor and a diff before every save
-- Edit string, number and boolean cells right in the grid, then apply them together; each write only succeeds if the item still holds the values you started from
+- Table and JSON views, an item panel with a Tree and a JSON view, a wire/plain JSON editor and a diff before every save
+- Edit string, number and boolean values right in the grid or anywhere in the item tree, including inside JSON stored in a string, then apply them together; each write only succeeds if the item still holds the values you started from
 - Export a scan or query as JSON, JSON Lines or CSV
 
 **Athena**
@@ -127,7 +127,11 @@ String, number and boolean cells can be edited right in the grid; keys, `NULL`, 
 
 ![DynamoDB grid edits waiting for Apply](docs/screenshots/dynamo-inline-edit.png)
 
-**Edit item** opens the JSON editor, in plain JSON or the DynamoDB wire format. `⌘S` shows every added, changed and removed attribute before anything is saved.
+The item panel has two views. **Tree** shows every attribute, keys first, with its type; maps, lists and sets open to any depth, and a closed node shows its size (`M · 16 keys`, `L · 2 items`). It opens the first level by default, **Expand all** and **Collapse all** do the rest, and what you open stays open as you move to other items of the table. Each row can copy its path (`senderService.numbers[0].senderNumber`) or its value. A list of two or more maps that share keys can be shown as a table, with the union of their keys as columns; click a nested cell to follow it into the tree. A string that holds a JSON object or array gets a **JSON** badge and opens like a map. **JSON** shows the item read-only with highlighting and folding, in plain JSON or the wire format, the same mode **Edit** opens in.
+
+Double-click a string, number or boolean in the tree (or press Enter on it) to edit it in place, at any depth. Keys stay read-only and numbers are checked like in the grid. Inside JSON stored in a string, values can be edited only when the string is compact JSON that `JSON.stringify` gives back unchanged; otherwise the badge says why (not compact, or numbers beyond 2^53), so nothing is reformatted or rounded. Tree and grid edits of an item are the same pending changes: **Apply** (`⌘S` in the panel) lists them, then writes them with one `UpdateItem` that sets each nested path only if it, and every list on the way to it, still holds what you loaded. A list that shifted in the meantime refuses the write rather than changing another element. If a refresh shows the item changed under a pending edit, the edit is marked as a conflict instead of being laid over the new values. **Discard** drops them.
+
+**Edit item** opens the JSON editor, in plain JSON or the DynamoDB wire format, for structural changes such as adding or removing attributes. Pending tree or grid changes of the item move into the editor's text, so its review lists them and saving writes everything at once, still only while the values they started from hold; discarding the editor drops them. Changes that already failed or conflict with the item stay in the panel until you discard them. `⌘S` shows every added, changed and removed attribute before anything is saved.
 
 ![Diff review before saving an item](docs/screenshots/dynamo-diff-review.png)
 
@@ -150,7 +154,7 @@ Athena tabs use the same editor, with tables and columns from the Glue Data Cata
 | `⌥⌘1`…`⌥⌘8` / `⌥⌘9` | Go to that connection (its last used tab) / the last connection |
 | `⌘⏎` | Run the statement at the cursor, or the DynamoDB form |
 | `⇧⌘⏎` | Run the selected text, or everything when nothing is selected |
-| `⌘S` | Apply pending grid edits, or review a DynamoDB item |
+| `⌘S` | Apply pending grid edits, or review a DynamoDB item (in the item panel: review, then apply its changes) |
 | `⌘C` / `⇧⌘C` | Copy the focused cell, or the selected rows when several are selected; `⇧` copies rows with a line of column names |
 | `⌘B` | Toggle the sidebar |
 | `⌘,` | Settings |

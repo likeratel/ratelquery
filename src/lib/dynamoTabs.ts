@@ -1,12 +1,37 @@
 import type { ConnectionId } from "./connections"
-import type { DynamoExportRequest, Item, KeySchema, Page } from "./dynamo"
+import type { DynamoExportRequest, ExpectedValue, Item, KeySchema, Page } from "./dynamo"
 import { itemKey } from "./dynamoDiff"
 import { EMPTY_DYNAMO_EDITS, pendingEditCount, type DynamoEdits } from "./dynamoEdits"
-import { formatItem, type JsonMode } from "./dynamoJson"
+import { findLossyAttributes, formatItem, type JsonMode } from "./dynamoJson"
 import { EMPTY_FORM, type DynamoForm, type DynamoMode } from "./dynamoRequest"
+import { DEFAULT_TREE_EXPANSION, type TreeExpansion } from "./dynamoTree"
 import type { AppError } from "./ipc"
 
 export type ItemView = "table" | "json"
+
+/** How the item side panel shows the selected item. */
+export type DetailView = "tree" | "json"
+
+/** Choices of the item side panel, kept while moving between items like `view`. */
+export interface ItemPanel {
+  view: DetailView
+  /**
+   * Plain or wire JSON, as last picked in the panel's JSON view or the editor. The editor
+   * opens in it, unless plain would change the item (see `jsonModeFor`).
+   */
+  mode: JsonMode
+  /** Open nodes by path, so the next item of the table opens the same way. */
+  tree: TreeExpansion
+  /** Set while the panel lists the selected item's pending changes before Apply. */
+  reviewing: boolean
+}
+
+export const DEFAULT_ITEM_PANEL: ItemPanel = {
+  view: "tree",
+  mode: "plain",
+  tree: DEFAULT_TREE_EXPANSION,
+  reviewing: false,
+}
 
 /** What the user asked for while the editor had unsaved changes, awaiting "Discard changes?". */
 export type DiscardIntent =
@@ -30,6 +55,16 @@ export interface ItemEditorState {
   saving: boolean
   /** Set while the inline "Discard changes?" prompt is showing. */
   discard: DiscardIntent | null
+  /**
+   * Pending grid or tree changes of the item that moved into the text when the editor opened.
+   * They are saved with the item, or dropped with the editor.
+   */
+  carried: number
+  /**
+   * What the carried changes started from. Saving over the item requires all of it to still
+   * hold, so the editor keeps the protection the inline edits had.
+   */
+  expected: readonly ExpectedValue[]
 }
 
 export interface DynamoTab {
@@ -55,6 +90,7 @@ export interface DynamoTab {
    */
   detail: Item | null
   view: ItemView
+  panel: ItemPanel
   editor: ItemEditorState | null
   /** Inline grid edits waiting for Apply, keyed by item key so they outlive a page refresh. */
   edits: DynamoEdits
@@ -84,6 +120,7 @@ export function createDynamoTab(id: string, connectionId: ConnectionId, title: s
     selected: null,
     detail: null,
     view: "table",
+    panel: DEFAULT_ITEM_PANEL,
     editor: null,
     edits: EMPTY_DYNAMO_EDITS,
     applying: false,
@@ -102,6 +139,8 @@ export function selectTable(tab: DynamoTab, table: string): DynamoTab {
     // Keys, index and expressions belong to the old table; the page size carries over.
     form: { ...EMPTY_FORM, limit: tab.form.limit },
     view: tab.view,
+    // Paths mean something else in another table; the view and JSON mode carry over.
+    panel: { ...tab.panel, tree: DEFAULT_TREE_EXPANSION, reviewing: false },
     runId: tab.runId + 1,
     lastElapsedMs: tab.lastElapsedMs,
   }
@@ -157,6 +196,7 @@ export function finishDynamoRun(
     page,
     selected: null,
     detail: null,
+    panel: { ...tab.panel, reviewing: false },
     runId: tab.runId + 1,
     lastElapsedMs: page.elapsedMs,
   }
@@ -170,12 +210,34 @@ export function failDynamoRun(tab: DynamoTab, error: AppError): DynamoTab {
 export function selectItem(tab: DynamoTab, index: number | null): DynamoTab {
   const count = tab.page?.items.length ?? 0
   const selected = index !== null && index >= 0 && index < count ? index : null
-  return { ...tab, selected, detail: null }
+  if (selected === tab.selected && tab.detail === null) return tab
+  return { ...tab, selected, detail: null, panel: { ...tab.panel, reviewing: false } }
 }
 
 /** Shows `item` in the side panel without a page row behind it. */
 export function showDetail(tab: DynamoTab, item: Item): DynamoTab {
-  return { ...tab, selected: null, detail: item }
+  return { ...tab, selected: null, detail: item, panel: { ...tab.panel, reviewing: false } }
+}
+
+/** What Mod+S does in the item panel. It never applies other items' changes from there. */
+export type PanelApplyStep = "review" | "apply" | "nothing"
+
+export function panelApplyStep(panel: ItemPanel, itemHasEdits: boolean): PanelApplyStep {
+  if (!itemHasEdits) return "nothing"
+  return panel.reviewing ? "apply" : "review"
+}
+
+export function updatePanel(tab: DynamoTab, patch: Partial<ItemPanel>): DynamoTab {
+  return { ...tab, panel: { ...tab.panel, ...patch } }
+}
+
+/**
+ * The JSON mode to show or edit `item` in: the preferred one, but wire when plain JSON would
+ * change the item (sets, binary, imprecise numbers) or the table has a binary key.
+ */
+export function jsonModeFor(item: Item, preferred: JsonMode, schema: KeySchema | null): JsonMode {
+  const binaryKey = schema?.hash.type === "B" || schema?.range?.type === "B"
+  return findLossyAttributes(item).length > 0 || binaryKey ? "wire" : preferred
 }
 
 export function selectedItem(tab: DynamoTab): Item | null {
@@ -183,12 +245,24 @@ export function selectedItem(tab: DynamoTab): Item | null {
   return tab.page?.items[tab.selected] ?? null
 }
 
-/** Opens the item editor. `seed` is the starting text for a new item (defaults to `{}`). */
+/** Pending changes an editor takes over: how many, and the values they started from. */
+export interface CarriedChanges {
+  count: number
+  expected: readonly ExpectedValue[]
+}
+
+const NOTHING_CARRIED: CarriedChanges = { count: 0, expected: [] }
+
+/**
+ * Opens the item editor. `seed` is the starting text: a new item's template (defaults to `{}`),
+ * or `original` with the `carried` pending changes applied, which leaves the editor dirty.
+ */
 export function openEditor(
   tab: DynamoTab,
   original: Item | null,
   mode: JsonMode,
   seed: Item = original ?? {},
+  carried: CarriedChanges = NOTHING_CARRIED,
 ): DynamoTab {
   const text = formatItem(seed, mode)
   return {
@@ -197,12 +271,14 @@ export function openEditor(
       original,
       mode,
       text,
-      initialText: text,
+      initialText: carried.count > 0 && original ? formatItem(original, mode) : text,
       stage: "edit",
       pending: null,
       error: null,
       saving: false,
       discard: null,
+      carried: carried.count,
+      expected: carried.expected,
     },
   }
 }

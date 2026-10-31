@@ -7,6 +7,8 @@ import {
   inexactNumberLiterals,
   isExactNumber,
   itemToPlain,
+  jsonInString,
+  jsonStringReadOnlyReason,
   parsePlainItem,
   parseWireItem,
   plainToItem,
@@ -129,5 +131,37 @@ describe("parsing", () => {
       ok: false,
       error: expect.stringContaining("wire mode"),
     })
+  })
+})
+
+describe("jsonInString", () => {
+  it("finds objects and arrays only", () => {
+    expect(jsonInString('{"a":1}')).toEqual({ value: { a: 1 }, exact: true, compact: true })
+    expect(jsonInString("[1,2]")?.compact).toBe(true)
+    for (const text of ["", "plain", "12", '"s"', "{broken", "true"]) {
+      expect(jsonInString(text)).toBeNull()
+    }
+  })
+
+  it("allows edits only when re-stringifying gives the same text", () => {
+    for (const text of [
+      ' {"a":1}',
+      '{ "a": 1 }',
+      '{"a":1.0}',
+      '{"b":1,"2":2}',
+      '{"e":"\\u00e9"}',
+    ]) {
+      const json = jsonInString(text)
+      expect(json?.compact).toBe(false)
+      expect(json && jsonStringReadOnlyReason(json)).toMatch(/Not compact JSON/)
+    }
+  })
+
+  it("flags numbers a JS number would change", () => {
+    const json = jsonInString('{"id":12345678901234567890}')
+    expect(json).toMatchObject({ exact: false, compact: false })
+    expect(json && jsonStringReadOnlyReason(json)).toMatch(/beyond 2\^53/)
+    const exact = jsonInString('{"n":9007199254740991}')
+    expect(exact && jsonStringReadOnlyReason(exact)).toBeNull()
   })
 })

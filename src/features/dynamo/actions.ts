@@ -1,5 +1,5 @@
 import type { ConnectionId } from "../../lib/connections"
-import { dynamoApi, type Item, type KeySchema, type Page } from "../../lib/dynamo"
+import { dynamoApi, type Item, type KeySchema, type Page, type PathSegment } from "../../lib/dynamo"
 import {
   diffItems,
   itemKey,
@@ -9,15 +9,26 @@ import {
 } from "../../lib/dynamoDiff"
 import {
   buildItemUpdates,
+  carriedExpectations,
+  conflictingChanges,
   EMPTY_DYNAMO_EDITS,
   itemEdit,
   keyId,
   keyLabel,
   markFailed,
   stageCellEdit,
+  stageTreeEdit,
   withoutItems,
+  withPendingValues,
 } from "../../lib/dynamoEdits"
 import { findLossyAttributes, formatItem, parseItem, type JsonMode } from "../../lib/dynamoJson"
+import {
+  revealInTree,
+  setAllExpanded,
+  toggleExpanded,
+  toggleTable,
+  type TreeExpansion,
+} from "../../lib/dynamoTree"
 import {
   buildDynamoRequest,
   withStartKey,
@@ -31,8 +42,10 @@ import {
   guardDiscard,
   hasPendingEdits,
   isEditorDirty,
+  jsonModeFor,
   nextStartKeys,
   openEditor,
+  panelApplyStep,
   selectedItem,
   selectItem,
   selectTable,
@@ -40,6 +53,8 @@ import {
   showDetail,
   startDynamoRun,
   updateEditor,
+  updatePanel,
+  type DetailView,
   type DynamoTab,
   type ItemEditorState,
   type ItemView,
@@ -119,6 +134,39 @@ export function selectRow(tabId: string, index: number | null): void {
   patch(tabId, (t) => selectItem(t, index))
 }
 
+export function setDetailView(tabId: string, view: DetailView): void {
+  patch(tabId, (t) => updatePanel(t, { view }))
+}
+
+/** Plain or wire in the panel's JSON view; the editor opens in the same mode. */
+export function setPanelJsonMode(tabId: string, mode: JsonMode): void {
+  patch(tabId, (t) => updatePanel(t, { mode }))
+}
+
+const patchTree = (tabId: string, update: (tree: TreeExpansion) => TreeExpansion) =>
+  patch(tabId, (t) => updatePanel(t, { tree: update(t.panel.tree) }))
+
+export function toggleTreeNode(tabId: string, path: readonly PathSegment[], holdsJson: boolean) {
+  patchTree(tabId, (tree) => toggleExpanded(tree, path, holdsJson))
+}
+
+export function expandTree(tabId: string, open: boolean): void {
+  patchTree(tabId, (tree) => setAllExpanded(tree, open))
+}
+
+export function toggleTreeTable(tabId: string, path: readonly PathSegment[]): void {
+  patchTree(tabId, (tree) => toggleTable(tree, path))
+}
+
+/** Leaves the table of the list at `path` for the tree, opened down to `target`. */
+export function revealTreePath(
+  tabId: string,
+  path: readonly PathSegment[],
+  target: readonly PathSegment[],
+): void {
+  patchTree(tabId, (tree) => revealInTree(tree, path, target))
+}
+
 async function fetchPage(tab: DynamoTab, request: DynamoTab["request"], startKey: Item | null) {
   if (!request) throw new Error("No request")
   const next = withStartKey(request, startKey)
@@ -190,20 +238,39 @@ function keyTemplate(schema: KeySchema | null): Item {
   )
 }
 
+/** Why an item's pending changes can't move into the editor, or null when they can. */
+function handOffRefusal(tab: DynamoTab, item: Item | null): string | null {
+  const edit = item ? itemEdit(tab.edits, item, tableKeySchema(tab)) : undefined
+  if (!item || !edit) return null
+  if (tab.applying) return "Wait for the pending changes to be applied before editing this item"
+  if (edit.failed) {
+    return "This item's pending changes weren't written. Discard them (Discard item), then edit it"
+  }
+  if (conflictingChanges(edit, item).length > 0) {
+    return "This item changed since its pending changes were made. Discard them (Discard item) to see its current values, then edit it"
+  }
+  return null
+}
+
+/**
+ * Pending changes move into the editor when it opens on their item. Not while they are being
+ * written, after a write was refused, or when the item as loaded now no longer matches what
+ * they started from: the editor would then overwrite values the server has overtaken.
+ */
+function refuseHandOff(tab: DynamoTab, item: Item | null): boolean {
+  const refusal = handOffRefusal(tab, item)
+  if (refusal) showToast({ tone: "info", message: refusal })
+  return refusal !== null
+}
+
 /**
  * Opens the editor for an existing item, or for a new one when `item` is null. With unsaved
  * editor changes it asks "Discard changes?" first and opens only once the user confirms.
+ * The item's pending grid and tree changes move into the editor text (see `replaceEditor`).
  */
 export function openItemEditor(tabId: string, item: Item | null): void {
   const tab = findTab(tabId)
-  if (!tab?.table || tab.editor?.saving) return
-  if (item && itemEdit(tab.edits, item, tableKeySchema(tab))) {
-    showToast({
-      tone: "info",
-      message: "Apply or discard this item's pending changes before editing it as JSON",
-    })
-    return
-  }
+  if (!tab?.table || tab.editor?.saving || refuseHandOff(tab, item)) return
   const guarded = guardDiscard(tab, { kind: "open", item })
   if (guarded) {
     patch(tabId, () => guarded)
@@ -212,14 +279,28 @@ export function openItemEditor(tabId: string, item: Item | null): void {
   replaceEditor(tabId, item)
 }
 
+/**
+ * Opens the editor in the panel's JSON mode (wire when plain would change the item). Pending
+ * changes of the item leave the pending list and start the editor's text, so the diff review
+ * shows them and one save writes them, still only while the values they started from hold;
+ * discarding the editor drops them. They never live in two places.
+ */
 function replaceEditor(tabId: string, item: Item | null): void {
   const tab = findTab(tabId)
-  if (!tab?.table) return
+  if (!tab?.table || refuseHandOff(tab, item)) return
   const schema = tableKeySchema(tab)
-  const seed = item ?? keyTemplate(schema)
-  const binaryKey = schema?.hash.type === "B" || schema?.range?.type === "B"
-  const mode: JsonMode = findLossyAttributes(seed).length > 0 || binaryKey ? "wire" : "plain"
-  patch(tabId, (t) => openEditor(t, item, mode, seed))
+  const edit = item ? itemEdit(tab.edits, item, schema) : undefined
+  const seed = item ? withPendingValues(item, edit) : keyTemplate(schema)
+  const mode = jsonModeFor(seed, tab.panel.mode, schema)
+  const carried = edit
+    ? { count: Object.keys(edit.changes).length, expected: carriedExpectations(edit) }
+    : undefined
+  patch(tabId, (t) => {
+    const opened = openEditor(t, item, mode, seed, carried)
+    if (!edit) return opened
+    const edits = withoutItems(t.edits, [keyId(edit.key)])
+    return { ...opened, edits, panel: { ...t.panel, reviewing: false } }
+  })
 }
 
 export function setEditorText(tabId: string, text: string): void {
@@ -248,8 +329,9 @@ export function switchEditorMode(tabId: string, mode: JsonMode): void {
     return
   }
   const text = formatItem(parsed.value, mode)
+  const initialText = reformatInitial(editor, mode, text)
   patch(tabId, (t) =>
-    updateEditor(t, { mode, text, initialText: reformatInitial(editor, mode, text), error: null }),
+    updatePanel(updateEditor(t, { mode, text, initialText, error: null }), { mode }),
   )
 }
 
@@ -283,10 +365,14 @@ export function reviewEdit(tabId: string): void {
   )
 }
 
-/** Mod+S in a DynamoDB tab: reviews the open item editor, otherwise applies grid edits. */
+/**
+ * Mod+S in a DynamoDB tab: reviews the open item editor, applies the changes the item panel is
+ * reviewing, otherwise applies all inline edits.
+ */
 export function reviewActiveEdit(): void {
   const tab = selectActiveDynamoTab(tabs())
   if (tab?.editor) reviewEdit(tab.id)
+  else if (tab?.panel.reviewing) void applySelectedItemEdits(tab.id)
   else if (tab && hasPendingEdits(tab)) void applyDynamoEdits(tab.id)
 }
 
@@ -363,7 +449,10 @@ async function showFetchedItem(tabId: string, key: Item): Promise<void> {
   }
 }
 
-/** Writes the confirmed item with a safe-write condition, then refreshes the page. */
+/**
+ * Writes the confirmed item with a safe-write condition, then refreshes the page. Over the
+ * existing item, the values carried inline changes started from must still hold too.
+ */
 export async function confirmSave(tabId: string): Promise<void> {
   const tab = findTab(tabId)
   const editor = tab?.editor
@@ -371,15 +460,18 @@ export async function confirmSave(tabId: string): Promise<void> {
   if (!tab?.table || !editor?.pending || editor.saving || !schema) return
   const item = editor.pending
   const expect = putExpectation(editor.original, item, schema)
+  const expected = expect === "exists" ? editor.expected : []
   patch(tabId, (t) => updateEditor(t, { saving: true, error: null }))
   try {
-    await dynamoApi.putItem(tab.connectionId, tab.table, item, expect)
+    await dynamoApi.putItem(tab.connectionId, tab.table, item, expect, expected)
   } catch (raw) {
     const message = messageOf(raw, "unknown error")
     const hint =
       expect === "not_exists"
         ? "An item with this key may already exist."
-        : "The item may have been deleted."
+        : expected.length > 0
+          ? "The item may have been deleted, or a value you changed in the grid or tree was changed elsewhere."
+          : "The item may have been deleted."
     patch(tabId, (t) => updateEditor(t, { saving: false, error: `${message} ${hint}` }))
     return
   }
@@ -442,19 +534,108 @@ export function commitCellEdit(
   return null
 }
 
+/**
+ * Stages a value edited in the item tree of the item `itemId` (its `keyId`): `path` leads to an
+ * S, N or BOOL, or to the S holding the JSON that `jsonPath` leads into. Returns an error message
+ * to keep the field open, or null once the edit is pending. Grid cells and tree rows share the
+ * pending edits.
+ */
+export function commitTreeEdit(
+  tabId: string,
+  itemId: string,
+  path: readonly PathSegment[],
+  jsonPath: readonly PathSegment[],
+  text: string,
+): string | null {
+  const tab = findTab(tabId)
+  const item = tab ? selectedItem(tab) : null
+  const schema = tab ? tableKeySchema(tab) : null
+  if (!schema) return "Table details are still loading; try again in a moment"
+  // The field was opened on `itemId`; another row may be selected by the time it commits.
+  const key = item ? itemKey(item, schema) : null
+  if (!tab || !item || !key || keyId(key) !== itemId) return "This item is no longer selected"
+  if (tab.applying) return "Changes are being applied"
+  if (tab.editor) return "Close the item editor first"
+  const staged = stageTreeEdit(tab.edits, { item, schema, path, jsonPath, text })
+  if (!staged.ok) return staged.error
+  patch(tabId, (t) => ({ ...t, edits: staged.value }))
+  return null
+}
+
 export function discardDynamoEdits(tabId: string): void {
-  patch(tabId, (t) => (t.applying ? t : { ...t, edits: EMPTY_DYNAMO_EDITS }))
+  patch(tabId, (t) =>
+    t.applying ? t : updatePanel({ ...t, edits: EMPTY_DYNAMO_EDITS }, { reviewing: false }),
+  )
+}
+
+/** Pending-edit id of the selected item, when it has pending edits. */
+function selectedEditId(tab: DynamoTab): string | null {
+  const schema = tableKeySchema(tab)
+  const item = selectedItem(tab)
+  const key = item && schema ? itemKey(item, schema) : null
+  return key && tab.edits[keyId(key)] ? keyId(key) : null
 }
 
 /** Drops the pending edits of the selected item only, e.g. one whose write was refused. */
 export function discardSelectedItemEdits(tabId: string): void {
   const tab = findTab(tabId)
-  const schema = tab ? tableKeySchema(tab) : null
-  const item = tab ? selectedItem(tab) : null
-  const key = item && schema ? itemKey(item, schema) : null
-  if (!key) return
-  const id = keyId(key)
-  patch(tabId, (t) => (t.applying ? t : { ...t, edits: withoutItems(t.edits, [id]) }))
+  const id = tab ? selectedEditId(tab) : null
+  if (!id) return
+  patch(tabId, (t) =>
+    t.applying
+      ? t
+      : updatePanel({ ...t, edits: withoutItems(t.edits, [id]) }, { reviewing: false }),
+  )
+}
+
+/**
+ * Apply in the item panel: lists the selected item's pending changes before writing them.
+ * Returns false when there is nothing to review.
+ */
+export function reviewSelectedItemEdits(tabId: string): boolean {
+  const tab = findTab(tabId)
+  if (!tab || tab.applying || !selectedEditId(tab)) return false
+  patch(tabId, (t) => updatePanel(t, { reviewing: true }))
+  return true
+}
+
+export function cancelItemReview(tabId: string): void {
+  patch(tabId, (t) => updatePanel(t, { reviewing: false }))
+}
+
+/**
+ * Writes the reviewed item's pending changes, like Apply in the pending bar but for one item.
+ * While a request or another Apply runs, the review stays open and says why nothing happened.
+ */
+export async function applySelectedItemEdits(tabId: string): Promise<void> {
+  const tab = findTab(tabId)
+  const id = tab ? selectedEditId(tab) : null
+  if (!tab || !id) return
+  if (tab.running || tab.applying) {
+    showToast({ tone: "info", message: "Wait for the running request to finish, then Apply" })
+    return
+  }
+  patch(tabId, (t) => updatePanel(t, { reviewing: false }))
+  await applyDynamoEdits(tabId, [id])
+}
+
+/**
+ * Mod+S in the item panel: reviews the selected item's changes, then applies them. With none
+ * pending it says so instead of applying other items' changes.
+ */
+export function applyFromPanel(tabId: string): void {
+  const tab = findTab(tabId)
+  if (!tab) return
+  switch (panelApplyStep(tab.panel, selectedEditId(tab) !== null)) {
+    case "review":
+      reviewSelectedItemEdits(tabId)
+      return
+    case "apply":
+      void applySelectedItemEdits(tabId)
+      return
+    case "nothing":
+      showToast({ tone: "info", message: "This item has no pending changes" })
+  }
 }
 
 const MAX_LISTED_FAILURES = 3
@@ -468,14 +649,15 @@ function failureDetail(failures: readonly { key: Item; message: string }[]): str
 }
 
 /**
- * Writes the pending grid edits, one conditional UpdateItem per item. Items that were written
- * leave the pending list; failed ones stay pending and are reported. Then the page is re-read.
+ * Writes the pending inline edits (or those of the `only` items), one conditional UpdateItem
+ * per item. Items that were written leave the pending list; failed ones stay pending and are
+ * reported. Then the page is re-read.
  */
-export async function applyDynamoEdits(tabId: string): Promise<void> {
+export async function applyDynamoEdits(tabId: string, only?: readonly string[]): Promise<void> {
   const tab = findTab(tabId)
   const schema = tab ? tableKeySchema(tab) : null
   if (!tab?.table || !schema || tab.applying || tab.running) return
-  const updates = buildItemUpdates(tab.edits)
+  const updates = buildItemUpdates(tab.edits, only)
   if (updates.length === 0) return
   const { connectionId, table } = tab
   patch(tabId, (t) => ({ ...t, applying: true }))
@@ -483,7 +665,13 @@ export async function applyDynamoEdits(tabId: string): Promise<void> {
   const failures: { id: string; key: Item; message: string; kind: AppErrorKind }[] = []
   for (const update of updates) {
     try {
-      await dynamoApi.updateItemAttributes(connectionId, table, update.key, update.changes)
+      await dynamoApi.updateItemAttributes(
+        connectionId,
+        table,
+        update.key,
+        update.changes,
+        update.expected,
+      )
       written.push(update.id)
     } catch (raw) {
       const error = normalizeError(raw)

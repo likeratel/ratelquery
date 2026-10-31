@@ -1,36 +1,53 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type {
   AttributeUpdate,
+  ExpectedValue,
   Item,
+  PathSegment,
   PutExpectation,
   ScanRequest,
   TableDescription,
 } from "../../lib/dynamo"
-import { pendingEditCount } from "../../lib/dynamoEdits"
+import {
+  conflictingChanges,
+  keyId,
+  pendingEditCount,
+  withPendingValues,
+} from "../../lib/dynamoEdits"
+import { attributeAt, withAttributeAt } from "../../lib/dynamoPath"
 import { setTransport } from "../../lib/ipc"
 import { selectedItem } from "../../lib/dynamoTabs"
 import { INITIAL_TABS } from "../../lib/queryTabs"
 import { useTabsStore } from "../../state/tabsStore"
 import {
   applyDynamoEdits,
+  applyFromPanel,
+  applySelectedItemEdits,
   chooseTable,
   closeItemEditor,
   commitCellEdit,
+  commitTreeEdit,
   confirmSave,
   deleteItem,
   discardDynamoEdits,
   discardEditorChanges,
   discardSelectedItemEdits,
   escapeEditor,
+  expandTree,
   openDynamoTabFor,
   openItemEditor,
   patchForm,
+  reviewActiveEdit,
   reviewEdit,
+  reviewSelectedItemEdits,
   runDynamo,
   selectRow,
+  setDetailView,
   setDynamoMode,
   setEditorText,
+  setPanelJsonMode,
   switchEditorMode,
+  toggleTreeNode,
 } from "./actions"
 import { useDynamoCatalog } from "./catalogStore"
 
@@ -44,10 +61,17 @@ const description: TableDescription = {
   billingMode: null,
 }
 
+const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+
+const holdsAll = (item: Item, expected: ExpectedValue[]) =>
+  expected.every((e) => same(attributeAt(item, [e.name, ...(e.path ?? [])]), e.value))
+
 /** In-memory DynamoDB with one table keyed on `pk`, enough for paging and safe writes. */
 class FakeDynamo {
   items = new Map<string, Item>()
   calls: { command: string; args?: Record<string, unknown> }[] = []
+  /** While true, UpdateItem fails as if DynamoDB couldn't be reached. */
+  unreachable = false
   /** While true, scans wait in `held` until the test answers them. */
   holdScans = false
   held: (() => void)[] = []
@@ -69,14 +93,22 @@ class FakeDynamo {
         return page
       }
       case "dynamo_put_item":
-        return this.put(args?.item as Item, args?.expect as PutExpectation)
+        return this.put(
+          args?.item as Item,
+          args?.expect as PutExpectation,
+          (args?.expected ?? []) as ExpectedValue[],
+        )
       case "dynamo_get_item":
         return this.items.get(String((args?.key as Item).pk.S)) ?? null
       case "dynamo_delete_item":
         this.items.delete(String((args?.key as Item).pk.S))
         return undefined
       case "dynamo_update_item_attributes":
-        return this.update(args?.key as Item, args?.changes as AttributeUpdate[])
+        return this.update(
+          args?.key as Item,
+          args?.changes as AttributeUpdate[],
+          (args?.expected ?? []) as ExpectedValue[],
+        )
       default:
         throw { kind: "not_found", message: command }
     }
@@ -98,23 +130,36 @@ class FakeDynamo {
     }
   }
 
-  /** Conditional like the backend: the item exists and every attribute is still as expected. */
-  private update(key: Item, changes: AttributeUpdate[]) {
+  /** Conditional like the backend: the item exists and every value is still as expected. */
+  private update(key: Item, changes: AttributeUpdate[], expected: ExpectedValue[]) {
+    if (this.unreachable) throw { kind: "connection", message: "unreachable" }
     const name = String(key.pk.S)
     const stored = this.items.get(name)
-    const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b)
-    if (!stored || changes.some((c) => !same(stored[c.name], c.expected))) {
+    const pathOf = (c: AttributeUpdate) => [c.name, ...(c.path ?? [])]
+    const held = (c: AttributeUpdate) => same(attributeAt(stored ?? {}, pathOf(c)), c.expected)
+    if (!stored || !changes.every(held) || !holdsAll(stored, expected)) {
       throw { kind: "query", message: "the item was changed or deleted since it was loaded" }
     }
-    const updates = Object.fromEntries(changes.map((c) => [c.name, c.value]))
-    this.items.set(name, { ...stored, ...updates })
+    const updated = changes.reduce(
+      (item, c) =>
+        c.path
+          ? (withAttributeAt(item, pathOf(c), c.value) ?? item)
+          : { ...item, [c.name]: c.value },
+      stored,
+    )
+    this.items.set(name, updated)
     return undefined
   }
 
-  private put(item: Item, expect: PutExpectation) {
+  private put(item: Item, expect: PutExpectation, expected: ExpectedValue[]) {
     const key = String(item.pk.S)
     const exists = this.items.has(key)
-    if ((expect === "exists" && !exists) || (expect === "not_exists" && exists)) {
+    const stored = this.items.get(key) ?? {}
+    if (
+      (expect === "exists" && !exists) ||
+      (expect === "not_exists" && exists) ||
+      !holdsAll(stored, expected)
+    ) {
       throw { kind: "query", message: "The conditional request failed" }
     }
     this.items.set(key, item)
@@ -420,18 +465,261 @@ describe("inline edits", () => {
     selectRow(id, 1)
     discardSelectedItemEdits(id)
     expect(Object.values(tab(id).edits).map((e) => e.key)).toEqual([{ pk: { S: "a" } }])
-    // Editing the item again clears the failure mark.
+    // Editing the item again keeps the failure mark, so it can't be handed to the editor.
     commitCellEdit(id, 0, "n", "8")
-    expect(Object.values(tab(id).edits)[0].failed).toBeUndefined()
+    expect(Object.values(tab(id).edits)[0].failed).toBe("query")
   })
 
-  it("keeps an item with pending edits out of the JSON editor and forgets edits of deleted items", async () => {
+  it("forgets edits of deleted items", async () => {
     const id = await openUsers()
     commitCellEdit(id, 0, "n", "5")
-    const first = tab(id).page?.items[0] as Item
-    openItemEditor(id, first)
-    expect(tab(id).editor).toBeNull()
-    await deleteItem(id, first)
+    await deleteItem(id, tab(id).page?.items[0] as Item)
     expect(tab(id).edits).toEqual({})
+  })
+})
+
+describe("item tree", () => {
+  const service = {
+    M: {
+      numbers: {
+        L: [
+          { M: { senderNumber: { S: "010" }, on: { BOOL: true } } },
+          { M: { senderNumber: { S: "011" }, on: { BOOL: false } } },
+        ],
+      },
+    },
+  }
+  const numberPath = ["senderService", "numbers", 1, "senderNumber"]
+  const itemA = keyId({ pk: { S: "a" } })
+  const commit = (id: string, path: PathSegment[], jsonPath: PathSegment[], text: string) =>
+    commitTreeEdit(id, itemA, path, jsonPath, text)
+
+  async function openNested(): Promise<string> {
+    fake.items.set("a", {
+      pk: { S: "a" },
+      n: { N: "1" },
+      senderService: service,
+      config: { S: '{"size":12}' },
+    })
+    const id = await openUsers()
+    selectRow(id, 0)
+    return id
+  }
+
+  it("reviews, then writes nested edits with a condition on each loaded value", async () => {
+    const id = await openNested()
+    expect(commit(id, ["pk"], [], "z")).toMatch(/table key/)
+    expect(commit(id, ["n"], [], "x")).toMatch(/isn't a number/)
+    expect(commit(id, numberPath, [], "012")).toBeNull()
+    expect(commit(id, ["config"], ["size"], "13")).toBeNull()
+    // A grid edit of another item stays pending while this one is applied.
+    commitCellEdit(id, 1, "n", "7")
+
+    reviewSelectedItemEdits(id)
+    expect(tab(id).panel.reviewing).toBe(true)
+    reviewActiveEdit()
+    await flush()
+    const update = fake.calls.find((c) => c.command === "dynamo_update_item_attributes")
+    expect(update?.args).toMatchObject({
+      key: { pk: { S: "a" } },
+      changes: [
+        {
+          name: "senderService",
+          path: ["numbers", 1, "senderNumber"],
+          value: { S: "012" },
+          expected: { S: "011" },
+        },
+        { name: "config", value: { S: '{"size":13}' }, expected: { S: '{"size":12}' } },
+      ],
+    })
+    expect(attributeAt(fake.items.get("a") as Item, numberPath)).toEqual({ S: "012" })
+    expect(tab(id).panel.reviewing).toBe(false)
+    expect(Object.values(tab(id).edits).map((e) => e.key)).toEqual([{ pk: { S: "b" } }])
+  })
+
+  it("leaves the edit pending and marked when the value changed on the server", async () => {
+    const id = await openNested()
+    commit(id, numberPath, [], "012")
+    const stored = fake.items.get("a") as Item
+    fake.items.set("a", withAttributeAt(stored, numberPath, { S: "099" }) as Item)
+    await applySelectedItemEdits(id)
+    expect(Object.values(tab(id).edits).map((e) => e.failed)).toEqual(["query"])
+    expect(attributeAt(fake.items.get("a") as Item, numberPath)).toEqual({ S: "099" })
+  })
+
+  it("hands pending edits to Edit: the diff shows them and one save writes them", async () => {
+    const id = await openNested()
+    commit(id, numberPath, [], "012")
+    commitCellEdit(id, 0, "n", "5")
+    openItemEditor(id, selectedItem(tab(id)))
+    const editor = tab(id).editor
+    expect(editor).toMatchObject({ carried: 2, mode: "plain" })
+    expect(editor?.text).toContain('"senderNumber": "012"')
+    expect(editor?.text).not.toBe(editor?.initialText)
+    // The changes now live in the editor only.
+    expect(tab(id).edits).toEqual({})
+    expect(commit(id, ["n"], [], "6")).toBe("Close the item editor first")
+
+    reviewEdit(id)
+    expect(tab(id).editor?.stage).toBe("confirm")
+    await confirmSave(id)
+    const put = fake.calls.find((c) => c.command === "dynamo_put_item")
+    expect(put?.args).toMatchObject({ expect: "exists" })
+    const saved = fake.items.get("a") as Item
+    expect(saved.n).toEqual({ N: "5" })
+    expect(attributeAt(saved, numberPath)).toEqual({ S: "012" })
+  })
+
+  it("drops handed-over edits when the editor is discarded", async () => {
+    const id = await openNested()
+    commit(id, numberPath, [], "012")
+    openItemEditor(id, selectedItem(tab(id)))
+    closeItemEditor(id)
+    expect(tab(id).editor?.discard).toEqual({ kind: "close" })
+    await discardEditorChanges(id)
+    expect(tab(id)).toMatchObject({ editor: null, edits: {} })
+    expect(attributeAt(fake.items.get("a") as Item, numberPath)).toEqual({ S: "011" })
+    expect(fake.calls.some((c) => c.command === "dynamo_put_item")).toBe(false)
+  })
+
+  it("keeps refused edits out of the editor", async () => {
+    const id = await openNested()
+    commit(id, numberPath, [], "012")
+    fake.items.set("a", { pk: { S: "a" } })
+    await applySelectedItemEdits(id)
+    openItemEditor(id, selectedItem(tab(id)))
+    expect(tab(id).editor).toBeNull()
+    expect(pendingEditCount(tab(id).edits)).toBe(1)
+  })
+
+  it("opens the editor in the panel's JSON mode and keeps the editor's choice", async () => {
+    const id = await openNested()
+    setPanelJsonMode(id, "wire")
+    openItemEditor(id, selectedItem(tab(id)))
+    expect(tab(id).editor?.mode).toBe("wire")
+    switchEditorMode(id, "plain")
+    expect(tab(id).panel.mode).toBe("plain")
+  })
+
+  const rule = (id: string, on = false) => ({ M: { id: { S: id }, on: { BOOL: on } } })
+  const serverHas = (update: (item: Item) => Item) =>
+    fake.items.set("a", update(fake.items.get("a") as Item))
+
+  it("refuses a write into a list that shifted, and doesn't lay it over the new one", async () => {
+    const id = await openNested()
+    serverHas((item) => ({ ...item, rules: { L: [rule("r1"), rule("r2")] } }))
+    await runDynamo(id, "current")
+    selectRow(id, 0)
+    expect(commit(id, ["rules", 0, "on"], [], "true")).toBeNull()
+    // Someone removes r1; r2.on is false too, so the edited leaf alone still matches.
+    serverHas((item) => ({ ...item, rules: { L: [rule("r2")] } }))
+    await applySelectedItemEdits(id)
+    const update = fake.calls.find((c) => c.command === "dynamo_update_item_attributes")
+    expect(update?.args?.expected).toEqual([
+      { name: "rules", value: { L: [rule("r1"), rule("r2")] } },
+    ])
+    expect(fake.items.get("a")?.rules).toEqual({ L: [rule("r2")] })
+    expect(Object.values(tab(id).edits).map((e) => e.failed)).toEqual(["query"])
+    // After the refresh the change is a conflict: shown as pending, not applied to r2.
+    const loaded = selectedItem(tab(id)) as Item
+    const edit = Object.values(tab(id).edits)[0]
+    expect(conflictingChanges(edit, loaded)).toHaveLength(1)
+    expect(withPendingValues(loaded, edit).rules).toEqual({ L: [rule("r2")] })
+  })
+
+  it("refuses the hand-off when a refresh shows a newer value", async () => {
+    const id = await openNested()
+    commit(id, numberPath, [], "012")
+    serverHas((item) => withAttributeAt(item, numberPath, { S: "099" }) as Item)
+    await runDynamo(id, "current")
+    selectRow(id, 0)
+    openItemEditor(id, selectedItem(tab(id)))
+    expect(tab(id).editor).toBeNull()
+    expect(pendingEditCount(tab(id).edits)).toBe(1)
+  })
+
+  it("refuses the hand-off when an edited path no longer resolves", async () => {
+    const id = await openNested()
+    commit(id, numberPath, [], "012")
+    serverHas((item) => ({ ...item, senderService: { M: { numbers: { L: [] } } } }))
+    await runDynamo(id, "current")
+    selectRow(id, 0)
+    openItemEditor(id, selectedItem(tab(id)))
+    expect(tab(id).editor).toBeNull()
+    expect(pendingEditCount(tab(id).edits)).toBe(1)
+  })
+
+  it("keeps a failed item out of the editor after later edits", async () => {
+    const id = await openNested()
+    commit(id, numberPath, [], "012")
+    fake.unreachable = true
+    await applySelectedItemEdits(id)
+    expect(commit(id, ["n"], [], "4")).toBeNull()
+    expect(Object.values(tab(id).edits)[0].failed).toBe("connection")
+    openItemEditor(id, selectedItem(tab(id)))
+    expect(tab(id).editor).toBeNull()
+  })
+
+  it("saves handed-over edits only while their starting values hold, keeping the text on refusal", async () => {
+    const id = await openNested()
+    commit(id, numberPath, [], "012")
+    openItemEditor(id, selectedItem(tab(id)))
+    const text = tab(id).editor?.text
+    serverHas((item) => withAttributeAt(item, numberPath, { S: "099" }) as Item)
+    reviewEdit(id)
+    await confirmSave(id)
+    const put = fake.calls.find((c) => c.command === "dynamo_put_item")
+    expect(put?.args?.expected).toEqual([
+      { name: "senderService", path: ["numbers", 1, "senderNumber"], value: { S: "011" } },
+      { name: "senderService", path: ["numbers"], value: service.M.numbers },
+    ])
+    expect(tab(id).editor).toMatchObject({ stage: "confirm", saving: false, carried: 1, text })
+    expect(tab(id).editor?.error).toMatch(/changed elsewhere/)
+    expect(attributeAt(fake.items.get("a") as Item, numberPath)).toEqual({ S: "099" })
+  })
+
+  it("refuses a tree value committed after another item was selected", async () => {
+    const id = await openNested()
+    selectRow(id, 1)
+    expect(commit(id, ["n"], [], "9")).toBe("This item is no longer selected")
+    expect(commitTreeEdit(id, keyId({ pk: { S: "b" } }), ["n"], [], "9")).toBeNull()
+    expect(Object.values(tab(id).edits).map((e) => e.key)).toEqual([{ pk: { S: "b" } }])
+  })
+
+  it("applies from the item panel only that item's changes", async () => {
+    const id = await openNested()
+    commitCellEdit(id, 1, "n", "7")
+    applyFromPanel(id)
+    expect(tab(id).panel.reviewing).toBe(false)
+    expect(fake.calls.some((c) => c.command === "dynamo_update_item_attributes")).toBe(false)
+    commit(id, ["n"], [], "5")
+    applyFromPanel(id)
+    expect(tab(id).panel.reviewing).toBe(true)
+    applyFromPanel(id)
+    await flush()
+    const updates = fake.calls.filter((c) => c.command === "dynamo_update_item_attributes")
+    expect(updates.map((c) => c.args?.key)).toEqual([{ pk: { S: "a" } }])
+  })
+
+  it("keeps the review open when Apply can't run yet", async () => {
+    const id = await openNested()
+    commit(id, ["n"], [], "5")
+    reviewSelectedItemEdits(id)
+    useTabsStore.getState().updateDynamo(id, (t) => ({ ...t, running: true }))
+    await applySelectedItemEdits(id)
+    expect(tab(id).panel.reviewing).toBe(true)
+    expect(fake.calls.some((c) => c.command === "dynamo_update_item_attributes")).toBe(false)
+  })
+
+  it("keeps the view and expansion between items, and resets expansion for another table", async () => {
+    const id = await openNested()
+    setDetailView(id, "json")
+    toggleTreeNode(id, ["senderService", "numbers"], false)
+    expandTree(id, true)
+    selectRow(id, 1)
+    expect(tab(id).panel).toMatchObject({ view: "json", tree: { base: "all" } })
+    discardSelectedItemEdits(id)
+    await chooseTable(id, "orders")
+    expect(tab(id).panel).toMatchObject({ view: "json", tree: { base: "first", open: {} } })
   })
 })
