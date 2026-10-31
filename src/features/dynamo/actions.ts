@@ -56,6 +56,7 @@ import {
   updatePanel,
   type DetailView,
   type DynamoTab,
+  type FindChoices,
   type ItemEditorState,
   type ItemView,
   type PageMove,
@@ -141,6 +142,11 @@ export function setDetailView(tabId: string, view: DetailView): void {
 /** Plain or wire in the panel's JSON view; the editor opens in the same mode. */
 export function setPanelJsonMode(tabId: string, mode: JsonMode): void {
   patch(tabId, (t) => updatePanel(t, { mode }))
+}
+
+/** Find mode, case and the key / value toggles of the tree's find bar. */
+export function setFindChoices(tabId: string, choices: Partial<FindChoices>): void {
+  patch(tabId, (t) => updatePanel(t, { find: { ...t.panel.find, ...choices } }))
 }
 
 const patchTree = (tabId: string, update: (tree: TreeExpansion) => TreeExpansion) =>

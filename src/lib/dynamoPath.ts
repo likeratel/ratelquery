@@ -11,6 +11,14 @@ export function pathKey(path: readonly PathSegment[]): string {
   return JSON.stringify(path)
 }
 
+/** `current` once the leaf at `path` lets go of it: null if `path` holds it, else unchanged. */
+export function releasedPath(
+  current: readonly PathSegment[] | null,
+  path: readonly PathSegment[],
+): readonly PathSegment[] | null {
+  return current && pathKey(current) === pathKey(path) ? null : current
+}
+
 const IDENTIFIER = /^[A-Za-z_$][\w$]*$/
 
 /**
@@ -25,6 +33,57 @@ export function formatPath(path: readonly PathSegment[]): string {
       return i === 0 ? segment : `.${segment}`
     })
     .join("")
+}
+
+const NAME = /[A-Za-z_$][\w$]*/y
+const INDEX = /\[(\d+)\]/y
+const QUOTED = /\[("(?:[^"\\]|\\.)*")\]/y
+
+/** The match of the sticky `pattern` at `at`, or null. */
+function matchAt(pattern: RegExp, text: string, at: number): RegExpExecArray | null {
+  pattern.lastIndex = at
+  return pattern.exec(text)
+}
+
+function parseQuoted(literal: string): string | null {
+  try {
+    return JSON.parse(literal) as string
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Reads a path written the way `formatPath` writes it (`a.b[0]`, `["a-b"][2]`), or null when
+ * `text` isn't one. Nothing else is accepted, so a path reads back exactly as it was shown.
+ */
+export function parsePath(text: string): PathSegment[] | null {
+  const path: PathSegment[] = []
+  let at = 0
+  while (at < text.length) {
+    const index = matchAt(INDEX, text, at)
+    const quoted = index ? null : matchAt(QUOTED, text, at)
+    if (index) {
+      const n = Number(index[1])
+      if (!Number.isSafeInteger(n)) return null
+      path.push(n)
+      at += index[0].length
+    } else if (quoted) {
+      const key = parseQuoted(quoted[1])
+      if (key === null) return null
+      path.push(key)
+      at += quoted[0].length
+    } else {
+      // A bare name starts the path; later names follow a dot.
+      const dot = path.length > 0
+      if (dot && text[at] !== ".") return null
+      const name = matchAt(NAME, text, dot ? at + 1 : at)
+      if (!name) return null
+      path.push(name[0])
+      at = NAME.lastIndex
+    }
+  }
+  return path.length > 0 ? path : null
 }
 
 /** True when `prefix` is `path` itself or one of its ancestors. */

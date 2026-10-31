@@ -1,8 +1,8 @@
 import { Pencil, X } from "lucide-react"
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react"
+import { useEffect, useMemo, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react"
 import { JsonEditor } from "../../components/editor/lazyEditors"
 import { SegmentedControl } from "../../components/ui"
-import type { Item, KeySchema } from "../../lib/dynamo"
+import type { Item, KeySchema, PathSegment } from "../../lib/dynamo"
 import { itemKey } from "../../lib/dynamoDiff"
 import {
   CONFLICT_HINT,
@@ -15,6 +15,8 @@ import {
   type PendingItemEdit,
 } from "../../lib/dynamoEdits"
 import { findLossyAttributes, formatItem, type JsonMode } from "../../lib/dynamoJson"
+import { findIndex, jsonSearchText, resolvePath } from "../../lib/dynamoSearch"
+import { itemColumns } from "../../lib/dynamoView"
 import { jsonModeFor, type DetailView, type DynamoTab } from "../../lib/dynamoTabs"
 import { formatShortcut, matchesShortcut } from "../../lib/shortcuts"
 import { APP_SHORTCUTS } from "../query/appShortcuts"
@@ -28,6 +30,7 @@ import {
   setPanelJsonMode,
 } from "./actions"
 import { DiffList } from "./DiffList"
+import { CLOSED_FIND, findBarKey, useItemFind } from "./findStore"
 import { ItemTree } from "./ItemTree"
 import { DYNAMO_SHORTCUTS } from "./shortcuts"
 
@@ -41,6 +44,22 @@ const changes = (n: number) => `${n} ${n === 1 ? "change" : "changes"}`
 /** Read-only JSON of the item in the mode the editor would open in. */
 function ItemJson({ tab, item, schema }: { tab: DynamoTab; item: Item; schema: KeySchema | null }) {
   const mode = jsonModeFor(item, tab.panel.mode, schema)
+  // The tree's query carries over into the JSON search (a path the tree jumps to as its last
+  // key), and Mod+F opens that search here.
+  const bar = useItemFind((s) => s.bars[findBarKey(tab.id, tab.table)] ?? CLOSED_FIND)
+  const request = useItemFind((s) => s.jsonSearch)
+  // Same rows, in the same order, as the tree indexes; only built for a path-shaped query.
+  const resolves = (path: readonly PathSegment[]) => {
+    const names = itemColumns([item], schema)
+      .filter((c) => item[c.name])
+      .map((c) => c.name)
+    return resolvePath(findIndex(item, names), path).length > 0
+  }
+  const search = {
+    text: bar.open ? jsonSearchText(bar.query, resolves) : "",
+    caseSensitive: tab.panel.find.caseSensitive,
+    request,
+  }
   const lossy = findLossyAttributes(item)
   const plainReason = lossy.length > 0 ? `${lossy[0].path}: ${lossy[0].reason}` : null
   const modeOptions = [
@@ -75,6 +94,7 @@ function ItemJson({ tab, item, schema }: { tab: DynamoTab; item: Item; schema: K
           onChange={() => {}}
           readOnly
           ariaLabel="Item JSON"
+          search={search}
         />
       </div>
     </>
@@ -178,7 +198,8 @@ interface ItemDetailProps {
  */
 export function ItemDetail({ tab, item, schema, onEdit, onClose }: ItemDetailProps) {
   const edit = itemEdit(tab.edits, item, schema)
-  const shown = withPendingValues(item, edit)
+  // Kept while neither changes, so the tree's find index is built once per shown item.
+  const shown = useMemo(() => withPendingValues(item, edit), [item, edit])
   const conflicts = new Set(conflictingChanges(edit, item))
   const key = schema ? itemKey(item, schema) : null
   const view: DetailView = tab.panel.view
@@ -238,6 +259,7 @@ export function ItemDetail({ tab, item, schema, onEdit, onClose }: ItemDetailPro
           {view === "tree" ? (
             <ItemTree
               tabId={tab.id}
+              table={tab.table}
               itemId={key ? keyId(key) : ""}
               item={shown}
               schema={schema}
@@ -245,6 +267,7 @@ export function ItemDetail({ tab, item, schema, onEdit, onClose }: ItemDetailPro
               conflicts={conflicts}
               expansion={tab.panel.tree}
               editable={editable}
+              findChoices={tab.panel.find}
             />
           ) : (
             <ItemJson tab={tab} item={shown} schema={schema} />

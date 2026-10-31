@@ -176,6 +176,19 @@ describe("item panel", () => {
     expect(selectItem(reviewing, 1).panel.reviewing).toBe(false)
     expect(finishDynamoRun(reviewing, request, [null], page(0, false)).panel.reviewing).toBe(false)
   })
+
+  it("remembers the find choices across items and tables, starting from highlight", () => {
+    expect(fresh().panel.find).toEqual({
+      mode: "highlight",
+      caseSensitive: false,
+      keys: true,
+      values: true,
+    })
+    const find = { mode: "filter" as const, caseSensitive: true, keys: false, values: true }
+    const chosen = updatePanel(selectItem(move(fresh(), "first"), 0), { find })
+    expect(selectItem(chosen, 1).panel.find).toBe(find)
+    expect(selectTable(chosen, "other").panel.find).toBe(find)
+  })
 })
 
 describe("panelApplyStep", () => {

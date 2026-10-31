@@ -1,5 +1,17 @@
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, Route, Table2 } from "lucide-react"
 import {
+  ChevronRight,
+  ChevronsDownUp,
+  ChevronsUpDown,
+  Copy,
+  Route,
+  Search,
+  Table2,
+} from "lucide-react"
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -7,6 +19,7 @@ import {
   type ReactNode,
 } from "react"
 import { copyToClipboard } from "../../components/grid/clipboard"
+import { MAX_DISPLAY_CHARS } from "../../lib/cellFormat"
 import type { Item, KeySchema, PathSegment } from "../../lib/dynamo"
 import {
   changesUnder,
@@ -16,7 +29,35 @@ import {
   type PendingItemEdit,
 } from "../../lib/dynamoEdits"
 import { attributeTag, jsonInString, jsonStringReadOnlyReason } from "../../lib/dynamoJson"
-import { formatPath, jsonAt, pathKey } from "../../lib/dynamoPath"
+import { formatPath, jsonAt, pathKey, releasedPath } from "../../lib/dynamoPath"
+import {
+  ancestorKeys,
+  EMPTY_OVERLAY,
+  filterShows,
+  filterTableRows,
+  findFilter,
+  findIndex,
+  findInItem,
+  hitPositions,
+  orderHits,
+  overlayReveal,
+  overlaySetAll,
+  overlayToggle,
+  overlayToggleTable,
+  rescope,
+  REVEAL_LIMIT,
+  revealKeys,
+  searchExpansion,
+  stepMatch,
+  visibleRanges,
+  type FindEntry,
+  type FindFilter,
+  type FindHit,
+  type FindRange,
+  type Scoped,
+  type SearchOverlay,
+} from "../../lib/dynamoSearch"
+import type { FindChoices } from "../../lib/dynamoTabs"
 import {
   copyValueText,
   isExpanded,
@@ -29,7 +70,7 @@ import {
   type TreeValue,
 } from "../../lib/dynamoTree"
 import { itemColumns, type KeyRole } from "../../lib/dynamoView"
-import { matchesShortcut } from "../../lib/shortcuts"
+import { formatShortcut, matchesShortcut } from "../../lib/shortcuts"
 import { APP_SHORTCUTS } from "../query/appShortcuts"
 import {
   commitTreeEdit,
@@ -38,6 +79,23 @@ import {
   toggleTreeNode,
   toggleTreeTable,
 } from "./actions"
+import { FindBar } from "./FindBar"
+import { CLOSED_FIND, findBarKey, requestFind, useItemFind } from "./findStore"
+import { DYNAMO_SHORTCUTS } from "./shortcuts"
+
+/** A search showing in the tree. */
+interface TreeFind {
+  via: "text" | "path"
+  hits: readonly FindHit[]
+  /** Position of each hit by row key. */
+  positions: ReadonlyMap<string, number>
+  /** Row key of the current hit. */
+  current: string | null
+  /** Rows above hits; a table cell that holds one is marked. */
+  above: ReadonlySet<string>
+  /** Set in filter mode: the rows that show. */
+  filter: FindFilter | null
+}
 
 /** Shared by every row of one tree. */
 interface TreeContext {
@@ -50,6 +108,59 @@ interface TreeContext {
   expansion: TreeExpansion
   /** False while changes are applied, the key schema is unknown or the item has no key. */
   editable: boolean
+  find: TreeFind | null
+  /** Expansion changes; during a search they last only as long as the search. */
+  toggle: (path: readonly PathSegment[], holdsJson: boolean) => void
+  toggleTable: (path: readonly PathSegment[]) => void
+  /** Leaves the table of the list at `path` for the tree, opened down to `target`. */
+  reveal: (path: readonly PathSegment[], target: readonly PathSegment[]) => void
+  /** Marks the leaf at `path` as the one whose field is open, kept in view by filter mode. */
+  setEditing: (path: readonly PathSegment[]) => void
+  /** Lets go of the open-field mark if the leaf at `path` still holds it. */
+  releaseEditing: (path: readonly PathSegment[]) => void
+}
+
+/** The hit at `path`, if the search found one there. */
+function hitAt(ctx: TreeContext, path: readonly PathSegment[]): FindHit | undefined {
+  const at = ctx.find?.positions.get(pathKey(path))
+  return at === undefined ? undefined : ctx.find?.hits[at]
+}
+
+interface MarkedProps {
+  text: string
+  ranges: readonly FindRange[] | undefined
+  /** Characters of `text` that are the value; a shortened value ends in `…` past them. */
+  limit?: number
+}
+
+/** `text` with the found substrings marked, and a count of the matches cut off with it. */
+function Marked({ text, ranges, limit = text.length }: MarkedProps) {
+  if (!ranges || ranges.length === 0) return <>{text}</>
+  const { shown, hidden } = visibleRanges(ranges, limit)
+  const parts: ReactNode[] = []
+  let at = 0
+  for (const [start, end] of shown) {
+    if (start > at) parts.push(text.slice(at, start))
+    parts.push(
+      <mark key={start} className="dyn-find__mark">
+        {text.slice(start, end)}
+      </mark>,
+    )
+    at = end
+  }
+  if (at < text.length) parts.push(text.slice(at))
+  if (hidden > 0) {
+    parts.push(
+      <span
+        key="more"
+        className="dyn-find__more"
+        title={`${hidden} more ${hidden === 1 ? "match" : "matches"} past the shortened text; copy the value to see it whole`}
+      >
+        +{hidden}
+      </span>,
+    )
+  }
+  return <>{parts}</>
 }
 
 /** Where a JSON value inside a string sits: the string's path and whether it can be edited. */
@@ -76,6 +187,11 @@ function editText(value: TreeValue): string {
   if (value.kind === "json") return String(value.value)
   const tag = attributeTag(value.value)
   return tag ? String(value.value[tag]) : ""
+}
+
+/** Characters of a leaf's shown text that are its value, before the `…` of a long one. */
+function shownLength(value: TreeValue, node: TreeNode): number {
+  return editText(value).length > MAX_DISPLAY_CHARS ? node.text.length - 1 : node.text.length
 }
 
 /** Whether the leaf at `place` can be edited in place. */
@@ -107,10 +223,17 @@ function isConflict(ctx: TreeContext, place: Place): boolean {
   return change !== undefined && ctx.conflicts.has(change)
 }
 
+/** Scrolls to the row at `path`, or to the nearest row above it that shows. */
 function revealRow(container: HTMLElement | null, path: readonly PathSegment[]) {
   requestAnimationFrame(() => {
-    const row = container?.querySelector(`[data-path="${CSS.escape(pathKey(path))}"]`)
-    row?.scrollIntoView({ block: "nearest" })
+    for (let depth = path.length; depth > 0; depth -= 1) {
+      const key = pathKey(path.slice(0, depth))
+      const row = container?.querySelector(`[data-path="${CSS.escape(key)}"]`)
+      if (row) {
+        row.scrollIntoView({ block: "nearest" })
+        return
+      }
+    }
   })
 }
 
@@ -121,20 +244,35 @@ interface LeafProps {
   node: TreeNode
   editable: boolean
   label: string
+  /** Found substrings of the shown text. */
+  marks?: readonly FindRange[]
 }
 
 /** A leaf's value; double-click, Enter or F2 edits it in place when it can be edited. */
-function LeafValue({ ctx, place, value, node, editable, label }: LeafProps) {
+function LeafValue({ ctx, place, value, node, editable, label, marks }: LeafProps) {
   const [draft, setDraft] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Set once Enter or Esc closed the field, so the blur that follows doesn't commit again.
   const closed = useRef(false)
+  // Whether this leaf holds the tree's open-field pin, to let go of it if the leaf goes away.
+  const pinned = useRef(false)
+  const release = ctx.releaseEditing
+  const path = useRef(place.path)
+  path.current = place.path
+  useEffect(
+    () => () => {
+      if (pinned.current) release(path.current)
+    },
+    [release],
+  )
   const readOnly = node.json ? jsonStringReadOnlyReason(node.json) : null
 
   const close = () => {
     closed.current = true
+    pinned.current = false
     setDraft(null)
     setError(null)
+    ctx.releaseEditing(place.path)
   }
 
   /** Stages the typed value; false (with the error shown) when it isn't valid. */
@@ -193,6 +331,8 @@ function LeafValue({ ctx, place, value, node, editable, label }: LeafProps) {
 
   const startEdit = () => {
     closed.current = false
+    pinned.current = true
+    ctx.setEditing(place.path)
     setDraft(editText(value))
   }
   const onKeyDown = (event: ReactKeyboardEvent) => {
@@ -211,7 +351,7 @@ function LeafValue({ ctx, place, value, node, editable, label }: LeafProps) {
       onDoubleClick={editable ? startEdit : undefined}
       onKeyDown={editable ? onKeyDown : undefined}
     >
-      {node.text}
+      <Marked text={node.text} ranges={marks} limit={shownLength(value, node)} />
     </span>
   )
 }
@@ -245,15 +385,24 @@ function TreeRow({ ctx, place, label, value, depth }: RowProps) {
     inSet: place.inSet || tag === "SS" || tag === "NS" || tag === "BS",
     keyRole: place.keyRole,
   })
+  const hit = hitAt(ctx, place.path)
+  const rowKey = pathKey(place.path)
+  const filter = ctx.find?.filter
+  const shownChildren =
+    children && filter
+      ? children.filter((child) => filterShows(filter, [...place.path, child.segment]))
+      : children
 
   return (
     <>
       <div
         className="dyn-tree__row"
         style={depthStyle(depth)}
-        data-path={pathKey(place.path)}
+        data-path={rowKey}
         data-changed={changed || undefined}
         data-conflict={(!children && isConflict(ctx, place)) || undefined}
+        data-match={hit ? ctx.find?.via : undefined}
+        data-current={(hit && ctx.find?.current === rowKey) || undefined}
       >
         {children ? (
           <button
@@ -261,7 +410,7 @@ function TreeRow({ ctx, place, label, value, depth }: RowProps) {
             className="dyn-tree__toggle"
             aria-label={`${open ? "Collapse" : "Expand"} ${label}`}
             aria-expanded={open}
-            onClick={() => toggleTreeNode(ctx.tabId, place.path, holdsJson)}
+            onClick={() => ctx.toggle(place.path, holdsJson)}
           >
             <ChevronRight size={13} strokeWidth={2} aria-hidden />
           </button>
@@ -269,7 +418,11 @@ function TreeRow({ ctx, place, label, value, depth }: RowProps) {
           <span className="dyn-tree__toggle" />
         )}
         <span className="dyn-tree__name mono" title={formatPath(place.path)}>
-          {label}
+          {typeof place.path.at(-1) === "string" ? (
+            <Marked text={label} ranges={hit?.key} />
+          ) : (
+            label
+          )}
           {depth === 0 && place.keyRole && <span className="dyn-attrs__key">{place.keyRole}</span>}
         </span>
         <span className="dyn-type">{node.tag}</span>
@@ -291,6 +444,7 @@ function TreeRow({ ctx, place, label, value, depth }: RowProps) {
             node={node}
             editable={editable}
             label={label}
+            marks={hit?.value}
           />
         )}
         <span className="dyn-tree__actions">
@@ -302,8 +456,8 @@ function TreeRow({ ctx, place, label, value, depth }: RowProps) {
               aria-pressed={asTable}
               title={asTable ? "Show as tree" : "Show as table"}
               onClick={() => {
-                toggleTreeTable(ctx.tabId, place.path)
-                if (!open) toggleTreeNode(ctx.tabId, place.path, holdsJson)
+                ctx.toggleTable(place.path)
+                if (!open) ctx.toggle(place.path, holdsJson)
               }}
             >
               <Table2 size={12} strokeWidth={2} />
@@ -334,13 +488,13 @@ function TreeRow({ ctx, place, label, value, depth }: RowProps) {
           ctx={ctx}
           place={place}
           columns={columns}
-          items={children}
+          items={filter ? filterTableRows(filter, place.path, children) : children}
           childPlace={childPlace}
           depth={depth + 1}
         />
       ) : (
         open &&
-        children?.map((child) => (
+        shownChildren?.map((child) => (
           <TreeRow
             key={String(child.segment)}
             ctx={ctx}
@@ -366,7 +520,6 @@ interface TableProps {
 
 /** A list of maps as rows and the union of their keys as columns. */
 function ObjectTable({ ctx, place, columns, items, childPlace, depth }: TableProps) {
-  const wrapRef = useRef<HTMLDivElement>(null)
   const cell = (row: Place, column: string, value: TreeValue | undefined): ReactNode => {
     if (!value) return <span className="dyn-tree__missing">–</span>
     const cellPlace: Place = { ...row, path: [...row.path, column] }
@@ -378,8 +531,7 @@ function ObjectTable({ ctx, place, columns, items, childPlace, depth }: TablePro
           className="dyn-tree__follow mono"
           title="Show in the tree"
           onClick={() => {
-            revealTreePath(ctx.tabId, place.path, cellPlace.path)
-            revealRow(wrapRef.current?.closest(".dyn-tree") ?? null, cellPlace.path)
+            ctx.reveal(place.path, cellPlace.path)
           }}
         >
           {node.tag} · {node.text}
@@ -394,11 +546,12 @@ function ObjectTable({ ctx, place, columns, items, childPlace, depth }: TablePro
         node={node}
         editable={canEdit(ctx, cellPlace, value)}
         label={formatPath(cellPlace.path)}
+        marks={hitAt(ctx, cellPlace.path)?.value}
       />
     )
   }
   return (
-    <div className="dyn-tree__table-wrap" style={depthStyle(depth)} ref={wrapRef}>
+    <div className="dyn-tree__table-wrap" style={depthStyle(depth)}>
       <table className="dyn-tree__table">
         <thead>
           <tr>
@@ -420,12 +573,23 @@ function ObjectTable({ ctx, place, columns, items, childPlace, depth }: TablePro
                 </th>
                 {columns.map((column) => {
                   const member = memberOf(value, column)
+                  const cellPath = [...row.path, column]
+                  const cellKey = pathKey(cellPath)
                   const changed =
                     member !== undefined &&
                     !treeNode(member).children &&
-                    isChanged(ctx, { ...row, path: [...row.path, column] }, member)
+                    isChanged(ctx, { ...row, path: cellPath }, member)
+                  // A cell matches itself, or holds a match inside a map or list it shows.
+                  const hit = hitAt(ctx, cellPath)
+                  const match = hit !== undefined || ctx.find?.above.has(cellKey)
                   return (
-                    <td key={column} data-changed={changed || undefined}>
+                    <td
+                      key={column}
+                      data-path={cellKey}
+                      data-changed={changed || undefined}
+                      data-match={match ? ctx.find?.via : undefined}
+                      data-current={(hit && ctx.find?.current === cellKey) || undefined}
+                    >
                       {cell(row, column, member)}
                     </td>
                   )
@@ -441,6 +605,8 @@ function ObjectTable({ ctx, place, columns, items, childPlace, depth }: TablePro
 
 interface ItemTreeProps {
   tabId: string
+  /** The table the item is from; each table has its own find bar. */
+  table: string | null
   itemId: string
   /** The item with its pending values applied. */
   item: Item
@@ -449,20 +615,187 @@ interface ItemTreeProps {
   conflicts: ReadonlySet<PendingAttribute>
   expansion: TreeExpansion
   editable: boolean
+  findChoices: FindChoices
 }
 
-/** The selected item as a tree: attributes (keys first) that open into their members. */
+/** Where the cursor is among the hits of one search (query and toggles). */
+interface FindCursor {
+  at: number
+  key: string | null
+}
+
+const START: FindCursor = { at: 0, key: null }
+
+const NO_ENTRIES: readonly FindEntry[] = []
+
+/**
+ * The selected item as a tree: attributes (keys first) that open into their members, with a
+ * find bar that highlights or filters what matches.
+ */
 export function ItemTree(props: ItemTreeProps) {
-  const { tabId, itemId, item, schema, edit, conflicts, expansion, editable } = props
-  const columns = itemColumns([item], schema).filter((c) => item[c.name])
-  const ctx: TreeContext = { tabId, itemId, edit, conflicts, expansion, editable }
+  const { tabId, table, itemId, item, schema, edit, conflicts, expansion, editable } = props
+  const { mode, caseSensitive, keys, values } = props.findChoices
+  const treeRef = useRef<HTMLDivElement>(null)
+  const columns = useMemo(
+    () => itemColumns([item], schema).filter((c) => item[c.name]),
+    [item, schema],
+  )
+  const names = useMemo(() => columns.map((c) => c.name), [columns])
+
+  const barKey = findBarKey(tabId, table)
+  const bar = useItemFind((s) => s.bars[barKey] ?? CLOSED_FIND)
+  // Typing stays responsive on large items: matching and the tree follow a step behind.
+  const query = useDeferredValue(bar.open ? bar.query : "")
+  const search = JSON.stringify([query, caseSensitive, keys, values])
+  // The item is indexed only while the bar is open, once per shown item.
+  const entries = useMemo(
+    () => (bar.open ? findIndex(item, names) : NO_ENTRIES),
+    [bar.open, item, names],
+  )
+  const found = useMemo(
+    () => findInItem(entries, query, { caseSensitive, keys, values }),
+    [entries, query, caseSensitive, keys, values],
+  )
+  const searching = query.trim() !== ""
+
+  // Changes to the tree during a search: kept for that search only, never saved, and dropped
+  // as soon as the search changes, so typing the same query again starts afresh.
+  const [overlaid, setOverlaid] = useState<Scoped<SearchOverlay>>({ search, value: EMPTY_OVERLAY })
+  const scopedOverlay = rescope(overlaid, search, EMPTY_OVERLAY)
+  if (scopedOverlay !== overlaid) setOverlaid(scopedOverlay)
+  const overlay = scopedOverlay.value
+  // Updates build on the latest overlay, so two in one click (table, then open) both stay.
+  const updateOverlay = (update: (overlay: SearchOverlay) => SearchOverlay) =>
+    setOverlaid((prev) => {
+      const scoped = rescope(prev, search, EMPTY_OVERLAY)
+      return { search, value: update(scoped.value) }
+    })
+
+  // Lists shown as tables order their cells' hits by column, as they read.
+  const tables = useMemo(
+    () => (searching ? { ...expansion.tables, ...overlay.tables } : expansion.tables),
+    [searching, expansion.tables, overlay.tables],
+  )
+  const hits = useMemo(
+    () => orderHits(found.hits, item, (path) => tables[pathKey(path)] === true),
+    [found, item, tables],
+  )
+  const positions = useMemo(() => hitPositions({ ...found, hits }), [found, hits])
+  const count = hits.length
+
+  // The cursor stays on its hit while edits change the results, and restarts with a new search.
+  const [stored, setCursor] = useState<Scoped<FindCursor>>({ search, value: START })
+  const scopedCursor = rescope(stored, search, START)
+  if (scopedCursor !== stored) setCursor(scopedCursor)
+  const cursor = scopedCursor.value
+  const at =
+    (cursor.key !== null ? positions.get(cursor.key) : undefined) ??
+    Math.min(cursor.at, Math.max(count - 1, 0))
+  const currentPath = hits[at]?.path ?? null
+  const current = currentPath ? pathKey(currentPath) : null
+
+  // Pending changes and an open field stay in view in filter mode, so a value being edited
+  // never vanishes from under the cursor.
+  const [editing, setEditing] = useState<readonly PathSegment[] | null>(null)
+  const releaseEditing = useCallback(
+    (path: readonly PathSegment[]) => setEditing((current) => releasedPath(current, path)),
+    [],
+  )
+  const pinned = useMemo(
+    () => [
+      ...(edit ? Object.values(edit.changes).map((change) => change.path) : []),
+      ...(editing ? [editing] : []),
+    ],
+    [edit, editing],
+  )
+  const filter = useMemo(
+    () =>
+      searching && mode === "filter"
+        ? findFilter([...hits.map((hit) => hit.path), ...pinned])
+        : null,
+    [searching, mode, hits, pinned],
+  )
+  const hitPaths = useMemo(() => hits.map((hit) => hit.path), [hits])
+  // Rows above matches, which open; in highlight mode only up to REVEAL_LIMIT matches.
+  const above = useMemo(
+    () => (filter ? ancestorKeys([...hitPaths, ...pinned]) : ancestorKeys(hitPaths)),
+    [filter, hitPaths, pinned],
+  )
+  const reveal = useMemo(
+    () => (filter ? above : revealKeys(hitPaths, currentPath)),
+    [filter, above, hitPaths, currentPath],
+  )
+  const focus = useMemo(
+    () => (currentPath ? ancestorKeys([currentPath]) : new Set<string>()),
+    [currentPath],
+  )
+  const shownExpansion = searching ? searchExpansion(expansion, reveal, overlay, focus) : expansion
+  const capped = !filter && count > REVEAL_LIMIT
+
+  useEffect(() => {
+    if (currentPath) revealRow(treeRef.current, currentPath)
+    // Scrolls when the search or the current hit changes, not on every edit.
+  }, [search, current])
+
+  const find: TreeFind | null = searching
+    ? { via: found.via, hits, positions, current, above, filter }
+    : null
+  const ctx: TreeContext = {
+    tabId,
+    itemId,
+    edit,
+    conflicts,
+    expansion: shownExpansion,
+    editable,
+    find,
+    toggle: (path, holdsJson) =>
+      searching
+        ? updateOverlay((o) => overlayToggle(o, shownExpansion, path, holdsJson))
+        : toggleTreeNode(tabId, path, holdsJson),
+    toggleTable: (path) =>
+      searching
+        ? updateOverlay((o) => overlayToggleTable(o, shownExpansion, path))
+        : toggleTreeTable(tabId, path),
+    reveal: (path, target) => {
+      if (searching) updateOverlay((o) => overlayReveal(o, path, target))
+      else revealTreePath(tabId, path, target)
+      revealRow(treeRef.current, target)
+    },
+    setEditing,
+    releaseEditing,
+  }
+  const setAll = (open: boolean) =>
+    searching ? updateOverlay((o) => overlaySetAll(o, open)) : expandTree(tabId, open)
+  const step = (direction: 1 | -1) => {
+    if (count === 0) return
+    const next = stepMatch(at, count, direction)
+    setCursor({ search, value: { at: next, key: pathKey(hits[next].path) } })
+  }
+  const shown = filter ? columns.filter((c) => filterShows(filter, [c.name])) : columns
+
   return (
     <>
+      {bar.open && (
+        <FindBar
+          tabId={tabId}
+          barKey={barKey}
+          bar={bar}
+          choices={props.findChoices}
+          count={searching ? count : 0}
+          at={at}
+          via={found.via}
+          asText={found.asText}
+          capped={capped}
+          onStep={step}
+          onClose={() => treeRef.current?.focus()}
+        />
+      )}
       <div className="dyn-tree__bar">
         <button
           type="button"
           className="q-button q-button--ghost"
-          onClick={() => expandTree(tabId, true)}
+          title={searching ? "Opens everything until the search is cleared" : undefined}
+          onClick={() => setAll(true)}
         >
           <ChevronsUpDown size={12} strokeWidth={2.2} />
           Expand all
@@ -470,14 +803,32 @@ export function ItemTree(props: ItemTreeProps) {
         <button
           type="button"
           className="q-button q-button--ghost"
-          onClick={() => expandTree(tabId, false)}
+          title={
+            searching
+              ? "Closes everything but the current match until the search is cleared"
+              : undefined
+          }
+          onClick={() => setAll(false)}
         >
           <ChevronsDownUp size={12} strokeWidth={2.2} />
           Collapse all
         </button>
+        <span className="dyn-side__spacer" />
+        {!bar.open && (
+          <button
+            type="button"
+            className="q-button q-button--ghost"
+            onClick={() => requestFind(barKey)}
+          >
+            <Search size={12} strokeWidth={2.2} />
+            Find
+            <kbd className="q-kbd">{formatShortcut(DYNAMO_SHORTCUTS.find)}</kbd>
+          </button>
+        )}
       </div>
-      <div className="dyn-tree">
-        {columns.map((column) => (
+      <div className="dyn-tree" ref={treeRef} tabIndex={-1} aria-label="Item tree">
+        {filter && count === 0 && <p className="dyn-tree__none">No matches</p>}
+        {shown.map((column) => (
           <TreeRow
             key={column.name}
             ctx={ctx}

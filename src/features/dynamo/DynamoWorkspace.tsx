@@ -14,6 +14,7 @@ import { ItemEditor } from "./ItemEditor"
 import { ItemsPanel } from "./ItemsPanel"
 import { QueryForm } from "./QueryForm"
 import { TablePanel } from "./TablePanel"
+import { useFindShortcut } from "./useFindShortcut"
 import "../query/query.css"
 import "./dynamo.css"
 
@@ -32,6 +33,7 @@ export function DynamoWorkspace() {
   const tablesWidth = useUiStore((s) => s.panelWidths.dynamoTables)
   const sideWidth = useUiStore((s) => s.panelWidths.dynamoSide)
   const setPanelWidth = useUiStore((s) => s.setPanelWidth)
+  useFindShortcut()
   if (!tab) return null
   const schema = description?.keySchema ?? null
   const item = selectedItem(tab)

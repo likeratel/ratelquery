@@ -4,6 +4,7 @@ import { itemKey } from "./dynamoDiff"
 import { EMPTY_DYNAMO_EDITS, pendingEditCount, type DynamoEdits } from "./dynamoEdits"
 import { findLossyAttributes, formatItem, type JsonMode } from "./dynamoJson"
 import { EMPTY_FORM, type DynamoForm, type DynamoMode } from "./dynamoRequest"
+import { DEFAULT_FIND_OPTIONS, type FindOptions } from "./dynamoSearch"
 import { DEFAULT_TREE_EXPANSION, type TreeExpansion } from "./dynamoTree"
 import type { AppError } from "./ipc"
 
@@ -11,6 +12,13 @@ export type ItemView = "table" | "json"
 
 /** How the item side panel shows the selected item. */
 export type DetailView = "tree" | "json"
+
+/** Find in the tree: highlight matches in the whole tree, or show only the matching rows. */
+export type FindMode = "highlight" | "filter"
+
+export interface FindChoices extends FindOptions {
+  mode: FindMode
+}
 
 /** Choices of the item side panel, kept while moving between items like `view`. */
 export interface ItemPanel {
@@ -24,6 +32,8 @@ export interface ItemPanel {
   tree: TreeExpansion
   /** Set while the panel lists the selected item's pending changes before Apply. */
   reviewing: boolean
+  /** How the tree's find bar matches and shows results; kept for every table of the tab. */
+  find: FindChoices
 }
 
 export const DEFAULT_ITEM_PANEL: ItemPanel = {
@@ -31,6 +41,7 @@ export const DEFAULT_ITEM_PANEL: ItemPanel = {
   mode: "plain",
   tree: DEFAULT_TREE_EXPANSION,
   reviewing: false,
+  find: { mode: "highlight", ...DEFAULT_FIND_OPTIONS },
 }
 
 /** What the user asked for while the editor had unsaved changes, awaiting "Discard changes?". */

@@ -5,7 +5,9 @@ import {
   formatPath,
   isPathPrefix,
   jsonAt,
+  parsePath,
   pathKey,
+  releasedPath,
   withAttributeAt,
   withJsonAt,
 } from "./dynamoPath"
@@ -33,6 +35,47 @@ describe("pathKey / formatPath / isPathPrefix", () => {
     expect(isPathPrefix(["a", 1], ["a", 1])).toBe(true)
     expect(isPathPrefix(["a", 1], ["a"])).toBe(false)
     expect(isPathPrefix(["a", "1"], ["a", 1])).toBe(false)
+  })
+})
+
+describe("releasedPath", () => {
+  it("clears the path only when the leaf letting go still holds it", () => {
+    const a = ["n", 0] as const
+    const b = ["n", 1] as const
+    expect(releasedPath(a, ["n", 0])).toBeNull()
+    expect(releasedPath(b, a)).toBe(b)
+    expect(releasedPath(null, a)).toBeNull()
+    expect(releasedPath(["n", "0"], a)).toEqual(["n", "0"])
+  })
+})
+
+describe("parsePath", () => {
+  it("reads back every path formatPath writes", () => {
+    const paths = [
+      ["senderService", "numbers", 0, "senderNumber"],
+      ["a-b", "c d", "7", 2],
+      ["a.b"],
+      ['say "hi"', 10],
+      ["$x", "_y"],
+    ]
+    for (const path of paths) expect(parsePath(formatPath(path))).toEqual(path)
+  })
+
+  it("rejects text that isn't a path", () => {
+    for (const text of [
+      "",
+      ".a",
+      "a.",
+      "a..b",
+      "a[x]",
+      "a[",
+      "1.5",
+      "a b",
+      "a[0]b",
+      String.raw`["\q"]`,
+    ]) {
+      expect(parsePath(text)).toBeNull()
+    }
   })
 })
 
