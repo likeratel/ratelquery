@@ -1,7 +1,8 @@
 //! Reads and atomically writes `<config dir>/connection-layout.json`: the sidebar order of the
-//! saved connections and the folders they are grouped in. The frontend owns the shape and
-//! validates what it reads; the backend only checks that it is a version 1 object of bounded
-//! size, so a broken file can never grow without limit or be mistaken for another format.
+//! saved connections and the (nested) folders they are grouped in. The frontend owns the shape
+//! and validates what it reads, converting a version 1 file; the backend only checks that it is
+//! an object of a known version and bounded size, so a broken file can never grow without limit
+//! or be mistaken for another format.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,8 +14,11 @@ use crate::fsutil::write_private_atomic;
 
 const FILE_NAME: &str = "connection-layout.json";
 
-/// The only format this build reads and writes.
-pub const LAYOUT_VERSION: u64 = 1;
+/// The format this build writes: folders hold connections and other folders.
+pub const LAYOUT_VERSION: u64 = 2;
+
+/// The formats this build reads. Version 1 had folders one level deep.
+const READABLE_VERSIONS: [u64; 2] = [1, LAYOUT_VERSION];
 
 /// Upper bound of the encoded layout; thousands of connections and folders fit easily.
 pub const MAX_LAYOUT_BYTES: usize = 1024 * 1024;
@@ -24,11 +28,13 @@ pub struct ConnectionLayoutStore {
     path: PathBuf,
 }
 
-/// `Err` with the reason when `value` is not a version 1 layout object.
-fn check(value: &Value) -> Result<(), String> {
+/// `Err` with the reason when `value` is not a layout object of one of `versions`.
+fn check(value: &Value, versions: &[u64]) -> Result<(), String> {
     let obj = value.as_object().ok_or("not a JSON object")?;
-    if obj.get("version").and_then(Value::as_u64) != Some(LAYOUT_VERSION) {
-        return Err(format!("version is not {LAYOUT_VERSION}"));
+    let version = obj.get("version").and_then(Value::as_u64);
+    if !version.is_some_and(|v| versions.contains(&v)) {
+        let known: Vec<String> = versions.iter().map(u64::to_string).collect();
+        return Err(format!("version is not {}", known.join(" or ")));
     }
     Ok(())
 }
@@ -42,9 +48,9 @@ impl ConnectionLayoutStore {
         &self.path
     }
 
-    /// The saved layout. A missing file is `None`; so is a corrupt or oversized one, after
-    /// logging why (the file is left as is until the next save replaces it). A file that
-    /// exists but cannot be read is an `io` error.
+    /// The saved layout, version 1 or 2. A missing file is `None`; so is a corrupt, oversized
+    /// or unknown-version one, after logging why (the file is left as is until the next save
+    /// replaces it). A file that exists but cannot be read is an `io` error.
     pub fn load(&self) -> AppResult<Option<Value>> {
         let text = match fs::read_to_string(&self.path) {
             Ok(text) => text,
@@ -56,7 +62,7 @@ impl ConnectionLayoutStore {
         } else {
             serde_json::from_str::<Value>(&text)
                 .map_err(|e| e.to_string())
-                .and_then(|value| check(&value).map(|()| value))
+                .and_then(|value| check(&value, &READABLE_VERSIONS).map(|()| value))
         };
         match parsed {
             Ok(layout) => Ok(Some(layout)),
@@ -67,10 +73,11 @@ impl ConnectionLayoutStore {
         }
     }
 
-    /// Checks `input` (`invalid_input` when it is not a version 1 object or too large, nothing
-    /// written) and replaces the file.
+    /// Checks `input` (`invalid_input` when it is not a `LAYOUT_VERSION` object or too large,
+    /// nothing written) and replaces the file.
     pub fn save(&self, input: Value) -> AppResult<()> {
-        check(&input).map_err(|reason| AppError::InvalidInput(format!("layout is {reason}")))?;
+        check(&input, &[LAYOUT_VERSION])
+            .map_err(|reason| AppError::InvalidInput(format!("layout is {reason}")))?;
         let json = serde_json::to_vec_pretty(&input)
             .map_err(|e| AppError::Io(format!("could not encode the layout: {e}")))?;
         if json.len() > MAX_LAYOUT_BYTES {
@@ -90,8 +97,26 @@ mod tests {
 
     fn sample() -> Value {
         json!({
+            "version": 2,
+            "folders": [
+                { "id": "f1", "name": "Prod 한글", "collapsed": true },
+                { "id": "f2", "name": "mysql", "collapsed": false }
+            ],
+            "items": [
+                { "type": "folder", "id": "f1", "children": [
+                    { "type": "folder", "id": "f2", "children": [
+                        { "type": "connection", "id": "c2" }
+                    ] }
+                ] },
+                { "type": "connection", "id": "c1" }
+            ]
+        })
+    }
+
+    fn version_1() -> Value {
+        json!({
             "version": 1,
-            "folders": [{ "id": "f1", "name": "Prod 한글", "collapsed": true }],
+            "folders": [{ "id": "f1", "name": "Prod", "collapsed": false }],
             "items": [
                 { "type": "folder", "id": "f1", "children": ["c2"] },
                 { "type": "connection", "id": "c1" }
@@ -118,11 +143,21 @@ mod tests {
     }
 
     #[test]
+    fn loads_version_1_and_version_2_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ConnectionLayoutStore::new(dir.path());
+        for layout in [version_1(), sample()] {
+            std::fs::write(store.path(), serde_json::to_vec(&layout).unwrap()).unwrap();
+            assert_eq!(store.load().unwrap(), Some(layout));
+        }
+    }
+
+    #[test]
     fn corrupt_or_oversized_file_is_none_and_kept() {
         let dir = tempfile::tempdir().unwrap();
         let store = ConnectionLayoutStore::new(dir.path());
         let huge = format!(r#"{{"version":1,"pad":"{}"}}"#, "x".repeat(MAX_LAYOUT_BYTES));
-        for bad in ["{nope", "[]", r#"{"version":2,"items":[]}"#, huge.as_str()] {
+        for bad in ["{nope", "[]", r#"{"version":3,"items":[]}"#, huge.as_str()] {
             std::fs::write(store.path(), bad).unwrap();
             assert_eq!(store.load().unwrap(), None);
             assert_eq!(std::fs::read_to_string(store.path()).unwrap(), bad);
@@ -133,8 +168,15 @@ mod tests {
     fn invalid_input_writes_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let store = ConnectionLayoutStore::new(dir.path());
-        let huge = json!({ "version": 1, "pad": "x".repeat(MAX_LAYOUT_BYTES) });
-        for bad in [json!("x"), json!([]), json!({ "version": 2 }), json!({ "items": [] }), huge] {
+        let huge = json!({ "version": 2, "pad": "x".repeat(MAX_LAYOUT_BYTES) });
+        for bad in [
+            json!("x"),
+            json!([]),
+            json!({ "version": 3 }),
+            json!({ "items": [] }),
+            version_1(),
+            huge,
+        ] {
             assert_eq!(store.save(bad).unwrap_err().kind(), "invalid_input");
         }
         assert!(!store.path().exists());

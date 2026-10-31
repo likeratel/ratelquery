@@ -79,8 +79,8 @@ written atomically (write temp file, rename) with owner-only permissions (`0600`
 | `connections_delete` | `id` | `void`. Closes any open session (without waiting for running queries), then removes the secret from both secret stores and the config. Only the active store's failure counts: the config is still removed and the call rejects with `kind: "credential"` ("... its saved secret is still in the keychain ..." or "... still in secrets.json ..."); a failure of the inactive store is ignored. |
 | `connections_has_secret` | `id` | `boolean` |
 | `connections_duplicate` | `id` | the saved copy (`ConnectionConfig`): same settings under a new UUID id and the first free name of `"<name> copy"`, `"<name> copy 2"`, … (compared case-insensitively). The stored secrets (database and SSH) are copied inside the backend and never cross IPC. If a secret cannot be copied the copy is removed again, its copied secrets included, and the call rejects with that error (`kind: "credential"`); if removing the copy from `connections.json` fails as well, the copied secrets are still removed and that `kind: "io"` error is returned instead. Unknown `id` is `not_found`, an empty one `invalid_input`. |
-| `connection_layout_load` | – | the saved sidebar layout (see below) or `null` when none was saved. A corrupt, oversized (over 1 MiB) or non-version-1 file is logged and also `null`; a file that exists but can't be read rejects with `kind: "io"`. The frontend validates the shape and treats anything else as `null`. |
-| `connection_layout_save` | `layout: ConnectionLayout` | `void`. Replaces `connection-layout.json` atomically (owner-only permissions). Anything but a JSON object with `version: 1`, or an encoding over 1 MiB, rejects with `kind: "invalid_input"` and writes nothing. |
+| `connection_layout_load` | – | the saved sidebar layout (see below) or `null` when none was saved. A corrupt or oversized (over 1 MiB) file, or one whose version is not 1 or 2, is logged and also `null`; a file that exists but can't be read rejects with `kind: "io"`. The frontend validates the shape and treats anything else as `null`. |
+| `connection_layout_save` | `layout: ConnectionLayout` | `void`. Replaces `connection-layout.json` atomically (owner-only permissions). Anything but a JSON object with `version: 2`, or an encoding over 1 MiB, rejects with `kind: "invalid_input"` and writes nothing. |
 | `connections_test` | `config: ConnectionConfig`, `secret: string \| null` | `{ ok: true, serverVersion?: string, latencyMs: number, athena?: AthenaTestInfo }`. Rejects with `kind: "connection"` on failure. A `null` secret falls back to the stored one for `config.id` **only when the config still targets the saved server**: same host (case-insensitive), port, user, `tls` and `caCertPath` for MySQL; same endpoint, region and auth (`accessKeyId` / `profile`) for DynamoDB; same region and auth for Athena. Otherwise it rejects with `kind: "invalid_input"` ("Enter the password again to test a different server" / "Enter the secret access key again to test a different endpoint or key"); name, database, workgroup, output location and color changes do not matter. For Athena the probe is `GetWorkGroup` plus the output-location resolution below; `athena` is set only for Athena configs. |
 | `aws_profiles` | – | `{ name: string, region: string \| null, source: "config" \| "credentials" \| "both", sso: boolean }[]` sorted by name: `[default]` / `[profile x]` of `AWS_CONFIG_FILE` (else `~/.aws/config`) merged with `[x]` of `AWS_SHARED_CREDENTIALS_FILE` (else `~/.aws/credentials`). `region` is the config section's `region` only (never an SSO session's `sso_region`); `sso` is true when the config section has `sso_start_url` or `sso_session`. Missing files give `[]`, unparsable lines are skipped, an unreadable file rejects with `kind: "io"`. No secret value is read into or returned in the result. |
 
@@ -98,14 +98,21 @@ the shape; the backend only checks the version and size:
 
 ```ts
 interface ConnectionLayout {
-  version: 1
+  version: 2
   folders: { id: string; name: string; collapsed: boolean }[]
-  items: (
-    | { type: "connection"; id: ConnectionId }
-    | { type: "folder"; id: string; children: ConnectionId[] }
-  )[]
+  items: LayoutItem[]
 }
+
+type LayoutItem =
+  | { type: "connection"; id: ConnectionId }
+  | { type: "folder"; id: string; children: LayoutItem[] }
 ```
+
+Folders nest up to 32 levels deep, and the frontend refuses changes that would go deeper. When it
+reads a file with deeper folders, everything below the 32nd level is flattened into the folder at
+that level, and the folders below it come back empty at the top level. Version 1 files, whose
+folders held only connection ids (`children: ConnectionId[]`), are still read and converted by the
+frontend; the next save writes version 2.
 
 Connections missing from the layout are listed after it by name; ids that no longer exist are
 dropped when the frontend reconciles the layout with `connections_list`. While the saved layout is

@@ -1,19 +1,20 @@
-import { Ellipsis, Folder, FolderOpen, Pencil, Trash } from "lucide-react"
+import { Ellipsis, Folder, FolderOpen, FolderPlus, Pencil, Trash } from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { Menu } from "../../components/ui"
 import {
   deleteFolder,
+  MAX_FOLDER_DEPTH,
   renameFolder,
   setFolderCollapsed,
   type ConnectionLayout,
+  type LayoutEntry,
   type LayoutFolder,
 } from "../../lib/connectionLayout"
-import type { ConnectionConfig } from "../../lib/connections"
 import { useConnectionLayout } from "../../state/connectionLayoutStore"
-import { isDescendant, TreeChevron, useSchemaTree, useTreeTabIndex } from "../schema"
+import { depthStyle, TreeChevron, useSchemaTree, useTreeTabIndex } from "../schema"
 import { ConnectionRow } from "./ConnectionRow"
-import { moveStepItems } from "./layoutMenus"
-import { dragAttributes, folderKey, sameRef } from "./layoutTree"
+import { moveStepItems, moveToFolderEntry, moveToFolderItems } from "./layoutMenus"
+import { dragAttributes, entryKey, folderKey, sameRef, showsNode } from "./layoutTree"
 import { useDragState } from "./useLayoutDrag"
 
 const update = (change: (layout: ConnectionLayout) => ConnectionLayout) =>
@@ -63,18 +64,32 @@ function RenameInput({
   )
 }
 
+type FolderMode = "idle" | "menu" | "move"
+
 interface FolderRowProps {
   folder: LayoutFolder
-  connections: readonly ConnectionConfig[]
+  /** The rows inside the folder. */
+  entries: readonly LayoutEntry[]
+  /** Connections in the folder and its subfolders. */
+  count: number
+  /** aria-level: 1 at the top of the list, one more per folder around it. */
+  level: number
   /** Shown open regardless of `collapsed`, while the list is filtered. */
   forceOpen: boolean
   /** Holds the tree's tab stop while no other node does. */
   tabStop?: boolean
 }
 
-/** A folder in the connection list: a level 1 treeitem whose group holds its connections. */
-export function FolderRow({ folder, connections, forceOpen, tabStop = false }: FolderRowProps) {
-  const [menuOpen, setMenuOpen] = useState(false)
+/** A folder in the connection list: a treeitem whose group holds its connections and folders. */
+export function FolderRow({
+  folder,
+  entries,
+  count,
+  level,
+  forceOpen,
+  tabStop = false,
+}: FolderRowProps) {
+  const [mode, setMode] = useState<FolderMode>("idle")
   const itemRef = useRef<HTMLLIElement>(null)
   const moreRef = useRef<HTMLButtonElement>(null)
   const key = folderKey(folder.id)
@@ -84,11 +99,11 @@ export function FolderRow({ folder, connections, forceOpen, tabStop = false }: F
   const drop = useDragState((s) => (sameRef(s.over?.ref ?? null, ref) ? s.over?.position : null))
   const dragging = useDragState((s) => sameRef(s.dragging, ref))
   const expanded = forceOpen || !folder.collapsed
-  const count = connections.length
+  const menuOpen = mode !== "idle"
   const label = `${folder.name}, folder, ${count} ${count === 1 ? "connection" : "connections"}`
 
   const closeMenu = useCallback(() => {
-    setMenuOpen(false)
+    setMode("idle")
     const item = itemRef.current
     // Selecting an item or Esc leaves focus in the closing menu; hand it back to the row.
     if (item?.contains(document.activeElement)) item.focus()
@@ -99,8 +114,7 @@ export function FolderRow({ folder, connections, forceOpen, tabStop = false }: F
     if (expanded) {
       // The tab stop and focus move up from rows the collapse hides.
       const tree = useSchemaTree.getState()
-      const hidden = (k: string) => connections.some((c) => k === c.id || isDescendant(k, c.id))
-      if (tree.focused !== null && hidden(tree.focused)) tree.setFocused(key)
+      if (tree.focused !== null && showsNode(entries, tree.focused, true)) tree.setFocused(key)
       const item = itemRef.current
       if (item && item !== document.activeElement && item.contains(document.activeElement)) {
         item.focus()
@@ -120,13 +134,14 @@ export function FolderRow({ folder, connections, forceOpen, tabStop = false }: F
       ref={itemRef}
       className="conn-folder"
       role="treeitem"
-      aria-level={1}
+      aria-level={level}
       aria-label={label}
       aria-expanded={expanded}
       data-tree-key={key}
       tabIndex={tabIndex}
       data-drop={drop ?? undefined}
       data-dragging={dragging || undefined}
+      style={depthStyle(level)}
     >
       <div className="conn-folder__line" data-menu={menuOpen || undefined} {...dragAttributes(ref)}>
         {forceOpen ? (
@@ -145,7 +160,7 @@ export function FolderRow({ folder, connections, forceOpen, tabStop = false }: F
             onClick={toggle}
             onContextMenu={(event) => {
               event.preventDefault()
-              setMenuOpen(true)
+              setMode("menu")
             }}
             title={folder.name}
           >
@@ -169,11 +184,21 @@ export function FolderRow({ folder, connections, forceOpen, tabStop = false }: F
           aria-label={`Actions for folder ${folder.name}`}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((open) => !open)}
+          onClick={() => setMode((m) => (m === "idle" ? "menu" : "idle"))}
         >
           <Ellipsis size={14} strokeWidth={2} />
         </button>
-        {menuOpen && (
+        {mode === "move" && (
+          <Menu
+            label={`Move folder ${folder.name} to folder`}
+            itemsLabel="Move to"
+            className="conn-row__menu"
+            triggerRef={moreRef}
+            onClose={closeMenu}
+            items={moveToFolderItems(ref)}
+          />
+        )}
+        {mode === "menu" && (
           <Menu
             label={`Actions for folder ${folder.name}`}
             className="conn-row__menu"
@@ -186,11 +211,25 @@ export function FolderRow({ folder, connections, forceOpen, tabStop = false }: F
                 icon: <Pencil size={13} aria-hidden />,
                 onSelect: () => useConnectionLayout.getState().setRenaming(folder.id),
               },
+              {
+                id: "new-subfolder",
+                label: "New subfolder",
+                icon: <FolderPlus size={13} aria-hidden />,
+                // Filtering hides the new, empty folder (and with it the name field).
+                disabled: forceOpen || level >= MAX_FOLDER_DEPTH,
+                onSelect: () => useConnectionLayout.getState().createFolder(folder.id),
+              },
               ...moveStepItems(ref),
+              moveToFolderEntry(ref, () => setMode("move")),
               {
                 id: "delete",
                 label: "Delete folder",
-                hint: count > 0 ? "Its connections move to the top level" : undefined,
+                hint:
+                  entries.length === 0
+                    ? undefined
+                    : level === 1
+                      ? "What it holds moves to the top level"
+                      : "What it holds moves to the folder above",
                 tone: "danger",
                 icon: <Trash size={13} aria-hidden />,
                 separatorBefore: true,
@@ -200,13 +239,41 @@ export function FolderRow({ folder, connections, forceOpen, tabStop = false }: F
           />
         )}
       </div>
-      {expanded && count > 0 && (
+      {expanded && entries.length > 0 && (
         <ul role="group" className="tree-group">
-          {connections.map((config) => (
-            <ConnectionRow key={config.id} config={config} level={2} />
+          {entries.map((entry) => (
+            <LayoutEntryRow
+              key={entryKey(entry)}
+              entry={entry}
+              level={level + 1}
+              forceOpen={forceOpen}
+            />
           ))}
         </ul>
       )}
     </li>
+  )
+}
+
+interface LayoutEntryRowProps {
+  entry: LayoutEntry
+  level: number
+  forceOpen: boolean
+  tabStop?: boolean
+}
+
+/** The row of a layout entry: a connection, or a folder with the rows inside it. */
+export function LayoutEntryRow({ entry, level, forceOpen, tabStop }: LayoutEntryRowProps) {
+  return entry.type === "connection" ? (
+    <ConnectionRow config={entry.config} level={level} tabStop={tabStop} />
+  ) : (
+    <FolderRow
+      folder={entry.folder}
+      entries={entry.children}
+      count={entry.count}
+      level={level}
+      forceOpen={forceOpen}
+      tabStop={tabStop}
+    />
   )
 }

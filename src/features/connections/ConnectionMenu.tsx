@@ -35,6 +35,7 @@ export function ConnectionMenu({
   onMove,
   onDelete,
 }: ConnectionMenuProps) {
+  const ref = { type: "connection", id: config.id } as const
   if (kind === "move") {
     return (
       <Menu
@@ -43,7 +44,7 @@ export function ConnectionMenu({
         className="conn-row__menu"
         triggerRef={triggerRef}
         onClose={onClose}
-        items={moveToFolderItems(config.id)}
+        items={moveToFolderItems(ref)}
       />
     )
   }
@@ -66,8 +67,8 @@ export function ConnectionMenu({
           icon: <Copy size={13} aria-hidden />,
           onSelect: () => void duplicate(config),
         },
-        ...moveStepItems({ type: "connection", id: config.id }),
-        moveToFolderEntry(config.id, onMove),
+        ...moveStepItems(ref),
+        moveToFolderEntry(ref, onMove),
         {
           id: "delete",
           label: "Delete",

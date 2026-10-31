@@ -27,7 +27,7 @@
   position: relative;
   display: flex;
   align-items: center;
-  padding-left: 4px;
+  padding-left: calc(4px + var(--tree-depth, 0) * 14px);
   border-radius: var(--radius-md);
 }
 
@@ -545,10 +545,6 @@
   position: relative;
 }
 
-.conn-row[aria-level="2"] > .conn-row__line {
-  padding-left: 18px;
-}
-
 .conn-folder {
   display: flex;
   flex-direction: column;
@@ -568,7 +564,7 @@
   display: flex;
   align-items: center;
   min-height: 30px;
-  padding-left: 4px;
+  padding-left: calc(4px + var(--tree-depth, 0) * 14px);
   border-radius: var(--radius-md);
 }
 
@@ -653,7 +649,7 @@
 .conn-folder[data-drop="after"]::after {
   content: "";
   position: absolute;
-  left: 4px;
+  left: calc(4px + var(--tree-depth, 0) * 14px);
   right: 4px;
   z-index: 2;
   height: 2px;

@@ -6,6 +6,7 @@ import { normalizeError } from "../../lib/ipc"
 import { openQueryTabFor } from "../query"
 import {
   connectionKey,
+  depthStyle,
   SchemaChildren,
   TreeChevron,
   TreeLevelOffset,
@@ -98,8 +99,8 @@ interface ConnectionRowProps {
   config: ConnectionConfig
   /** Holds the tree's tab stop while no other node does. */
   tabStop?: boolean
-  /** aria-level: 1 at the top of the list, 2 inside a folder. */
-  level?: 1 | 2
+  /** aria-level: 1 at the top of the list, one more per folder around it. */
+  level?: number
 }
 
 export function ConnectionRow({ config, tabStop = false, level = 1 }: ConnectionRowProps) {
@@ -121,6 +122,7 @@ export function ConnectionRow({ config, tabStop = false, level = 1 }: Connection
     "aria-level": level,
     "aria-label": config.name,
     "data-tree-key": key,
+    style: depthStyle(level),
   } as const
 
   const onDelete = async () => {

@@ -10,17 +10,18 @@ export interface LayoutFolder {
   collapsed: boolean
 }
 
-/** A top-level sidebar entry: a connection, or a folder holding connections (one level only). */
+/** A sidebar entry: a connection, or a folder holding connections and other folders. */
 export type LayoutItem =
   | { type: "connection"; id: ConnectionId }
-  | { type: "folder"; id: FolderId; children: readonly ConnectionId[] }
+  | { type: "folder"; id: FolderId; children: readonly LayoutItem[] }
 
 /**
  * Sidebar order and folders of the connections, saved as `connection-layout.json`. Folder names
- * and collapse state live in `folders`; where each folder sits lives in `items`.
+ * and collapse state live in `folders`; where each folder sits lives in the `items` tree.
+ * Version 1 had folders one level deep, with connection ids as their children.
  */
 export interface ConnectionLayout {
-  version: 1
+  version: 2
   folders: readonly LayoutFolder[]
   items: readonly LayoutItem[]
 }
@@ -31,12 +32,15 @@ export type LayoutRef = { type: "connection"; id: ConnectionId } | { type: "fold
 /** Where a move lands relative to its target; `inside` is only valid for a folder target. */
 export type DropPosition = "before" | "after" | "inside"
 
-export const EMPTY_LAYOUT: ConnectionLayout = { version: 1, folders: [], items: [] }
+export const EMPTY_LAYOUT: ConnectionLayout = { version: 2, folders: [], items: [] }
 
 export const DEFAULT_FOLDER_NAME = "New folder"
 
 /** Longest folder name kept; longer names are cut. */
 export const FOLDER_NAME_MAX = 100
+
+/** Deepest folder nesting: a top-level folder is 1 deep, a folder in it 2, and so on. */
+export const MAX_FOLDER_DEPTH = 32
 
 const folderSchema = z.object({
   id: z.string().min(1),
@@ -44,18 +48,13 @@ const folderSchema = z.object({
   collapsed: z.boolean().catch(false),
 })
 
-const itemSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("connection"), id: z.string().min(1) }),
-  z.object({
-    type: z.literal("folder"),
-    id: z.string().min(1),
-    children: z
-      .array(z.unknown())
-      .transform((ids) =>
-        ids.filter((id): id is string => typeof id === "string" && id.length > 0),
-      ),
-  }),
-])
+const connectionItemSchema = z.object({ type: z.literal("connection"), id: z.string().min(1) })
+
+const folderItemSchema = z.object({
+  type: z.literal("folder"),
+  id: z.string().min(1),
+  children: z.array(z.unknown()),
+})
 
 const parseEach = <T>(schema: z.ZodType<T>, raw: readonly unknown[]): T[] =>
   raw.flatMap((entry) => {
@@ -63,20 +62,66 @@ const parseEach = <T>(schema: z.ZodType<T>, raw: readonly unknown[]): T[] =>
     return parsed.success ? [parsed.data] : []
   })
 
+/** Version 1 folder children are connection ids. */
+const parseIds = (raw: readonly unknown[]): LayoutItem[] =>
+  raw.flatMap((id): LayoutItem[] =>
+    typeof id === "string" && id.length > 0 ? [{ type: "connection", id }] : [],
+  )
+
+/** Every connection anywhere in `raw`, in order, without the folders around them. */
+function parseFlat(raw: readonly unknown[]): LayoutItem[] {
+  const items: LayoutItem[] = []
+  // A stack instead of recursion, as the input may be nested arbitrarily deep.
+  const pending = [...raw].reverse()
+  while (pending.length > 0) {
+    const entry = pending.pop()
+    const connection = connectionItemSchema.safeParse(entry)
+    const folder = folderItemSchema.safeParse(entry)
+    if (connection.success) items.push(connection.data)
+    else if (folder.success) pending.push(...[...folder.data.children].reverse())
+  }
+  return items
+}
+
+/** Items of a version `version` file whose folders sit `depth` folders deep. */
+function parseItems(raw: readonly unknown[], version: 1 | 2, depth: number): LayoutItem[] {
+  return raw.flatMap((entry): LayoutItem[] => {
+    const connection = connectionItemSchema.safeParse(entry)
+    if (connection.success) return [connection.data]
+    const folder = folderItemSchema.safeParse(entry)
+    if (!folder.success) return []
+    const { id, children } = folder.data
+    const parsed =
+      version === 1
+        ? parseIds(children)
+        : depth < MAX_FOLDER_DEPTH
+          ? parseItems(children, 2, depth + 1)
+          : parseFlat(children)
+    return [{ type: "folder", id, children: parsed }]
+  })
+}
+
 /**
- * Reads the IPC response, which is not trusted: anything but a version 1 layout is null, and
- * folders or items that don't parse are dropped. Unknown and repeated ids are left to
- * `reconcileLayout`, which knows the connections.
+ * Reads the IPC response, which is not trusted: anything but a version 1 or 2 layout is null,
+ * and folders or items that don't parse are dropped. A version 1 layout comes back as the same
+ * tree in version 2. Below `MAX_FOLDER_DEPTH` levels the tree is flattened: a folder at that
+ * depth holds every connection under it, and `reconcileLayout` puts the deeper folders back at
+ * the top level, empty. Unknown and
+ * repeated ids are left to `reconcileLayout`, which knows the connections.
  */
 export function normalizeLayout(raw: unknown): ConnectionLayout | null {
   const shape = z
-    .object({ version: z.literal(1), folders: z.array(z.unknown()), items: z.array(z.unknown()) })
+    .object({
+      version: z.union([z.literal(1), z.literal(2)]),
+      folders: z.array(z.unknown()),
+      items: z.array(z.unknown()),
+    })
     .safeParse(raw)
   if (!shape.success) return null
   return {
-    version: 1,
+    version: 2,
     folders: parseEach(folderSchema, shape.data.folders),
-    items: parseEach(itemSchema, shape.data.items),
+    items: parseItems(shape.data.items, shape.data.version, 1),
   }
 }
 
@@ -85,7 +130,8 @@ const byName = (a: ConnectionConfig, b: ConnectionConfig) =>
 
 /**
  * The layout for the current connections: unknown (deleted) ids and repeats are dropped, a
- * folder item without a folder (or a folder without an item) is fixed, empty folders stay, and
+ * folder item without a folder is replaced by what it holds, a folder without an item is
+ * appended at the top level, empty folders stay, and
  * connections the layout doesn't place yet are appended at the top level in name order.
  */
 export function reconcileLayout(
@@ -99,17 +145,19 @@ export function reconcileLayout(
   const folderIds = new Set(folders.map((f) => f.id))
   const placed = new Set<ConnectionId>()
   const placedFolders = new Set<FolderId>()
-  const take = (id: ConnectionId) => {
-    if (!known.has(id) || placed.has(id)) return false
-    placed.add(id)
-    return true
-  }
-  const items = layout.items.flatMap((item): LayoutItem[] => {
-    if (item.type === "connection") return take(item.id) ? [item] : []
-    if (!folderIds.has(item.id) || placedFolders.has(item.id)) return []
-    placedFolders.add(item.id)
-    return [{ type: "folder", id: item.id, children: item.children.filter(take) }]
-  })
+  const keep = (items: readonly LayoutItem[]): LayoutItem[] =>
+    items.flatMap((item): LayoutItem[] => {
+      if (item.type === "connection") {
+        if (!known.has(item.id) || placed.has(item.id)) return []
+        placed.add(item.id)
+        return [item]
+      }
+      // What a folder without a folder (or a repeat) holds takes its place, as on delete.
+      if (!folderIds.has(item.id) || placedFolders.has(item.id)) return keep(item.children)
+      placedFolders.add(item.id)
+      return [{ type: "folder", id: item.id, children: keep(item.children) }]
+    })
+  const items = keep(layout.items)
   const unplacedFolders = folders
     .filter((f) => !placedFolders.has(f.id))
     .map((f): LayoutItem => ({ type: "folder", id: f.id, children: [] }))
@@ -117,48 +165,73 @@ export function reconcileLayout(
     .filter((c) => !placed.has(c.id))
     .sort(byName)
     .map((c): LayoutItem => ({ type: "connection", id: c.id }))
-  return { version: 1, folders, items: [...items, ...unplacedFolders, ...unplaced] }
+  return { version: 2, folders, items: [...items, ...unplacedFolders, ...unplaced] }
 }
 
-/** Where a connection sits: in a folder's children or at the top level (`folderId` null). */
+/** Where an item sits: the folders around it (outermost first) and its index among siblings. */
 interface Slot {
-  folderId: FolderId | null
+  path: readonly FolderId[]
   index: number
 }
 
-function findConnection(items: readonly LayoutItem[], id: ConnectionId): Slot | null {
+const isRef = (item: { type: string; id: string }, ref: LayoutRef) =>
+  item.type === ref.type && item.id === ref.id
+
+const parentOf = (slot: Slot): FolderId | null => slot.path.at(-1) ?? null
+
+const folderRef = (id: FolderId): LayoutRef => ({ type: "folder", id })
+
+function findSlot(
+  items: readonly LayoutItem[],
+  ref: LayoutRef,
+  path: readonly FolderId[] = [],
+): Slot | null {
   for (const [index, item] of items.entries()) {
-    if (item.type === "connection" && item.id === id) return { folderId: null, index }
+    if (isRef(item, ref)) return { path, index }
     if (item.type === "folder") {
-      const child = item.children.indexOf(id)
-      if (child >= 0) return { folderId: item.id, index: child }
+      const slot = findSlot(item.children, ref, [...path, item.id])
+      if (slot) return slot
     }
   }
   return null
 }
 
-const findFolder = (items: readonly LayoutItem[], id: FolderId) =>
-  items.findIndex((item) => item.type === "folder" && item.id === id)
-
-/** The folder holding connection `id`, or null at the top level or when it is not placed. */
-export function folderOf(layout: ConnectionLayout, id: ConnectionId): FolderId | null {
-  return findConnection(layout.items, id)?.folderId ?? null
+/** The children of folder `parent`, or the top-level items for `null`; null when not placed. */
+function childrenOf(
+  items: readonly LayoutItem[],
+  parent: FolderId | null,
+): readonly LayoutItem[] | null {
+  if (parent === null) return items
+  const slot = findSlot(items, { type: "folder", id: parent })
+  const folder = slot && itemAt(items, slot)
+  return folder?.type === "folder" ? folder.children : null
 }
 
-/** Index of the top-level item that is or contains `ref`, or -1. */
-function topIndex(items: readonly LayoutItem[], ref: LayoutRef): number {
-  if (ref.type === "folder") return findFolder(items, ref.id)
-  const slot = findConnection(items, ref.id)
-  if (!slot) return -1
-  return slot.folderId === null ? slot.index : findFolder(items, slot.folderId)
+const itemAt = (items: readonly LayoutItem[], slot: Slot): LayoutItem | null =>
+  childrenOf(items, parentOf(slot))?.[slot.index] ?? null
+
+/** How many folders a child of `parent` sits in: 0 at the top level; null when not placed. */
+function nesting(items: readonly LayoutItem[], parent: FolderId | null): number | null {
+  if (parent === null) return 0
+  const slot = findSlot(items, folderRef(parent))
+  return slot && slot.path.length + 1
 }
 
-function withoutConnection(items: readonly LayoutItem[], id: ConnectionId): LayoutItem[] {
-  return items.flatMap((item): LayoutItem[] => {
-    if (item.type === "connection") return item.id === id ? [] : [item]
-    return item.children.includes(id)
-      ? [{ ...item, children: item.children.filter((c) => c !== id) }]
-      : [item]
+/** Folder levels in `item`: 0 for a connection, 1 for a folder without subfolders. */
+const height = (item: LayoutItem): number =>
+  item.type === "folder" ? 1 + Math.max(0, ...item.children.map(height)) : 0
+
+/** `items` with the children of folder `parent` (the top level for `null`) run through `change`. */
+function updateChildren(
+  items: readonly LayoutItem[],
+  parent: FolderId | null,
+  change: (children: readonly LayoutItem[]) => LayoutItem[],
+): LayoutItem[] {
+  if (parent === null) return change(items)
+  return items.map((item) => {
+    if (item.type !== "folder") return item
+    if (item.id === parent) return { ...item, children: change(item.children) }
+    return { ...item, children: updateChildren(item.children, parent, change) }
   })
 }
 
@@ -168,76 +241,40 @@ const insertAt = <T>(list: readonly T[], index: number, value: T): T[] => [
   ...list.slice(index),
 ]
 
-function insertConnection(
+/** `items` with `item` at `index` among the children of `parent` (the top level for `null`). */
+const insertItem = (
   items: readonly LayoutItem[],
-  id: ConnectionId,
-  slot: Slot,
-): LayoutItem[] {
-  if (slot.folderId === null) return insertAt(items, slot.index, { type: "connection", id })
-  return items.map((item) =>
-    item.type === "folder" && item.id === slot.folderId
-      ? { ...item, children: insertAt(item.children, slot.index, id) }
-      : item,
-  )
-}
+  parent: FolderId | null,
+  index: number,
+  item: LayoutItem,
+) => updateChildren(items, parent, (children) => insertAt(children, index, item))
 
-/** Where a connection moved `position` of `target` lands, in `items` without it. */
+/** `items` without the item at `slot`. */
+const removeItem = (items: readonly LayoutItem[], slot: Slot) =>
+  updateChildren(items, parentOf(slot), (children) =>
+    children.filter((_, index) => index !== slot.index),
+  )
+
+/** Where an item dropped `position` of `target` lands in `items`: its parent and index there. */
 function dropSlot(
   items: readonly LayoutItem[],
   target: LayoutRef,
   position: DropPosition,
-): Slot | null {
-  const offset = position === "after" ? 1 : 0
-  if (target.type === "folder") {
-    const index = findFolder(items, target.id)
-    if (index < 0) return null
-    const folder = items[index]
-    if (position === "inside" && folder.type === "folder") {
-      return { folderId: folder.id, index: folder.children.length }
-    }
-    return { folderId: null, index: index + offset }
+): { parent: FolderId | null; index: number } | null {
+  if (position === "inside") {
+    const children = childrenOf(items, target.id)
+    return children && { parent: target.id, index: children.length }
   }
-  if (position === "inside") return null
-  const slot = findConnection(items, target.id)
-  return slot && { folderId: slot.folderId, index: slot.index + offset }
-}
-
-function moveConnection(
-  layout: ConnectionLayout,
-  id: ConnectionId,
-  target: LayoutRef,
-  position: DropPosition,
-): ConnectionLayout {
-  if (target.type === "connection" && target.id === id) return layout
-  if (!findConnection(layout.items, id)) return layout
-  const items = withoutConnection(layout.items, id)
-  const slot = dropSlot(items, target, position)
-  return slot ? { ...layout, items: insertConnection(items, id, slot) } : layout
-}
-
-/** Folders only move among the top-level items; a target inside a folder means that folder. */
-function moveFolder(
-  layout: ConnectionLayout,
-  id: FolderId,
-  target: LayoutRef,
-  position: DropPosition,
-): ConnectionLayout {
-  const from = findFolder(layout.items, id)
-  if (position === "inside" || from < 0) return layout
-  const items = layout.items.filter((_, index) => index !== from)
-  const index = topIndex(items, target)
-  if (index < 0) return layout
-  return {
-    ...layout,
-    items: insertAt(items, index + (position === "after" ? 1 : 0), layout.items[from]),
-  }
+  const slot = findSlot(items, target)
+  return slot && { parent: parentOf(slot), index: slot.index + (position === "after" ? 1 : 0) }
 }
 
 /**
- * Moves `ref` before, after or into `target`. A connection dropped before or after a connection
- * joins that connection's folder (or the top level); dropped inside a folder it becomes the
- * folder's last child. A folder only moves among top-level items. Anything else (a folder into
- * a folder, a missing id) leaves the layout as it is.
+ * Moves `ref` before, after or into `target`, at any depth. Before or after an item it joins
+ * that item's folder (or the top level); inside a folder it becomes the folder's last child.
+ * Anything else (a folder into itself or one of its subfolders, a connection as an `inside`
+ * target, a missing id, folders nested deeper than `MAX_FOLDER_DEPTH`) leaves the layout as it
+ * is.
  */
 export function moveItem(
   layout: ConnectionLayout,
@@ -245,9 +282,16 @@ export function moveItem(
   target: LayoutRef,
   position: DropPosition,
 ): ConnectionLayout {
-  return ref.type === "connection"
-    ? moveConnection(layout, ref.id, target, position)
-    : moveFolder(layout, ref.id, target, position)
+  if (isRef(target, ref) || (position === "inside" && target.type !== "folder")) return layout
+  const from = findSlot(layout.items, ref)
+  const moving = from && itemAt(layout.items, from)
+  if (!from || !moving) return layout
+  if (moving.type === "folder" && findSlot(moving.children, target)) return layout
+  const items = removeItem(layout.items, from)
+  const to = dropSlot(items, target, position)
+  const around = to && nesting(items, to.parent)
+  if (!to || around === null || around + height(moving) > MAX_FOLDER_DEPTH) return layout
+  return { ...layout, items: insertItem(items, to.parent, to.index, moving) }
 }
 
 /**
@@ -265,55 +309,34 @@ export function canDrop(
 }
 
 /**
- * Moves `ref` one step up (`-1`) or down (`1`) among its siblings. A connection at the edge of
- * its folder steps out of it, before or after the folder. Top-level items at the edge stay.
+ * Moves `ref` one step up (`-1`) or down (`1`) among its siblings. An item at the edge of its
+ * folder steps out of it, before or after the folder. Top-level items at the edge stay.
  * Returns the same layout when nothing moves.
  */
 export function moveStep(layout: ConnectionLayout, ref: LayoutRef, step: -1 | 1): ConnectionLayout {
-  if (ref.type === "folder") {
-    const from = findFolder(layout.items, ref.id)
-    const to = from + step
-    if (from < 0 || to < 0 || to >= layout.items.length) return layout
-    const items = layout.items.filter((_, index) => index !== from)
-    return { ...layout, items: insertAt(items, to, layout.items[from]) }
-  }
-  const slot = findConnection(layout.items, ref.id)
+  const slot = findSlot(layout.items, ref)
   if (!slot) return layout
-  const items = withoutConnection(layout.items, ref.id)
-  if (slot.folderId === null) {
-    const to = slot.index + step
-    if (to < 0 || to > items.length) return layout
-    return { ...layout, items: insertConnection(items, ref.id, { folderId: null, index: to }) }
-  }
-  const folderIndex = findFolder(items, slot.folderId)
-  const folder = items[folderIndex]
-  const siblings = folder.type === "folder" ? folder.children.length : 0
-  const to = slot.index + step
-  const next: Slot =
-    to < 0
-      ? { folderId: null, index: folderIndex }
-      : to > siblings
-        ? { folderId: null, index: folderIndex + 1 }
-        : { folderId: slot.folderId, index: to }
-  return { ...layout, items: insertConnection(items, ref.id, next) }
+  const position = step < 0 ? "before" : "after"
+  const sibling = childrenOf(layout.items, parentOf(slot))?.[slot.index + step]
+  if (sibling) return moveItem(layout, ref, sibling, position)
+  const parent = parentOf(slot)
+  return parent === null ? layout : moveItem(layout, ref, folderRef(parent), position)
 }
 
 /**
- * Puts connection `id` at the end of folder `folderId`, or with `null` back at the top level
- * right after the folder it was in. Returns the same layout when nothing moves.
+ * Puts `ref` at the end of folder `folderId`, or with `null` back at the top level right after
+ * the top-level folder it was in. Returns the same layout when nothing moves, or when `ref` is a
+ * folder and `folderId` the folder itself or one of its subfolders.
  */
 export function moveToFolder(
   layout: ConnectionLayout,
-  id: ConnectionId,
+  ref: LayoutRef,
   folderId: FolderId | null,
 ): ConnectionLayout {
-  const slot = findConnection(layout.items, id)
-  if (!slot || slot.folderId === folderId) return layout
-  if (folderId !== null)
-    return moveConnection(layout, id, { type: "folder", id: folderId }, "inside")
-  return slot.folderId === null
-    ? layout
-    : moveConnection(layout, id, { type: "folder", id: slot.folderId }, "after")
+  const slot = findSlot(layout.items, ref)
+  if (!slot || parentOf(slot) === folderId) return layout
+  if (folderId !== null) return moveItem(layout, ref, folderRef(folderId), "inside")
+  return moveItem(layout, ref, folderRef(slot.path[0]), "after")
 }
 
 /** Places connection `id` right after `sourceId`, in the same folder (for a duplicate). */
@@ -323,12 +346,14 @@ export function placeAfter(
   sourceId: ConnectionId,
 ): ConnectionLayout {
   if (id === sourceId) return layout
-  const items = withoutConnection(layout.items, id)
-  const source = findConnection(items, sourceId)
-  const slot = source
-    ? { folderId: source.folderId, index: source.index + 1 }
-    : { folderId: null, index: items.length }
-  return { ...layout, items: insertConnection(items, id, slot) }
+  const item: LayoutItem = { type: "connection", id }
+  const own = findSlot(layout.items, item)
+  const items = own ? removeItem(layout.items, own) : layout.items
+  const source = findSlot(items, { type: "connection", id: sourceId })
+  return {
+    ...layout,
+    items: source ? insertItem(items, parentOf(source), source.index + 1, item) : [...items, item],
+  }
 }
 
 /** `DEFAULT_FOLDER_NAME`, numbered ("New folder 2", …) when a folder already uses it. */
@@ -346,18 +371,27 @@ export function cleanFolderName(name: string): string | null {
   return trimmed || null
 }
 
-/** Adds an empty, expanded folder at the end of the top level. */
+/**
+ * Adds an empty, expanded folder at the end of folder `parent`, or of the top level for `null`.
+ * The parent is expanded so the new folder shows. Nothing changes where the new folder would
+ * sit deeper than `MAX_FOLDER_DEPTH`.
+ */
 export function createFolder(
   layout: ConnectionLayout,
   id: FolderId,
   name: string,
+  parent: FolderId | null = null,
 ): ConnectionLayout {
   const clean = cleanFolderName(name) ?? newFolderName(layout)
   if (layout.folders.some((f) => f.id === id)) return layout
+  const children = childrenOf(layout.items, parent)
+  const around = nesting(layout.items, parent)
+  if (!children || around === null || around + 1 > MAX_FOLDER_DEPTH) return layout
+  const folders = layout.folders.map((f) => (f.id === parent ? { ...f, collapsed: false } : f))
   return {
     ...layout,
-    folders: [...layout.folders, { id, name: clean, collapsed: false }],
-    items: [...layout.items, { type: "folder", id, children: [] }],
+    folders: [...folders, { id, name: clean, collapsed: false }],
+    items: insertItem(layout.items, parent, children.length, { type: "folder", id, children: [] }),
   }
 }
 
@@ -388,28 +422,55 @@ export function setFolderCollapsed(
   return updateFolder(layout, id, { collapsed })
 }
 
-/** Removes a folder; its connections take its place at the top level, in order. */
+/** Removes a folder; what it holds, subfolders included, takes its place in its parent, in order. */
 export function deleteFolder(layout: ConnectionLayout, id: FolderId): ConnectionLayout {
   if (!layout.folders.some((f) => f.id === id)) return layout
+  const unwrap = (items: readonly LayoutItem[]): LayoutItem[] =>
+    items.flatMap((item): LayoutItem[] => {
+      if (item.type !== "folder") return [item]
+      return item.id === id ? unwrap(item.children) : [{ ...item, children: unwrap(item.children) }]
+    })
   return {
     ...layout,
     folders: layout.folders.filter((f) => f.id !== id),
-    items: layout.items.flatMap((item): LayoutItem[] =>
-      item.type === "folder" && item.id === id
-        ? item.children.map((child) => ({ type: "connection", id: child }))
-        : [item],
-    ),
+    items: unwrap(layout.items),
   }
 }
 
-/** A sidebar row group: a top-level connection, or a folder with its connections. */
+/** A placed folder and the names of the folders from the top level down to it, its own last. */
+export interface FolderPath {
+  folder: LayoutFolder
+  names: readonly string[]
+}
+
+/** Every placed folder of a reconciled layout in tree order, with its path. */
+export function folderPaths(layout: ConnectionLayout): FolderPath[] {
+  const folders = new Map(layout.folders.map((f) => [f.id, f]))
+  const walk = (items: readonly LayoutItem[], names: readonly string[]): FolderPath[] =>
+    items.flatMap((item) => {
+      const folder = item.type === "folder" ? folders.get(item.id) : undefined
+      if (item.type !== "folder" || !folder) return []
+      const path = [...names, folder.name]
+      return [{ folder, names: path }, ...walk(item.children, path)]
+    })
+  return walk(layout.items, [])
+}
+
+/** A sidebar row: a connection, or a folder with the rows inside it. */
 export type LayoutEntry =
   | { type: "connection"; config: ConnectionConfig }
-  | { type: "folder"; folder: LayoutFolder; connections: readonly ConnectionConfig[] }
+  | {
+      type: "folder"
+      folder: LayoutFolder
+      children: readonly LayoutEntry[]
+      /** Connections in the folder and its subfolders. */
+      count: number
+    }
 
 /**
  * What the sidebar shows for a reconciled layout. With `matches`, only matching connections are
- * kept, and folders without any are hidden; without it every folder shows, empty ones too.
+ * kept, with the folders around them, and folders without any are hidden; without it every
+ * folder shows, empty ones too.
  */
 export function layoutEntries(
   layout: ConnectionLayout,
@@ -418,20 +479,23 @@ export function layoutEntries(
 ): LayoutEntry[] {
   const byId = new Map(connections.map((c) => [c.id, c]))
   const folders = new Map(layout.folders.map((f) => [f.id, f]))
-  const pick = (ids: readonly ConnectionId[]) =>
-    ids.flatMap((id) => {
-      const config = byId.get(id)
-      return config && (!matches || matches(config)) ? [config] : []
+  const entries = (items: readonly LayoutItem[]): LayoutEntry[] =>
+    items.flatMap((item): LayoutEntry[] => {
+      if (item.type === "connection") {
+        const config = byId.get(item.id)
+        return config && (!matches || matches(config)) ? [{ type: "connection", config }] : []
+      }
+      const folder = folders.get(item.id)
+      if (!folder) return []
+      const children = entries(item.children)
+      const count = children.reduce(
+        (sum, child) => sum + (child.type === "folder" ? child.count : 1),
+        0,
+      )
+      if (matches && count === 0) return []
+      return [{ type: "folder", folder, children, count }]
     })
-  return layout.items.flatMap((item): LayoutEntry[] => {
-    if (item.type === "connection") {
-      return pick([item.id]).map((config) => ({ type: "connection", config }))
-    }
-    const folder = folders.get(item.id)
-    const children = pick(item.children)
-    if (!folder || (matches && children.length === 0)) return []
-    return [{ type: "folder", folder, connections: children }]
-  })
+  return entries(layout.items)
 }
 
 export const connectionLayoutApi = {
