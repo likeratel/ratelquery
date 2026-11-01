@@ -18,7 +18,9 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# "unbounded_depth" only lifts serde_json's own recursion counter (it adds no crate); see
+# ConnectionLayoutStore::load, which bounds the real nesting itself before relying on it.
+serde_json = { version = "1", features = ["unbounded_depth"] }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "mysql", "chrono", "json", "rust_decimal", "bigdecimal", "time", "uuid"] }
