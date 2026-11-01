@@ -15,7 +15,14 @@ import {
 import { jsonAt, pathKey } from "./dynamoPath"
 import { MAX_TREE_DEPTH, treeNode, type TreeNode, type TreeValue } from "./dynamoTree"
 import type { KeyRole } from "./dynamoView"
-import { isMac, matchesShortcut, parseShortcut, type KeyLike } from "./shortcuts"
+import {
+  isImeComposing,
+  isMac,
+  matchesShortcut,
+  parseShortcut,
+  type ImeKeyLike,
+  type KeyLike,
+} from "./shortcuts"
 
 /**
  * How the item panel's tree shows and edits its rows: where a row sits (attribute, map, list,
@@ -175,14 +182,14 @@ export const TREE_EDIT_SHORTCUTS = {
 } as const
 
 /** A keydown, native or React's `nativeEvent`, with its IME composition state. */
-export type TreeKeyEvent = KeyLike & { isComposing: boolean }
+export type TreeKeyEvent = KeyLike & ImeKeyLike
 
 /**
  * Whether a key on a focused value opens its field: bare Enter or F2 only. Mod+Enter and
  * Shift+Enter belong to the app (Run), and a key that ends an IME composition to the IME.
  */
 export function startsTreeEdit(event: TreeKeyEvent, mac = isMac()): boolean {
-  if (event.isComposing) return false
+  if (isImeComposing(event)) return false
   return (
     matchesShortcut(event, TREE_EDIT_SHORTCUTS.edit, mac) ||
     matchesShortcut(event, TREE_EDIT_SHORTCUTS.editAlt, mac)
@@ -198,7 +205,7 @@ export function treeFieldKey(
   event: TreeKeyEvent,
   mac = isMac(),
 ): "composing" | "commit" | "cancel" | null {
-  if (event.isComposing) return "composing"
+  if (isImeComposing(event)) return "composing"
   if (matchesShortcut(event, TREE_EDIT_SHORTCUTS.commit, mac)) return "commit"
   if (matchesShortcut(event, TREE_EDIT_SHORTCUTS.cancel, mac)) return "cancel"
   return null

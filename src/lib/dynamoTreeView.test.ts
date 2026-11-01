@@ -229,7 +229,9 @@ describe("isChanged and isConflict", () => {
 
 const press = (
   code: string,
-  mods: Partial<Record<"meta" | "ctrl" | "shift" | "alt" | "composing", boolean>> = {},
+  mods: Partial<
+    Record<"meta" | "ctrl" | "shift" | "alt" | "composing" | "webkitEnd", boolean>
+  > = {},
 ) => ({
   code,
   metaKey: mods.meta ?? false,
@@ -237,6 +239,8 @@ const press = (
   shiftKey: mods.shift ?? false,
   altKey: mods.alt ?? false,
   isComposing: mods.composing ?? false,
+  // WebKit fires compositionend first, so the key that ends a composition has only keyCode 229.
+  keyCode: mods.webkitEnd ? 229 : code === "Escape" ? 27 : code.endsWith("Enter") ? 13 : 0,
 })
 
 describe("startsTreeEdit", () => {
@@ -262,6 +266,7 @@ describe("startsTreeEdit", () => {
   it("leaves a key that ends an IME composition to the IME", () => {
     expect(startsTreeEdit(press("Enter", { composing: true }), true)).toBe(false)
     expect(startsTreeEdit(press("F2", { composing: true }), true)).toBe(false)
+    expect(startsTreeEdit(press("Enter", { webkitEnd: true }), true)).toBe(false)
   })
 
   it("ignores other keys", () => {
@@ -283,6 +288,15 @@ describe("treeFieldKey", () => {
     expect(treeFieldKey(press("Enter", { composing: true }), true)).toBe("composing")
     expect(treeFieldKey(press("NumpadEnter", { composing: true }), false)).toBe("composing")
     expect(treeFieldKey(press("Escape", { composing: true }), true)).toBe("composing")
+  })
+
+  it("treats the WebKit keydown that ends a composition as the IME's, not a commit", () => {
+    // Safari and WKWebView (Tauri on macOS) send it after compositionend: isComposing false,
+    // keyCode 229 (WebKit bug 165004).
+    expect(treeFieldKey(press("Enter", { webkitEnd: true }), true)).toBe("composing")
+    expect(treeFieldKey(press("NumpadEnter", { webkitEnd: true }), true)).toBe("composing")
+    expect(treeFieldKey(press("Escape", { webkitEnd: true }), true)).toBe("composing")
+    expect(treeFieldKey({ ...press("Enter"), keyCode: 13 }, true)).toBe("commit")
   })
 
   it("leaves Enter with Mod or Ctrl held to the app's shortcuts", () => {

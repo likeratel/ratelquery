@@ -7,6 +7,7 @@ import {
 } from "@codemirror/autocomplete"
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
 import { runPhysicalEditingShortcut } from "./physicalKeys"
+import { isImeComposing } from "../../lib/shortcuts"
 import { MySQL, PostgreSQL, sql, type SQLDialect } from "@codemirror/lang-sql"
 import { bracketMatching, indentOnInput, syntaxHighlighting } from "@codemirror/language"
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search"
@@ -159,7 +160,7 @@ export function SqlEditor({
       // Keys that build an IME composition (Korean, Japanese) belong to the editor. Key repeat
       // still reaches the handler so a held shortcut stays claimed; the app shortcut handler
       // ignores repeats instead of running the action again.
-      if (event.isComposing) return
+      if (isImeComposing(event)) return
       if (runPhysicalEditingShortcut(event, view)) {
         event.preventDefault()
         event.stopPropagation()

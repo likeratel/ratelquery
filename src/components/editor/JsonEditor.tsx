@@ -2,6 +2,7 @@ import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete"
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands"
 import { json } from "@codemirror/lang-json"
 import { runPhysicalEditingShortcut } from "./physicalKeys"
+import { isImeComposing } from "../../lib/shortcuts"
 import {
   bracketMatching,
   foldedRanges,
@@ -140,7 +141,7 @@ export function JsonEditor({
     const onKeyDown = (event: KeyboardEvent) => {
       // Keys that build an IME composition belong to the editor; repeats are left to the
       // shortcut handler, which claims them without running the action again.
-      if (event.isComposing) return
+      if (isImeComposing(event)) return
       if (runPhysicalEditingShortcut(event, view)) {
         event.preventDefault()
         event.stopPropagation()

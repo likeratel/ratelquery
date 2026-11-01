@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { NULL_INPUT } from "../../lib/cellEdit"
-import { matchesShortcut, parseShortcut } from "../../lib/shortcuts"
+import { isImeComposing, matchesShortcut, parseShortcut } from "../../lib/shortcuts"
 import { commitOnce, type CommitGate } from "./commitGate"
 
 /** Same physical key as the app's Apply shortcut. */
@@ -36,7 +36,7 @@ export function CellEditor({ initial, onCommit, onCancel, onTab, hint }: CellEdi
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // Enter that confirms an IME composition (Korean, Japanese) must not commit the cell.
-    if (event.nativeEvent.isComposing) return
+    if (isImeComposing(event.nativeEvent)) return
     if (matchesShortcut(event, APPLY_SHORTCUT)) {
       // Record the typed value first, then let the event reach the app shortcut so Apply
       // includes it. An invalid value keeps the editor open and stops the apply.

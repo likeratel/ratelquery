@@ -1,4 +1,11 @@
-import { isMac, matchesShortcut, parseShortcut, type KeyLike } from "./shortcuts"
+import {
+  isImeComposing,
+  isMac,
+  matchesShortcut,
+  parseShortcut,
+  type ImeKeyLike,
+  type KeyLike,
+} from "./shortcuts"
 
 /** Mod+F, matched on the physical F key so it works under any input source. */
 export const FIND_SHORTCUT = parseShortcut("Mod+F")
@@ -33,7 +40,7 @@ export interface FindScreen {
  */
 export type FindTarget = "ignore" | "find" | "json" | "tables"
 
-type FindKeyEvent = KeyLike & { isComposing: boolean; defaultPrevented: boolean }
+type FindKeyEvent = KeyLike & ImeKeyLike & { defaultPrevented: boolean }
 
 /** Which part of the window Mod+F goes to, like Cmd+F in a browser. */
 export function findShortcutTarget(
@@ -43,7 +50,7 @@ export function findShortcutTarget(
   mac = isMac(),
 ): FindTarget {
   // A handled key belongs to whoever handled it: CodeMirror marks its own Mod+F that way.
-  if (event.isComposing || event.defaultPrevented) return "ignore"
+  if (isImeComposing(event) || event.defaultPrevented) return "ignore"
   if (!matchesShortcut(event, FIND_SHORTCUT, mac)) return "ignore"
   if (screen.modalOpen || !screen.dynamo || focus.editor) return "ignore"
   if (focus.findBar) return "find"

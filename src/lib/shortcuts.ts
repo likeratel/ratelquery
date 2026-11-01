@@ -66,6 +66,23 @@ function keyToCode(key: string): string {
   return key
 }
 
+/** A keydown's IME state: `KeyboardEvent.isComposing`, and `keyCode` where the event has it. */
+export interface ImeKeyLike {
+  isComposing: boolean
+  keyCode?: number
+}
+
+/**
+ * True for a key that belongs to an IME composition (Hangul, kana, pinyin) rather than to the
+ * app. Safari and WKWebView, which Tauri uses on macOS, fire `compositionend` before the keydown
+ * of the Enter or Esc that ends a composition (WebKit bug 165004), so that keydown arrives with
+ * `isComposing: false`; it still carries `keyCode` 229, the "IME is processing" code, so either
+ * one marks the key as the IME's.
+ */
+export function isImeComposing(event: ImeKeyLike): boolean {
+  return event.isComposing || event.keyCode === 229
+}
+
 export function isMac(platform: string = navigator.platform): boolean {
   return /mac|iphone|ipad/i.test(platform)
 }

@@ -24,6 +24,7 @@ describe("newConnectionAction", () => {
 
   it("ignores IME compositions, handled events, repeats and other keys", () => {
     expect(newConnectionAction(press({ isComposing: true }), false, true)).toBe("ignore")
+    expect(newConnectionAction(press({ keyCode: 229 }), false, true)).toBe("ignore")
     expect(newConnectionAction(press({ defaultPrevented: true }), false, true)).toBe("ignore")
     expect(newConnectionAction(press({ repeat: true }), false, true)).toBe("ignore")
     expect(newConnectionAction(press({ code: "KeyM" }), false, true)).toBe("ignore")

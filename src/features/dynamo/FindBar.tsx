@@ -2,7 +2,7 @@ import { ChevronDown, ChevronUp, ListFilter, Search, X } from "lucide-react"
 import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react"
 import { asTextQuery, escapeFind, REVEAL_LIMIT, type FindBarState } from "../../lib/dynamoSearch"
 import type { FindChoices } from "../../lib/dynamoTabs"
-import { formatShortcut, matchesShortcut } from "../../lib/shortcuts"
+import { formatShortcut, isImeComposing, matchesShortcut } from "../../lib/shortcuts"
 import { setFindChoices } from "./actions"
 import { findBarFocused, setFindBar, useItemFind } from "./findStore"
 import { DYNAMO_SHORTCUTS } from "./shortcuts"
@@ -68,7 +68,7 @@ export function FindBar(props: FindBarProps) {
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     // Enter while composing Hangul (or any IME text) finishes the syllable, not a search step.
-    if (event.nativeEvent.isComposing) return
+    if (isImeComposing(event.nativeEvent)) return
     if (matchesShortcut(event, DYNAMO_SHORTCUTS.findPrevious)) onStep(-1)
     else if (matchesShortcut(event, DYNAMO_SHORTCUTS.findNext)) onStep(1)
     else if (matchesShortcut(event, DYNAMO_SHORTCUTS.closeEditor)) {

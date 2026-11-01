@@ -18,7 +18,7 @@ import { findLossyAttributes, formatItem, type JsonMode } from "../../lib/dynamo
 import { findIndex, jsonSearchText, resolvePath } from "../../lib/dynamoSearch"
 import { itemColumns } from "../../lib/dynamoView"
 import { jsonModeFor, type DetailView, type DynamoTab } from "../../lib/dynamoTabs"
-import { formatShortcut, matchesShortcut } from "../../lib/shortcuts"
+import { formatShortcut, isImeComposing, matchesShortcut } from "../../lib/shortcuts"
 import { APP_SHORTCUTS } from "../query/appShortcuts"
 import {
   applyFromPanel,
@@ -209,7 +209,7 @@ export function ItemDetail({ tab, item, schema, onEdit, onClose }: ItemDetailPro
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
     // A key that ends an IME composition (in a tree field) belongs to the IME, as in the Shell.
-    if (event.defaultPrevented || event.nativeEvent.isComposing) return
+    if (event.defaultPrevented || isImeComposing(event.nativeEvent)) return
     if (matchesShortcut(event, APP_SHORTCUTS.apply)) {
       // Here Mod+S reviews, then applies, this item's changes only; elsewhere it applies all.
       // An open tree field has already staged its value, or kept the event when it couldn't.

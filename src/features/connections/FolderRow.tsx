@@ -1,6 +1,7 @@
 import { Ellipsis, Folder, FolderOpen, FolderPlus, Pencil, Trash } from "lucide-react"
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react"
 import { Menu } from "../../components/ui"
+import { isImeComposing } from "../../lib/shortcuts"
 import {
   deleteFolder,
   MAX_FOLDER_DEPTH,
@@ -39,7 +40,7 @@ function RenameInput({
     onDone(name)
   }
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.nativeEvent.isComposing) return
+    if (isImeComposing(event.nativeEvent)) return
     if (event.code === "Enter" || event.code === "NumpadEnter") {
       event.preventDefault()
       finish(value)

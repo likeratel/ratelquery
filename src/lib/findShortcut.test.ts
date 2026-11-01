@@ -8,6 +8,7 @@ const modF = {
   shiftKey: false,
   altKey: false,
   isComposing: false,
+  keyCode: 70,
   defaultPrevented: false,
 }
 const nowhere: FindFocus = { editor: false, findBar: false, textField: false }
@@ -57,6 +58,8 @@ describe("findShortcutTarget", () => {
 
   it("matches the physical F key only, with the platform modifier", () => {
     expect(target({}, {}, { isComposing: true })).toBe("ignore")
+    // WebKit: the key that ends a composition comes after compositionend, with keyCode 229.
+    expect(target({}, {}, { keyCode: 229 })).toBe("ignore")
     expect(target({}, {}, { code: "KeyG" })).toBe("ignore")
     expect(target({}, {}, { shiftKey: true })).toBe("ignore")
     expect(target({}, {}, { metaKey: false, ctrlKey: true })).toBe("ignore")
