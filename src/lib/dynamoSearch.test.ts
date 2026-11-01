@@ -28,7 +28,13 @@ import {
   visibleRanges,
   type FindOptions,
 } from "./dynamoSearch"
-import { DEFAULT_TREE_EXPANSION, isExpanded, isTable, type TreeExpansion } from "./dynamoTree"
+import {
+  DEFAULT_TREE_EXPANSION,
+  isExpanded,
+  isTable,
+  MAX_TREE_DEPTH,
+  type TreeExpansion,
+} from "./dynamoTree"
 
 const item: Item = {
   pk: { S: "user#1" },
@@ -461,5 +467,25 @@ describe("stepMatch / escapeFind", () => {
     const cleared = escapeFind({ open: true, query: "abc" })
     expect(cleared).toEqual({ open: true, query: "" })
     expect(escapeFind(cleared)).toEqual({ open: false, query: "" })
+  })
+})
+
+describe("find in JSON numbers and deep JSON", () => {
+  it("matches a JSON number by the digits its string stores", () => {
+    const stored: Item = { doc: { S: '{"big":1000000000000000000000,"price":1.50}' } }
+    const index = findIndex(stored, ["doc"])
+    const hits = (query: string) =>
+      findInItem(index, query, DEFAULT_FIND_OPTIONS).hits.map((hit) => hit.path)
+    expect(hits("1000000000000000000000")).toEqual([["doc", "big"]])
+    expect(hits("1.50")).toEqual([["doc", "price"]])
+    expect(hits("1e+21")).toEqual([])
+  })
+
+  it("indexes no rows below the deepest level the tree shows", () => {
+    const depth = MAX_TREE_DEPTH + 50
+    const deep: Item = { doc: { S: "[".repeat(depth) + '"needle"' + "]".repeat(depth) } }
+    const index = findIndex(deep, ["doc"])
+    expect(Math.max(...index.map((entry) => entry.path.length))).toBe(MAX_TREE_DEPTH)
+    expect(findInItem(index, "needle", DEFAULT_FIND_OPTIONS).hits).toEqual([])
   })
 })

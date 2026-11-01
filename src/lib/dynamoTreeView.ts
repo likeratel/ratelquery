@@ -13,7 +13,7 @@ import {
   type JsonInString,
 } from "./dynamoJson"
 import { jsonAt, pathKey } from "./dynamoPath"
-import { treeNode, type TreeNode, type TreeValue } from "./dynamoTree"
+import { MAX_TREE_DEPTH, treeNode, type TreeNode, type TreeValue } from "./dynamoTree"
 import type { KeyRole } from "./dynamoView"
 import { isMac, matchesShortcut, parseShortcut, type KeyLike } from "./shortcuts"
 
@@ -28,6 +28,8 @@ export interface JsonHost {
   path: readonly PathSegment[]
   /** Why the JSON is read-only, or null when its values can be edited. */
   readOnly: string | null
+  /** Numbers as written in the string, where that differs from the parsed number's text. */
+  numbers: ReadonlyMap<string, string>
 }
 
 /** Where a row sits in the item. */
@@ -70,8 +72,36 @@ export function loadedJson(
 /** The JSON its members sit in: the string at `place` when it holds JSON, else its own. */
 export function membersHost(place: Place, node: TreeNode): JsonHost | null {
   return node.json
-    ? { path: place.path, readOnly: jsonStringReadOnlyReason(node.json) }
+    ? {
+        path: place.path,
+        readOnly: jsonStringReadOnlyReason(node.json),
+        numbers: node.json.numbers,
+      }
     : place.host
+}
+
+/**
+ * A JSON number as its string has it, when that differs from how JavaScript prints it:
+ * `1000000000000000000000` rather than `1e+21`, `1.50` rather than `1.5`. Such JSON is
+ * read-only (it isn't compact), so the stored text is what the tree shows, searches and copies.
+ */
+export function numberSource(place: Place, value: TreeValue): string | undefined {
+  const host = place.host
+  if (!host || value.kind !== "json" || typeof value.value !== "number") return undefined
+  return host.numbers.get(pathKey(place.path.slice(host.path.length)))
+}
+
+/**
+ * The node a row shows: `treeNode`, with a JSON number's stored text (see `numberSource`), and
+ * a map, list or JSON container at MAX_TREE_DEPTH as a summary with no members.
+ */
+export function rowNode(place: Place, value: TreeValue): TreeNode {
+  const node = treeNode(value)
+  if (node.children && place.path.length >= MAX_TREE_DEPTH) {
+    return { ...node, children: null, text: `${node.text}, nested too deep to show` }
+  }
+  const source = numberSource(place, value)
+  return source === undefined ? node : { ...node, text: source }
 }
 
 /** Where the member `segment` of the row at `place` (holding `value`, shown as `node`) sits. */

@@ -4,6 +4,7 @@ import {
   attributeTag,
   findLossyAttributes,
   jsonInString,
+  MAX_DOCUMENT_DEPTH,
   wireToPlain,
   type JsonInString,
   type PlainValue,
@@ -244,6 +245,13 @@ export function toggleExpanded(
   return { ...expansion, open: { ...expansion.open, [pathKey(path)]: open } }
 }
 
+/**
+ * Deepest path (attribute name included) the tree shows a row for. DynamoDB stops maps and
+ * lists there, but JSON in a string can nest thousands of levels; a container at this depth
+ * shows as a summary instead of its members (see `rowNode`).
+ */
+export const MAX_TREE_DEPTH = MAX_DOCUMENT_DEPTH
+
 /** Most rows Expand all opens at once; a larger item opens only as many levels as fit. */
 export const EXPAND_LIMIT = 2000
 
@@ -261,7 +269,8 @@ export function expandAllDepth(
 ): number | null {
   let level: TreeValue[] = names.flatMap((name) => (item[name] ? [wire(item[name])] : []))
   let rows = level.length
-  for (let depth = 0; level.length > 0; depth += 1) {
+  // `level` holds the rows whose paths are `depth + 1` long; none go past MAX_TREE_DEPTH.
+  for (let depth = 0; level.length > 0 && depth + 1 < MAX_TREE_DEPTH; depth += 1) {
     const next: TreeValue[] = []
     for (const value of level) {
       for (const child of treeNode(value).children ?? []) next.push(child.value)

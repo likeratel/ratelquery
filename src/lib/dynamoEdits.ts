@@ -362,6 +362,15 @@ export function stageTreeEdit(edits: DynamoEdits, input: TreeEditInput): Result<
   if (name === schema.hash.name || name === schema.range?.name) {
     return { ok: false, error: `${name} is part of the table key; edit it in the item editor` }
   }
+  // An update path names each map key, and DynamoDB refuses an empty one there, so the write
+  // would fail on Apply; JSON keys inside a string (`jsonPath`) are only text and are fine.
+  if (path.slice(1).some((segment) => segment === "")) {
+    return {
+      ok: false,
+      error:
+        "This value is under an empty map key, which can't be edited in place; edit the item in the item editor",
+    }
+  }
   const existing = edits[keyId(key)]
   const before = startingValue(existing, item, path)
   const current = attributeAt(withPendingValues(item, existing), path)

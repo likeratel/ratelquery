@@ -232,6 +232,9 @@ export function inexactNumberLiterals(text: string): string[] {
     .filter((token) => !token.startsWith('"') && !isExactNumber(token))
 }
 
+/** DynamoDB nests maps and lists at most 32 levels deep; the item tree shows no deeper. */
+export const MAX_DOCUMENT_DEPTH = 32
+
 /** A JSON object or array stored in a string attribute. */
 export interface JsonInString {
   value: PlainObject | PlainValue[]
@@ -245,6 +248,24 @@ export interface JsonInString {
    * `JSON.stringify` of the edited value without reformatting anything else.
    */
   compact: boolean
+  /**
+   * Number literals written differently from how JavaScript prints them (`1.50`, `1e3`,
+   * `1000000000000000000000`, which prints as `1e+21`), as written, by `pathKey` of their path
+   * in the JSON (see `jsonNumberSources`). Empty when `compact`.
+   */
+  numbers: ReadonlyMap<string, string>
+}
+
+const NO_NUMBERS: ReadonlyMap<string, string> = new Map()
+
+/** `JSON.stringify(value) === text`, false for JSON nested too deep to stringify again. */
+function stringifiesTo(value: PlainValue, text: string): boolean {
+  try {
+    return JSON.stringify(value) === text
+  } catch {
+    // RangeError: thousands of levels parse fine but overflow the stack when stringified.
+    return false
+  }
 }
 
 /** The JSON a string holds when it is an object or array, otherwise null. */
@@ -255,7 +276,74 @@ export function jsonInString(text: string): JsonInString | null {
   if (!parsed.ok) return null
   const value = parsed.value as PlainObject | PlainValue[]
   const exact = inexactNumberLiterals(text).length === 0
-  return { value, exact, compact: exact && JSON.stringify(value) === text }
+  const compact = exact && stringifiesTo(value, text)
+  const numbers = exact && !compact ? jsonNumberSources(text) : NO_NUMBERS
+  return { value, exact, compact, numbers }
+}
+
+const NUMBER_AT = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y
+const STRING_AT = /"(?:[^"\\]|\\.)*"/y
+
+interface Level {
+  array: boolean
+  /** Index of the current member of an array. */
+  index: number
+  /** Key of the current member of an object. */
+  key: string
+  /** In an object, after `{` or `,`: the next string is a key. */
+  expectsKey: boolean
+}
+
+/**
+ * Number literals of the valid JSON `text` that `String(JSON.parse(literal))` writes another
+ * way (`1.50` → `1.5`, `1000000000000000000000` → `1e+21`), keyed by `pathKey` of their path in
+ * the parsed value, so the tree can show and search the number as stored. A key repeated in an
+ * object keeps its last value, as `JSON.parse` does. Paths deeper than `maxDepth` are skipped.
+ * One pass over the text, without recursion, so deeply nested JSON costs no stack.
+ */
+export function jsonNumberSources(
+  text: string,
+  maxDepth = MAX_DOCUMENT_DEPTH,
+): Map<string, string> {
+  const sources = new Map<string, string>()
+  const stack: Level[] = []
+  let at = 0
+  while (at < text.length) {
+    const c = text[at]
+    const level = stack.at(-1)
+    if (c === "{" || c === "[") {
+      stack.push({ array: c === "[", index: 0, key: "", expectsKey: c === "{" })
+      at += 1
+    } else if (c === "}" || c === "]") {
+      stack.pop()
+      at += 1
+    } else if (c === ",") {
+      if (level?.array) level.index += 1
+      else if (level) level.expectsKey = true
+      at += 1
+    } else if (c === '"') {
+      STRING_AT.lastIndex = at
+      const token = STRING_AT.exec(text)?.[0] ?? c
+      if (level && !level.array && level.expectsKey) {
+        level.key = JSON.parse(token) as string
+        level.expectsKey = false
+      }
+      at += token.length
+    } else if (c === "-" || (c >= "0" && c <= "9")) {
+      NUMBER_AT.lastIndex = at
+      const token = NUMBER_AT.exec(text)?.[0] ?? c
+      if (stack.length <= maxDepth && String(Number(token)) !== token) {
+        // Same text as `pathKey` (dynamoPath imports this module, so it isn't imported here).
+        const path = stack.map((l) => (l.array ? l.index : l.key))
+        sources.set(JSON.stringify(path), token)
+      }
+      at += token.length
+    } else {
+      // Whitespace, `:`, and the letters of true, false and null.
+      at += 1
+    }
+  }
+  return sources
 }
 
 /** Why the JSON in a string is read-only, or null when it can be edited. */

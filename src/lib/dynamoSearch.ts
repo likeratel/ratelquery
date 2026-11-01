@@ -4,6 +4,7 @@ import { parsePath, pathKey } from "./dynamoPath"
 import {
   isExpanded,
   isTable,
+  MAX_TREE_DEPTH,
   revealInTree,
   tableColumns,
   treeNode,
@@ -29,8 +30,26 @@ export interface FindEntry {
 /** Line breaks and tabs show as one space in the tree, as in the grid. */
 const flat = (text: string) => text.replace(/[\r\n\t]+/g, " ")
 
-function leafText(value: TreeValue, shown: string): string | null {
-  if (value.kind === "json") return typeof value.value === "string" ? flat(value.value) : shown
+/** The JSON in a string that a row sits in: where its path starts, and its numbers as stored. */
+interface WalkHost {
+  start: number
+  numbers: ReadonlyMap<string, string>
+}
+
+function leafText(
+  value: TreeValue,
+  shown: string,
+  path: readonly PathSegment[],
+  host: WalkHost | null,
+): string | null {
+  if (value.kind === "json") {
+    if (typeof value.value === "string") return flat(value.value)
+    // A number matches as its string has it (`1000000000000000000000`), as the tree shows it.
+    if (host && typeof value.value === "number") {
+      return host.numbers.get(pathKey(path.slice(host.start))) ?? shown
+    }
+    return shown
+  }
   const tag = attributeTag(value.value)
   // Binary shows as "(binary, n bytes)", which isn't its value.
   if (tag === "B") return null
@@ -39,14 +58,23 @@ function leafText(value: TreeValue, shown: string): string | null {
   return shown
 }
 
-function walk(value: TreeValue, path: PathSegment[], key: string | null, out: FindEntry[]) {
+function walk(
+  value: TreeValue,
+  path: PathSegment[],
+  key: string | null,
+  out: FindEntry[],
+  host: WalkHost | null,
+) {
   const node = treeNode(value)
-  out.push({ path, key, text: node.children ? null : leafText(value, node.text) })
+  out.push({ path, key, text: node.children ? null : leafText(value, node.text, path, host) })
+  // The tree shows no rows below MAX_TREE_DEPTH, so neither does the index.
+  if (path.length >= MAX_TREE_DEPTH) return
+  const inner = node.json ? { start: path.length, numbers: node.json.numbers } : host
   for (const child of node.children ?? []) {
     const segment = child.segment
     // Set members are numbered like list items, but their segment is never a map key.
     const childKey = typeof segment === "string" ? segment : null
-    walk(child.value, [...path, segment], childKey, out)
+    walk(child.value, [...path, segment], childKey, out, inner)
   }
 }
 
@@ -63,7 +91,7 @@ export function findIndex(item: Item, names: readonly string[]): readonly FindEn
   const entries: FindEntry[] = []
   for (const name of names) {
     const value = item[name]
-    if (value) walk({ kind: "wire", value }, [name], name, entries)
+    if (value) walk({ kind: "wire", value }, [name], name, entries, null)
   }
   indexes.set(item, { order, entries })
   return entries

@@ -3,7 +3,7 @@ import { MAX_DISPLAY_CHARS } from "./cellFormat"
 import type { AttributeValue, PathSegment } from "./dynamo"
 import type { PendingAttribute, PendingItemEdit } from "./dynamoEdits"
 import { pathKey } from "./dynamoPath"
-import { treeNode, type TreeValue } from "./dynamoTree"
+import { MAX_TREE_DEPTH, treeNode, type TreeValue } from "./dynamoTree"
 import {
   canEdit,
   editText,
@@ -12,6 +12,8 @@ import {
   loadedJson,
   memberPlace,
   membersHost,
+  numberSource,
+  rowNode,
   shownLength,
   startsTreeEdit,
   treeFieldKey,
@@ -76,7 +78,7 @@ describe("memberPlace", () => {
   it("puts JSON members in the string that holds them, with why it is read-only", () => {
     const compact = placeAt("doc", { S: '{"a":{"b":1}}' }, ["a", "b"]).place
     expect(compact.path).toEqual(["doc", "a", "b"])
-    expect(compact.host).toEqual({ path: ["doc"], readOnly: null })
+    expect(compact.host).toEqual({ path: ["doc"], readOnly: null, numbers: new Map() })
     const spaced = placeAt("doc", { S: '{ "a": 1 }' }, ["a"]).place
     expect(spaced.host?.readOnly).toMatch(/compact/)
   })
@@ -85,10 +87,46 @@ describe("memberPlace", () => {
 describe("membersHost", () => {
   it("is the row itself when its string holds JSON, else the row's own host", () => {
     const value = w({ S: "[1]" })
-    expect(membersHost(top("doc"), treeNode(value))).toEqual({ path: ["doc"], readOnly: null })
+    expect(membersHost(top("doc"), treeNode(value))).toEqual({
+      path: ["doc"],
+      readOnly: null,
+      numbers: new Map(),
+    })
     expect(membersHost(top("m"), treeNode(w({ M: {} })))).toBeNull()
   })
 })
+
+describe("rowNode", () => {
+  it("shows a JSON number as its string stores it, and copies and searches it so", () => {
+    const stored = { S: '{"big":1000000000000000000000,"small":1.50,"n":2}' }
+    const big = placeAt("doc", stored, ["big"])
+    expect(treeNode(big.value).text).toBe("1e+21")
+    expect(rowNode(big.place, big.value).text).toBe("1000000000000000000000")
+    expect(numberSource(big.place, big.value)).toBe("1000000000000000000000")
+    expect(rowNode(...args(placeAt("doc", stored, ["small"]))).text).toBe("1.50")
+    expect(rowNode(...args(placeAt("doc", stored, ["n"]))).text).toBe("2")
+    // Such JSON isn't compact, so it stays read-only.
+    expect(big.place.host?.readOnly).toMatch(/compact/)
+    expect(numberSource(top("n"), w({ N: "1.50" }))).toBeUndefined()
+  })
+
+  it("shows a container at the deepest level as a summary without members", () => {
+    const depth = MAX_TREE_DEPTH + 10
+    const text = "[".repeat(depth) + "1" + "]".repeat(depth)
+    const segments = Array.from({ length: MAX_TREE_DEPTH - 2 }, () => 0)
+    const last = placeAt("doc", { S: text }, segments)
+    expect(last.place.path).toHaveLength(MAX_TREE_DEPTH - 1)
+    expect(rowNode(last.place, last.value).children).toHaveLength(1)
+    const deepest = placeAt("doc", { S: text }, [...segments, 0])
+    expect(deepest.place.path).toHaveLength(MAX_TREE_DEPTH)
+    const node = rowNode(deepest.place, deepest.value)
+    expect(node.children).toBeNull()
+    expect(node.text).toBe("1 item, nested too deep to show")
+    expect(canEdit(view(), deepest.place, deepest.value)).toBe(false)
+  })
+})
+
+const args = ({ place, value }: { place: Place; value: TreeValue }) => [place, value] as const
 
 describe("editText and shownLength", () => {
   it("starts a field with the stored value, not the displayed one", () => {

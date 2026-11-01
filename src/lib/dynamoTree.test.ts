@@ -7,6 +7,7 @@ import {
   expandAllDepth,
   isExpanded,
   isTable,
+  MAX_TREE_DEPTH,
   memberOf,
   revealInTree,
   setAllExpanded,
@@ -185,6 +186,13 @@ describe("expand all on a large item", () => {
     const item = { doc: { S: json } }
     expect(expandAllDepth(item, ["doc"], 61)).toBeNull()
     expect(expandAllDepth(item, ["doc"], 60)).toBe(1)
+  })
+
+  it("counts no rows below the deepest level the tree shows", () => {
+    const depth = MAX_TREE_DEPTH + 100
+    const item = { doc: { S: "[".repeat(depth) + "1" + "]".repeat(depth) } }
+    expect(expandAllDepth(item, ["doc"], MAX_TREE_DEPTH)).toBeNull()
+    expect(expandAllDepth(item, ["doc"], MAX_TREE_DEPTH - 1)).toBe(MAX_TREE_DEPTH - 2)
   })
 
   it("stops counting at the limit", () => {

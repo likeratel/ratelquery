@@ -284,6 +284,21 @@ describe("stageTreeEdit", () => {
     expect(staged(edits, ["senderService", "numbers", 0, "n"], "1.0")).toEqual(EMPTY_DYNAMO_EDITS)
   })
 
+  it("refuses a value under an empty map key, which an update path can't name", () => {
+    const keyed: Item = {
+      pk: { S: "u1" },
+      sk: { N: "1" },
+      m: { M: { "": { M: { a: { S: "x" } } }, b: { S: '{"":{"c":1}}' } } },
+    }
+    const stage = (path: PathSegment[], text: string, jsonPath: PathSegment[] = []) =>
+      stageTreeEdit(EMPTY_DYNAMO_EDITS, { item: keyed, schema, path, jsonPath, text })
+    const refused = stage(["m", "", "a"], "y")
+    expect(refused.ok).toBe(false)
+    expect(!refused.ok && refused.error).toMatch(/empty map key/)
+    // An empty key inside JSON stored in a string is only text, and is fine.
+    expect(stage(["m", "b"], "2", ["", "c"]).ok).toBe(true)
+  })
+
   it("refuses keys, containers, NULL and values that are gone", () => {
     expect(tree(EMPTY_DYNAMO_EDITS, ["pk"], "u2").ok).toBe(false)
     expect(tree(EMPTY_DYNAMO_EDITS, ["senderService", "numbers"], "x").ok).toBe(false)

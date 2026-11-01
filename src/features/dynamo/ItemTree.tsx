@@ -36,7 +36,6 @@ import {
   isTable,
   memberOf,
   tableColumns,
-  treeNode,
   type TreeExpansion,
   type TreeNode,
   type TreeValue,
@@ -49,6 +48,8 @@ import {
   loadedJson,
   memberPlace,
   membersHost,
+  numberSource,
+  rowNode,
   shownLength,
   startsTreeEdit,
   treeFieldKey,
@@ -261,7 +262,7 @@ interface RowProps {
 
 /** One value, its type and the controls for it, then its members while it is open. */
 function TreeRow({ ctx, place, label, value, depth }: RowProps) {
-  const node = treeNode(value)
+  const node = rowNode(place, value)
   const holdsJson = node.json !== null
   const children = node.children
   const open = children !== null && isExpanded(ctx.expansion, place.path, holdsJson)
@@ -364,7 +365,7 @@ function TreeRow({ ctx, place, label, value, depth }: RowProps) {
             className="ui-icon-button"
             aria-label={`Copy value of ${label}`}
             title="Copy value"
-            onClick={() => copyToClipboard(copyValueText(value))}
+            onClick={() => copyToClipboard(numberSource(place, value) ?? copyValueText(value))}
           >
             <Copy size={12} strokeWidth={2} />
           </button>
@@ -410,7 +411,7 @@ function ObjectTable({ ctx, place, columns, items, childPlace, depth }: TablePro
   const cell = (row: Place, column: string, value: TreeValue | undefined): ReactNode => {
     if (!value) return <span className="dyn-tree__missing">–</span>
     const cellPlace: Place = { ...row, path: [...row.path, column] }
-    const node = treeNode(value)
+    const node = rowNode(cellPlace, value)
     if (node.children) {
       return (
         <button
@@ -462,10 +463,11 @@ function ObjectTable({ ctx, place, columns, items, childPlace, depth }: TablePro
                   const member = memberOf(value, column)
                   const cellPath = [...row.path, column]
                   const cellKey = pathKey(cellPath)
+                  const cellPlace = { ...row, path: cellPath }
                   const changed =
                     member !== undefined &&
-                    !treeNode(member).children &&
-                    isChanged(ctx, { ...row, path: cellPath }, member)
+                    !rowNode(cellPlace, member).children &&
+                    isChanged(ctx, cellPlace, member)
                   // A cell matches itself, or holds a match inside a map or list it shows.
                   const hit = hitAt(ctx, cellPath)
                   const match = hit !== undefined || ctx.find?.above.has(cellKey)
