@@ -6,7 +6,12 @@ import {
   type PendingAttribute,
   type PendingItemEdit,
 } from "./dynamoEdits"
-import { attributeTag, jsonInString, jsonStringReadOnlyReason } from "./dynamoJson"
+import {
+  attributeTag,
+  jsonInString,
+  jsonStringReadOnlyReason,
+  type JsonInString,
+} from "./dynamoJson"
 import { jsonAt, pathKey } from "./dynamoPath"
 import { treeNode, type TreeNode, type TreeValue } from "./dynamoTree"
 import type { KeyRole } from "./dynamoView"
@@ -43,6 +48,23 @@ export interface TreeEditView {
   conflicts: ReadonlySet<PendingAttribute>
   /** False while changes are applied, the key schema is unknown or the item has no key. */
   editable: boolean
+  /** From `loadedJson(edit)`, built once per edit rather than once per JSON leaf. */
+  loaded: ReadonlyMap<string, JsonInString | null>
+}
+
+/**
+ * The JSON each pending change's string held as loaded (null when it held none), by `pathKey`
+ * of the string. Changes whose value wasn't a string have no entry.
+ */
+export function loadedJson(
+  edit: PendingItemEdit | undefined,
+): ReadonlyMap<string, JsonInString | null> {
+  const loaded = new Map<string, JsonInString | null>()
+  for (const [key, change] of Object.entries(edit?.changes ?? {})) {
+    const before = change.before
+    if (before && attributeTag(before) === "S") loaded.set(key, jsonInString(String(before.S)))
+  }
+  return loaded
 }
 
 /** The JSON its members sit in: the string at `place` when it holds JSON, else its own. */
@@ -92,9 +114,9 @@ export function canEdit(view: TreeEditView, place: Place, value: TreeValue): boo
 /** A leaf inside JSON differs from the string it was loaded from. */
 export function jsonLeafChanged(view: TreeEditView, place: Place, value: TreeValue): boolean {
   const host = place.host
-  const before = host && view.edit?.changes[pathKey(host.path)]?.before
-  if (!host || !before || attributeTag(before) !== "S") return false
-  const loaded = jsonInString(String(before.S))
+  const key = host && pathKey(host.path)
+  if (!host || !key || !view.loaded.has(key)) return false
+  const loaded = view.loaded.get(key)
   return !loaded || jsonAt(loaded.value, place.path.slice(host.path.length)) !== value.value
 }
 

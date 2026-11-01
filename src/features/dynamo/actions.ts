@@ -152,8 +152,14 @@ export function setFindChoices(tabId: string, choices: Partial<FindChoices>): vo
 const patchTree = (tabId: string, update: (tree: TreeExpansion) => TreeExpansion) =>
   patch(tabId, (t) => updatePanel(t, { tree: update(t.panel.tree) }))
 
-export function toggleTreeNode(tabId: string, path: readonly PathSegment[], holdsJson: boolean) {
-  patchTree(tabId, (tree) => toggleExpanded(tree, path, holdsJson))
+/** Opens or closes the node at `path` as `shown` (the tree as it shows now) has it. */
+export function toggleTreeNode(
+  tabId: string,
+  path: readonly PathSegment[],
+  holdsJson: boolean,
+  shown?: TreeExpansion,
+) {
+  patchTree(tabId, (tree) => toggleExpanded(tree, path, holdsJson, shown))
 }
 
 export function expandTree(tabId: string, open: boolean): void {

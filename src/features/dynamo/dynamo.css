@@ -506,6 +506,12 @@
   border-bottom: 1px solid var(--line);
 }
 
+.dyn-tree__capped {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
 .dyn-tree {
   flex: 1;
   min-height: 0;

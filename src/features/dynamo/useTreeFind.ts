@@ -35,7 +35,7 @@ import {
   type SearchOverlay,
 } from "../../lib/dynamoSearch"
 import type { FindChoices } from "../../lib/dynamoTabs"
-import type { TreeExpansion } from "../../lib/dynamoTree"
+import { expandAllDepth, type TreeExpansion } from "../../lib/dynamoTree"
 import { expandTree, revealTreePath, toggleTreeNode, toggleTreeTable } from "./actions"
 import { CLOSED_FIND, findBarKey, useItemFind } from "./findStore"
 
@@ -99,6 +99,8 @@ export interface TreeFindState {
   find: TreeFind | null
   /** The expansion the tree shows: the tab's own, or during a search the search's. */
   expansion: TreeExpansion
+  /** Set when Expand all opened only this many levels of an item too large to open whole. */
+  expandDepth: number | null
   count: number
   /** Position of the current hit. */
   at: number
@@ -218,7 +220,14 @@ export function useTreeFind(input: TreeFindInput): TreeFindState {
     () => (currentPath ? ancestorKeys([currentPath]) : new Set<string>()),
     [currentPath],
   )
-  const shownExpansion = searching ? searchExpansion(expansion, reveal, overlay, focus) : expansion
+  const asked = searching ? searchExpansion(expansion, reveal, overlay, focus) : expansion
+  // Expand all on an item too large to render whole opens only as many levels as fit.
+  const opensAll = asked.base === "all"
+  const depth = useMemo(
+    () => (opensAll ? expandAllDepth(item, names) : null),
+    [opensAll, item, names],
+  )
+  const shownExpansion = depth === null ? asked : { ...asked, depth }
 
   useEffect(() => {
     if (currentPath) revealRow(treeRef.current, currentPath)
@@ -231,6 +240,7 @@ export function useTreeFind(input: TreeFindInput): TreeFindState {
     searching,
     find: searching ? { via: found.via, hits, positions, current, above, filter } : null,
     expansion: shownExpansion,
+    expandDepth: depth,
     count,
     at,
     via: found.via,
@@ -245,7 +255,7 @@ export function useTreeFind(input: TreeFindInput): TreeFindState {
     toggle: (path, holdsJson) =>
       searching
         ? updateOverlay((o) => overlayToggle(o, shownExpansion, path, holdsJson))
-        : toggleTreeNode(tabId, path, holdsJson),
+        : toggleTreeNode(tabId, path, holdsJson, shownExpansion),
     toggleTable: (path) =>
       searching
         ? updateOverlay((o) => overlayToggleTable(o, shownExpansion, path))

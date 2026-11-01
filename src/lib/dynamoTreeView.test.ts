@@ -9,6 +9,7 @@ import {
   editText,
   isChanged,
   isConflict,
+  loadedJson,
   memberPlace,
   membersHost,
   shownLength,
@@ -43,6 +44,7 @@ const view = (edit?: PendingItemEdit, conflicts: PendingAttribute[] = []): TreeE
   edit,
   conflicts: new Set(conflicts),
   editable: true,
+  loaded: loadedJson(edit),
 })
 
 /** The place and value of the member at `segments` below the top-level `name`. */
@@ -131,6 +133,23 @@ describe("canEdit", () => {
     expect(canEdit(view(), nul.place, nul.value)).toBe(false)
     const spaced = placeAt("doc", { S: '{ "a": 1 }' }, ["a"])
     expect(canEdit(view(), spaced.place, spaced.value)).toBe(false)
+  })
+})
+
+describe("loadedJson", () => {
+  it("parses each pending string once, as it was loaded", () => {
+    const edit = editOf(
+      change(["doc"], { S: '{"a":1}' }, { S: '{"a":2}' }),
+      change(["plain"], { S: "text" }, { S: "more" }),
+      change(["n"], { N: "1" }, { N: "2" }),
+      change(["new"], null, { S: "x" }),
+    )
+    const loaded = loadedJson(edit)
+    expect(loaded.get(pathKey(["doc"]))?.value).toEqual({ a: 1 })
+    expect(loaded.get(pathKey(["plain"]))).toBeNull()
+    expect(loaded.has(pathKey(["n"]))).toBe(false)
+    expect(loaded.has(pathKey(["new"]))).toBe(false)
+    expect(loadedJson(undefined).size).toBe(0)
   })
 })
 

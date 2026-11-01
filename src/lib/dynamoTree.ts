@@ -124,8 +124,27 @@ function jsonNode(value: PlainValue): TreeNode {
   return { tag, children: null, text: formatCell(cell), tone: cellTone(cell), json: null }
 }
 
+// Nodes by value object. Items and the JSON parsed out of their strings are never changed in
+// place, so a row re-rendering, a table reading its cells, and the find index all build a
+// node (and parse a string's JSON) once per value.
+const wireNodes = new WeakMap<AttributeValue, TreeNode>()
+const jsonNodes = new WeakMap<object, TreeNode>()
+
 export function treeNode(value: TreeValue): TreeNode {
-  return value.kind === "wire" ? wireNode(value.value) : jsonNode(value.value)
+  if (value.kind === "wire") {
+    const cached = wireNodes.get(value.value)
+    if (cached) return cached
+    const node = wireNode(value.value)
+    wireNodes.set(value.value, node)
+    return node
+  }
+  const v = value.value
+  if (v === null || typeof v !== "object") return jsonNode(v)
+  const cached = jsonNodes.get(v)
+  if (cached) return cached
+  const node = jsonNode(v)
+  jsonNodes.set(v, node)
+  return node
 }
 
 /** The text "Copy value" puts on the clipboard: leaves as they are, the rest as JSON. */
@@ -186,6 +205,11 @@ export interface TreeExpansion {
   open: Readonly<Record<string, boolean>>
   /** Lists of maps shown as a table. */
   tables: Readonly<Record<string, boolean>>
+  /**
+   * With `base: "all"`, the deepest paths (by length) open by default, set while showing an
+   * item too large to open whole (see `expandAllDepth`); never stored.
+   */
+  depth?: number
 }
 
 export const DEFAULT_TREE_EXPANSION: TreeExpansion = { base: "first", open: {}, tables: {} }
@@ -202,16 +226,51 @@ export function isExpanded(
   const own = expansion.open[pathKey(path)]
   if (own !== undefined) return own
   if (expansion.base === "first") return path.length === 1 && !holdsJson
-  return expansion.base === "all"
+  if (expansion.base === "none") return false
+  return expansion.depth === undefined || path.length <= expansion.depth
 }
 
+/**
+ * Opens the node at `path` if it shows closed in `shown` (the expansion as the tree shows it,
+ * which may bound `base: "all"` by depth), else closes it.
+ */
 export function toggleExpanded(
   expansion: TreeExpansion,
   path: readonly PathSegment[],
   holdsJson: boolean,
+  shown: TreeExpansion = expansion,
 ): TreeExpansion {
-  const open = !isExpanded(expansion, path, holdsJson)
+  const open = !isExpanded(shown, path, holdsJson)
   return { ...expansion, open: { ...expansion.open, [pathKey(path)]: open } }
+}
+
+/** Most rows Expand all opens at once; a larger item opens only as many levels as fit. */
+export const EXPAND_LIMIT = 2000
+
+/**
+ * How deep Expand all opens `item` (attributes in `names`): null when every row fits in
+ * `limit` rows, else the deepest path length whose containers can all open within it (at
+ * least 1, the attributes' own members, as the tree shows by default). The tree isn't
+ * virtualised, so an item with tens of thousands of nested values would otherwise render them
+ * all at once. Counting stops at the first level past the limit.
+ */
+export function expandAllDepth(
+  item: Item,
+  names: readonly string[],
+  limit = EXPAND_LIMIT,
+): number | null {
+  let level: TreeValue[] = names.flatMap((name) => (item[name] ? [wire(item[name])] : []))
+  let rows = level.length
+  for (let depth = 0; level.length > 0; depth += 1) {
+    const next: TreeValue[] = []
+    for (const value of level) {
+      for (const child of treeNode(value).children ?? []) next.push(child.value)
+      if (rows + next.length > limit) return Math.max(depth, 1)
+    }
+    rows += next.length
+    level = next
+  }
+  return null
 }
 
 /** Opens or closes every node; table toggles stay. */

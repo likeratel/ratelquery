@@ -31,6 +31,7 @@ import {
 import type { FindChoices } from "../../lib/dynamoTabs"
 import {
   copyValueText,
+  EXPAND_LIMIT,
   isExpanded,
   isTable,
   memberOf,
@@ -45,6 +46,7 @@ import {
   editText,
   isChanged,
   isConflict,
+  loadedJson,
   memberPlace,
   membersHost,
   shownLength,
@@ -525,12 +527,15 @@ export function ItemTree(props: ItemTreeProps) {
   })
   const { bar, barKey, searching, find, count, treeRef } = found
   const filter = find?.filter ?? null
+  // Each pending string's JSON is parsed once per edit, not once per leaf on every render.
+  const loaded = useMemo(() => loadedJson(edit), [edit])
 
   const ctx: TreeContext = {
     tabId,
     itemId,
     edit,
     conflicts,
+    loaded,
     expansion: found.expansion,
     editable,
     find,
@@ -582,6 +587,14 @@ export function ItemTree(props: ItemTreeProps) {
           <ChevronsDownUp size={12} strokeWidth={2.2} />
           Collapse all
         </button>
+        {found.expandDepth !== null && (
+          <span
+            className="dyn-tree__capped"
+            title={`Over ${EXPAND_LIMIT} rows: Expand all opens the first ${found.expandDepth} ${found.expandDepth === 1 ? "level" : "levels"}. Open deeper rows one at a time.`}
+          >
+            {found.expandDepth} {found.expandDepth === 1 ? "level" : "levels"} opened
+          </span>
+        )}
         <span className="dyn-side__spacer" />
         {!bar.open && (
           <button

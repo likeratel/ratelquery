@@ -3,6 +3,8 @@ import type { AttributeValue } from "./dynamo"
 import {
   copyValueText,
   DEFAULT_TREE_EXPANSION,
+  EXPAND_LIMIT,
+  expandAllDepth,
   isExpanded,
   isTable,
   memberOf,
@@ -136,5 +138,70 @@ describe("expansion", () => {
     ]) {
       expect(isExpanded(revealed, path, false)).toBe(true)
     }
+  })
+})
+
+describe("treeNode cache", () => {
+  it("builds a value's node once, so rows and the find index share it", () => {
+    const value = { S: '{"a":[1,2]}' }
+    const node = treeNode(w(value))
+    expect(treeNode(w(value))).toBe(node)
+    const array = node.children?.[0].value
+    expect(array && treeNode(array)).toBe(array && treeNode(array))
+    // Equal values that are other objects get their own node.
+    expect(treeNode(w({ S: '{"a":[1,2]}' }))).not.toBe(node)
+    expect(treeNode(w({ S: '{"a":[1,2]}' }))).toEqual(node)
+  })
+})
+
+describe("expand all on a large item", () => {
+  const list = (n: number, member: (i: number) => AttributeValue) => ({
+    L: Array.from({ length: n }, (_, i) => member(i)),
+  })
+
+  it("opens everything when every row fits", () => {
+    const item = { pk: { S: "u1" }, m: { M: { a: list(3, () => ({ M: { x: { N: "1" } } })) } } }
+    expect(expandAllDepth(item, ["pk", "m"], 20)).toBeNull()
+    expect(expandAllDepth({}, [], 1)).toBeNull()
+  })
+
+  it("opens only the levels that fit in the limit", () => {
+    // 2 attributes, then 1 + 0 members, then 10, then 10 x 5.
+    const item = {
+      pk: { S: "u1" },
+      m: { M: { rows: list(10, () => list(5, (i) => ({ N: String(i) }))) } },
+    }
+    const names = ["pk", "m"]
+    expect(expandAllDepth(item, names, 63)).toBeNull()
+    expect(expandAllDepth(item, names, 62)).toBe(2)
+    expect(expandAllDepth(item, names, 13)).toBe(2)
+    expect(expandAllDepth(item, names, 12)).toBe(1)
+    // The attributes' own members always open, as they do by default.
+    expect(expandAllDepth(item, names, 2)).toBe(1)
+  })
+
+  it("counts the members of JSON stored in strings", () => {
+    const json = JSON.stringify(Array.from({ length: 30 }, (_, i) => ({ i })))
+    const item = { doc: { S: json } }
+    expect(expandAllDepth(item, ["doc"], 61)).toBeNull()
+    expect(expandAllDepth(item, ["doc"], 60)).toBe(1)
+  })
+
+  it("stops counting at the limit", () => {
+    const item = { big: list(EXPAND_LIMIT * 5, (i) => ({ M: { i: { N: String(i) } } })) }
+    expect(expandAllDepth(item, ["big"])).toBe(1)
+  })
+
+  it("keeps deeper rows closed under a depth, unless toggled open", () => {
+    const bounded = { ...setAllExpanded(DEFAULT_TREE_EXPANSION, true), depth: 2 }
+    expect(isExpanded(bounded, ["a"], false)).toBe(true)
+    expect(isExpanded(bounded, ["a", 0], true)).toBe(true)
+    expect(isExpanded(bounded, ["a", 0, "b"], false)).toBe(false)
+    // A toggle follows what the tree shows, so the first click opens a bounded row.
+    const stored = setAllExpanded(DEFAULT_TREE_EXPANSION, true)
+    const toggled = toggleExpanded(stored, ["a", 0, "b"], false, bounded)
+    expect(toggled.depth).toBeUndefined()
+    expect(isExpanded({ ...toggled, depth: 2 }, ["a", 0, "b"], false)).toBe(true)
+    expect(isExpanded({ ...toggled, depth: 2 }, ["a", 0, "c"], false)).toBe(false)
   })
 })
