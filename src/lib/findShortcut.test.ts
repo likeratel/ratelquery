@@ -59,7 +59,9 @@ describe("findShortcutTarget", () => {
   it("matches the physical F key only, with the platform modifier", () => {
     expect(target({}, {}, { isComposing: true })).toBe("ignore")
     // WebKit: the key that ends a composition comes after compositionend, with keyCode 229.
-    expect(target({}, {}, { keyCode: 229 })).toBe("ignore")
+    // Mod+F itself reported as 229 (pressed mid-composition) still opens the find bar.
+    expect(target({}, {}, { keyCode: 229 })).toBe("find")
+    expect(target({}, {}, { keyCode: 229, isComposing: true })).toBe("ignore")
     expect(target({}, {}, { code: "KeyG" })).toBe("ignore")
     expect(target({}, {}, { shiftKey: true })).toBe("ignore")
     expect(target({}, {}, { metaKey: false, ctrlKey: true })).toBe("ignore")

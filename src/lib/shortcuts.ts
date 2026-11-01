@@ -70,17 +70,23 @@ function keyToCode(key: string): string {
 export interface ImeKeyLike {
   isComposing: boolean
   keyCode?: number
+  metaKey?: boolean
+  ctrlKey?: boolean
 }
 
 /**
  * True for a key that belongs to an IME composition (Hangul, kana, pinyin) rather than to the
- * app. Safari and WKWebView, which Tauri uses on macOS, fire `compositionend` before the keydown
- * of the Enter or Esc that ends a composition (WebKit bug 165004), so that keydown arrives with
- * `isComposing: false`; it still carries `keyCode` 229, the "IME is processing" code, so either
- * one marks the key as the IME's.
+ * app: always while `isComposing` is set, and for a bare key with `keyCode` 229.
+ *
+ * Safari and WKWebView, which Tauri uses on macOS, fire `compositionend` before the keydown of
+ * the Enter or Esc that ends a composition (WebKit bug 165004), so that keydown arrives with
+ * `isComposing: false` but still carries `keyCode` 229, the "IME is processing" code. WebKit can
+ * report 229 for Cmd+Enter or Cmd+S pressed mid-composition as well; with Cmd or Ctrl held the
+ * key is a shortcut (Run, Apply), not text, so 229 alone doesn't claim it for the IME.
  */
 export function isImeComposing(event: ImeKeyLike): boolean {
-  return event.isComposing || event.keyCode === 229
+  if (event.isComposing) return true
+  return event.keyCode === 229 && !event.metaKey && !event.ctrlKey
 }
 
 export function isMac(platform: string = navigator.platform): boolean {

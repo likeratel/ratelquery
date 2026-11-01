@@ -297,6 +297,9 @@ describe("treeFieldKey", () => {
     expect(treeFieldKey(press("NumpadEnter", { webkitEnd: true }), true)).toBe("composing")
     expect(treeFieldKey(press("Escape", { webkitEnd: true }), true)).toBe("composing")
     expect(treeFieldKey({ ...press("Enter"), keyCode: 13 }, true)).toBe("commit")
+    // Cmd+Enter reported as 229 is the app's Run, so the field neither commits nor claims it.
+    expect(treeFieldKey(press("Enter", { webkitEnd: true, meta: true }), true)).toBeNull()
+    expect(startsTreeEdit(press("Enter", { webkitEnd: true, meta: true }), true)).toBe(false)
   })
 
   it("leaves Enter with Mod or Ctrl held to the app's shortcuts", () => {
