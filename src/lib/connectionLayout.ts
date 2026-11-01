@@ -456,6 +456,27 @@ export function folderPaths(layout: ConnectionLayout): FolderPath[] {
   return walk(layout.items, [])
 }
 
+/** Where `moveToFolder` could send `ref`: `null` for the top level, then every placed folder. */
+export interface MoveTarget {
+  folderId: FolderId | null
+  /** Whether moving `ref` there would do nothing: it is already there, the target is `ref`
+   *  itself or one of its subfolders (moving a folder), or the result would nest deeper than
+   *  `MAX_FOLDER_DEPTH`. */
+  disabled: boolean
+}
+
+/** Every target `moveToFolder(layout, ref, …)` accepts, with whether it would change anything. */
+export function moveTargets(layout: ConnectionLayout, ref: LayoutRef): MoveTarget[] {
+  const disabledFor = (folderId: FolderId | null): boolean =>
+    moveToFolder(layout, ref, folderId) === layout
+  const topLevel: MoveTarget = { folderId: null, disabled: disabledFor(null) }
+  const folders = folderPaths(layout).map(({ folder }): MoveTarget => ({
+    folderId: folder.id,
+    disabled: disabledFor(folder.id),
+  }))
+  return [topLevel, ...folders]
+}
+
 /** A sidebar row: a connection, or a folder with the rows inside it. */
 export type LayoutEntry =
   | { type: "connection"; config: ConnectionConfig }

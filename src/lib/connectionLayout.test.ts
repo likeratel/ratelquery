@@ -11,6 +11,7 @@ import {
   MAX_FOLDER_DEPTH,
   moveItem,
   moveStep,
+  moveTargets,
   moveToFolder,
   newFolderName,
   normalizeLayout,
@@ -21,6 +22,7 @@ import {
   type ConnectionLayout,
   type LayoutEntry,
   type LayoutItem,
+  type LayoutRef,
 } from "./connectionLayout"
 import type { ConnectionConfig } from "./connections"
 
@@ -376,6 +378,84 @@ describe("moveToFolder", () => {
     expect(moveToFolder(base, c("b"), "F")).toBe(base)
     expect(moveToFolder(base, c("n"), "N")).toBe(base)
     expect(moveToFolder(base, f("G"), null)).toBe(base)
+  })
+})
+
+describe("moveTargets", () => {
+  const base = layout(["a", ["F", "b", ["N", "n"]], ["G"]])
+  const disabledness = (l: ConnectionLayout, ref: LayoutRef) =>
+    new Map(moveTargets(l, ref).map((t) => [t.folderId, t.disabled]))
+
+  it("disables the top level, or the folder, a connection is already in", () => {
+    expect(disabledness(base, c("a"))).toEqual(
+      new Map([
+        [null, true],
+        ["F", false],
+        ["N", false],
+        ["G", false],
+      ]),
+    )
+    expect(disabledness(base, c("b"))).toEqual(
+      new Map([
+        [null, false],
+        ["F", true],
+        ["N", false],
+        ["G", false],
+      ]),
+    )
+    expect(disabledness(base, c("n"))).toEqual(
+      new Map([
+        [null, false],
+        ["F", false],
+        ["N", true],
+        ["G", false],
+      ]),
+    )
+  })
+
+  it("disables the top level a top-level folder is already at", () => {
+    expect(disabledness(base, f("G"))).toEqual(
+      new Map([
+        [null, true],
+        ["F", false],
+        ["N", false],
+        ["G", true],
+      ]),
+    )
+  })
+
+  it("disables a folder itself and its subfolders when moving it", () => {
+    const tree = layout([["F", "a", ["G", "b", ["H"]]], ["K"]])
+    // F is already at the top level; G is already in F. Either way its own subtree is out.
+    expect(disabledness(tree, f("F"))).toEqual(
+      new Map([
+        [null, true],
+        ["F", true],
+        ["G", true],
+        ["H", true],
+        ["K", false],
+      ]),
+    )
+    expect(disabledness(tree, f("G"))).toEqual(
+      new Map([
+        [null, false],
+        ["F", true],
+        ["G", true],
+        ["H", true],
+        ["K", false],
+      ]),
+    )
+  })
+
+  it("disables targets that would nest the moved item deeper than the limit", () => {
+    const deep = layout([...chain(MAX_FOLDER_DEPTH - 1), ["P", ["Q"]], "z"])
+    const last = `D${MAX_FOLDER_DEPTH - 1}`
+    const secondToLast = `D${MAX_FOLDER_DEPTH - 2}`
+    // Moving P (height 2, holding the empty folder Q) into D31 would reach 33 levels; into D30
+    // it still fits at 32, and nothing stops it from going back to where it already is.
+    expect(disabledness(deep, f("P")).get(last)).toBe(true)
+    expect(disabledness(deep, f("P")).get(secondToLast)).toBe(false)
+    expect(disabledness(deep, f("P")).get(null)).toBe(true)
   })
 })
 
