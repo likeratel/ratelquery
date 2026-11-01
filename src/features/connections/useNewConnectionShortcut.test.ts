@@ -24,8 +24,8 @@ describe("newConnectionAction", () => {
 
   it("ignores IME compositions, handled events, repeats and other keys", () => {
     expect(newConnectionAction(press({ isComposing: true }), false, true)).toBe("ignore")
-    expect(newConnectionAction(press({ keyCode: 229, metaKey: false }), false, true)).toBe("ignore")
-    // Mod+N reported as 229 mid-composition is still the shortcut.
+    // Mod+N reported as keyCode 229 mid-composition is still the shortcut; a bare 229 key
+    // belongs to the IME (see isImeComposing's tests).
     expect(newConnectionAction(press({ keyCode: 229 }), false, true)).toBe("open")
     expect(newConnectionAction(press({ defaultPrevented: true }), false, true)).toBe("ignore")
     expect(newConnectionAction(press({ repeat: true }), false, true)).toBe("ignore")
