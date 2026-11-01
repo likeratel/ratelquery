@@ -33,6 +33,7 @@ import {
   isExpanded,
   isTable,
   MAX_TREE_DEPTH,
+  shownExpandDepth,
   type TreeExpansion,
 } from "./dynamoTree"
 
@@ -487,5 +488,47 @@ describe("find in JSON numbers and deep JSON", () => {
     const index = findIndex(deep, ["doc"])
     expect(Math.max(...index.map((entry) => entry.path.length))).toBe(MAX_TREE_DEPTH)
     expect(findInItem(index, "needle", DEFAULT_FIND_OPTIONS).hits).toEqual([])
+  })
+})
+
+describe("Expand all during a filtered search", () => {
+  // 3,000 maps: opening everything would be 9,001 rows, past EXPAND_LIMIT.
+  const needles = new Set([2998, 2999])
+  const big: Item = {
+    l: {
+      L: Array.from({ length: 3000 }, (_, i) => ({
+        M: { x: { M: { y: { S: needles.has(i) ? "needle" : "n" } } } },
+      })),
+    },
+  }
+  const other: PathSegment[] = ["l", 2998, "x", "y"]
+  const current: PathSegment[] = ["l", 2999, "x", "y"]
+
+  it("bounds the depth in highlight mode, which renders every open row", () => {
+    expect(shownExpandDepth("all", false, big, ["l"])).toBe(1)
+    expect(shownExpandDepth("first", false, big, ["l"])).toBeNull()
+  })
+
+  it("keeps every deep match in view under a filter, which renders only matching rows", () => {
+    const hits = findInItem(findIndex(big, ["l"]), "needle", DEFAULT_FIND_OPTIONS).hits
+    expect(hits.map((hit) => hit.path)).toEqual([other, current])
+    const filter = findFilter([other, current])
+    // Expand all during the search; only the current match's rows are opened by name.
+    const shown = searchExpansion(
+      DEFAULT_TREE_EXPANSION,
+      ancestorKeys([other, current]),
+      overlaySetAll(EMPTY_OVERLAY, true),
+      ancestorKeys([current]),
+    )
+    expect(shownExpandDepth(shown.base, true, big, ["l"])).toBeNull()
+    for (const match of [other, current]) {
+      expect(filterShows(filter, match)).toBe(true)
+      for (let length = 1; length < match.length; length += 1) {
+        expect(isExpanded(shown, match.slice(0, length), false)).toBe(true)
+      }
+    }
+    // Bounded, the other match's map would stay closed and hide it.
+    const depth = shownExpandDepth(shown.base, false, big, ["l"]) ?? undefined
+    expect(isExpanded({ ...shown, depth }, ["l", 2998], false)).toBe(false)
   })
 })

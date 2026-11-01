@@ -35,7 +35,7 @@ import {
   type SearchOverlay,
 } from "../../lib/dynamoSearch"
 import type { FindChoices } from "../../lib/dynamoTabs"
-import { expandAllDepth, type TreeExpansion } from "../../lib/dynamoTree"
+import { shownExpandDepth, type TreeExpansion } from "../../lib/dynamoTree"
 import { expandTree, revealTreePath, toggleTreeNode, toggleTreeTable } from "./actions"
 import { CLOSED_FIND, findBarKey, useItemFind } from "./findStore"
 
@@ -221,11 +221,13 @@ export function useTreeFind(input: TreeFindInput): TreeFindState {
     [currentPath],
   )
   const asked = searching ? searchExpansion(expansion, reveal, overlay, focus) : expansion
-  // Expand all on an item too large to render whole opens only as many levels as fit.
-  const opensAll = asked.base === "all"
+  // Expand all on an item too large to render whole opens only as many levels as fit, except
+  // while a filter shows only the matching rows (see `shownExpandDepth`).
+  const base = asked.base
+  const filtering = filter !== null
   const depth = useMemo(
-    () => (opensAll ? expandAllDepth(item, names) : null),
-    [opensAll, item, names],
+    () => shownExpandDepth(base, filtering, item, names),
+    [base, filtering, item, names],
   )
   const shownExpansion = depth === null ? asked : { ...asked, depth }
 

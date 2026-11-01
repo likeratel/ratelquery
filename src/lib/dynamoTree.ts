@@ -256,6 +256,22 @@ export const MAX_TREE_DEPTH = MAX_DOCUMENT_DEPTH
 export const EXPAND_LIMIT = 2000
 
 /**
+ * The depth bound for a tree whose expansion has `base` (see `expandAllDepth`): null unless it
+ * opens everything, and never while a search filter shows only the matching rows. Filter mode renders
+ * those rows alone, so the row count is already small, and a bound would only hide the matches
+ * below it (`l[2999].x.y` in a list of 3,000 maps).
+ */
+export function shownExpandDepth(
+  base: TreeExpansion["base"],
+  filtering: boolean,
+  item: Item,
+  names: readonly string[],
+  limit = EXPAND_LIMIT,
+): number | null {
+  return base === "all" && !filtering ? expandAllDepth(item, names, limit) : null
+}
+
+/**
  * How deep Expand all opens `item` (attributes in `names`): null when every row fits in
  * `limit` rows, else the deepest path length whose containers can all open within it (at
  * least 1, the attributes' own members, as the tree shows by default). The tree isn't
