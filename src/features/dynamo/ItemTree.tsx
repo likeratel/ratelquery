@@ -8,8 +8,6 @@ import {
   Table2,
 } from "lucide-react"
 import {
-  useCallback,
-  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -19,43 +17,16 @@ import {
   type ReactNode,
 } from "react"
 import { copyToClipboard } from "../../components/grid/clipboard"
-import { MAX_DISPLAY_CHARS } from "../../lib/cellFormat"
 import type { Item, KeySchema, PathSegment } from "../../lib/dynamo"
+import { changesUnder, type PendingAttribute, type PendingItemEdit } from "../../lib/dynamoEdits"
+import { jsonStringReadOnlyReason } from "../../lib/dynamoJson"
+import { formatPath, pathKey } from "../../lib/dynamoPath"
 import {
-  changesUnder,
-  inlineEditType,
-  jsonLeafType,
-  type PendingAttribute,
-  type PendingItemEdit,
-} from "../../lib/dynamoEdits"
-import { attributeTag, jsonInString, jsonStringReadOnlyReason } from "../../lib/dynamoJson"
-import { formatPath, jsonAt, pathKey, releasedPath } from "../../lib/dynamoPath"
-import {
-  ancestorKeys,
-  EMPTY_OVERLAY,
   filterShows,
   filterTableRows,
-  findFilter,
-  findIndex,
-  findInItem,
-  hitPositions,
-  orderHits,
-  overlayReveal,
-  overlaySetAll,
-  overlayToggle,
-  overlayToggleTable,
-  rescope,
-  REVEAL_LIMIT,
-  revealKeys,
-  searchExpansion,
-  stepMatch,
   visibleRanges,
-  type FindEntry,
-  type FindFilter,
   type FindHit,
   type FindRange,
-  type Scoped,
-  type SearchOverlay,
 } from "../../lib/dynamoSearch"
 import type { FindChoices } from "../../lib/dynamoTabs"
 import {
@@ -69,46 +40,34 @@ import {
   type TreeNode,
   type TreeValue,
 } from "../../lib/dynamoTree"
-import { startsTreeEdit, treeFieldKey } from "../../lib/dynamoTreeView"
-import { itemColumns, type KeyRole } from "../../lib/dynamoView"
+import {
+  canEdit,
+  editText,
+  isChanged,
+  isConflict,
+  memberPlace,
+  membersHost,
+  shownLength,
+  startsTreeEdit,
+  treeFieldKey,
+  type Place,
+  type TreeEditView,
+} from "../../lib/dynamoTreeView"
+import { itemColumns } from "../../lib/dynamoView"
 import { formatShortcut, matchesShortcut } from "../../lib/shortcuts"
 import { APP_SHORTCUTS } from "../query/appShortcuts"
-import {
-  commitTreeEdit,
-  expandTree,
-  revealTreePath,
-  toggleTreeNode,
-  toggleTreeTable,
-} from "./actions"
+import { commitTreeEdit } from "./actions"
 import { FindBar } from "./FindBar"
-import { CLOSED_FIND, findBarKey, requestFind, useItemFind } from "./findStore"
+import { requestFind } from "./findStore"
 import { DYNAMO_SHORTCUTS } from "./shortcuts"
-
-/** A search showing in the tree. */
-interface TreeFind {
-  via: "text" | "path"
-  hits: readonly FindHit[]
-  /** Position of each hit by row key. */
-  positions: ReadonlyMap<string, number>
-  /** Row key of the current hit. */
-  current: string | null
-  /** Rows above hits; a table cell that holds one is marked. */
-  above: ReadonlySet<string>
-  /** Set in filter mode: the rows that show. */
-  filter: FindFilter | null
-}
+import { useTreeFind, type TreeFind } from "./useTreeFind"
 
 /** Shared by every row of one tree. */
-interface TreeContext {
+interface TreeContext extends TreeEditView {
   tabId: string
   /** `keyId` of the item; a field commits only while this item is still the selected one. */
   itemId: string
-  edit: PendingItemEdit | undefined
-  /** Changes the item as loaded now no longer matches; shown, but not laid over the item. */
-  conflicts: ReadonlySet<PendingAttribute>
   expansion: TreeExpansion
-  /** False while changes are applied, the key schema is unknown or the item has no key. */
-  editable: boolean
   find: TreeFind | null
   /** Expansion changes; during a search they last only as long as the search. */
   toggle: (path: readonly PathSegment[], holdsJson: boolean) => void
@@ -164,79 +123,7 @@ function Marked({ text, ranges, limit = text.length }: MarkedProps) {
   return <>{parts}</>
 }
 
-/** Where a JSON value inside a string sits: the string's path and whether it can be edited. */
-interface JsonHost {
-  path: readonly PathSegment[]
-  /** Why the JSON is read-only, or null when its values can be edited. */
-  readOnly: string | null
-}
-
-interface Place {
-  path: readonly PathSegment[]
-  /** Set inside JSON stored in a string. */
-  host: JsonHost | null
-  /** Members of SS, NS and BS have no document path, so they can't be edited. */
-  inSet: boolean
-  /** Key role of the top-level attribute; nothing under a key is edited in place. */
-  keyRole: KeyRole
-}
-
 const depthStyle = (depth: number) => ({ "--depth": depth }) as CSSProperties
-
-/** Text a leaf's field starts with: the value as stored, not as displayed. */
-function editText(value: TreeValue): string {
-  if (value.kind === "json") return String(value.value)
-  const tag = attributeTag(value.value)
-  return tag ? String(value.value[tag]) : ""
-}
-
-/** Characters of a leaf's shown text that are its value, before the `…` of a long one. */
-function shownLength(value: TreeValue, node: TreeNode): number {
-  return editText(value).length > MAX_DISPLAY_CHARS ? node.text.length - 1 : node.text.length
-}
-
-/** Whether the leaf at `place` can be edited in place. */
-function canEdit(ctx: TreeContext, place: Place, value: TreeValue): boolean {
-  if (!ctx.editable || place.inSet || place.keyRole !== null) return false
-  if (value.kind === "json") {
-    return place.host?.readOnly === null && jsonLeafType(value.value) !== null
-  }
-  return inlineEditType(value.value, null) !== null && treeNode(value).json === null
-}
-
-/** A leaf inside JSON differs from the string it was loaded from. */
-function jsonLeafChanged(ctx: TreeContext, place: Place, value: TreeValue): boolean {
-  const host = place.host
-  const before = host && ctx.edit?.changes[pathKey(host.path)]?.before
-  if (!host || !before || attributeTag(before) !== "S") return false
-  const loaded = jsonInString(String(before.S))
-  return !loaded || jsonAt(loaded.value, place.path.slice(host.path.length)) !== value.value
-}
-
-function isChanged(ctx: TreeContext, place: Place, value: TreeValue): boolean {
-  if (place.host) return jsonLeafChanged(ctx, place, value)
-  return Boolean(ctx.edit?.changes[pathKey(place.path)])
-}
-
-/** A conflicting change sits at `place` (or, for a JSON value, at the string holding it). */
-function isConflict(ctx: TreeContext, place: Place): boolean {
-  const change = ctx.edit?.changes[pathKey(place.host?.path ?? place.path)]
-  return change !== undefined && ctx.conflicts.has(change)
-}
-
-/** Scrolls to the row at `path`, or to the nearest row above it that shows. */
-function revealRow(container: HTMLElement | null, path: readonly PathSegment[]) {
-  requestAnimationFrame(() => {
-    for (let depth = path.length; depth > 0; depth -= 1) {
-      const key = pathKey(path.slice(0, depth))
-      const row = container?.querySelector(`[data-path="${CSS.escape(key)}"]`)
-      if (row) {
-        row.scrollIntoView({ block: "nearest" })
-        return
-      }
-    }
-  })
-}
 
 interface LeafProps {
   ctx: TreeContext
@@ -378,19 +265,11 @@ function TreeRow({ ctx, place, label, value, depth }: RowProps) {
   const open = children !== null && isExpanded(ctx.expansion, place.path, holdsJson)
   const columns = children ? tableColumns(children) : null
   const asTable = columns !== null && isTable(ctx.expansion, place.path)
-  const tag = attributeTag(value.kind === "wire" ? value.value : {})
   const editable = !children && canEdit(ctx, place, value)
   const changedInside = !place.host && changesUnder(ctx.edit, place.path).length > 0
   const changed = children ? changedInside && !open : isChanged(ctx, place, value)
-  const host: JsonHost | null = holdsJson
-    ? { path: place.path, readOnly: node.json ? jsonStringReadOnlyReason(node.json) : null }
-    : place.host
-  const childPlace = (segment: PathSegment): Place => ({
-    path: [...place.path, segment],
-    host,
-    inSet: place.inSet || tag === "SS" || tag === "NS" || tag === "BS",
-    keyRole: place.keyRole,
-  })
+  const host = membersHost(place, node)
+  const childPlace = (segment: PathSegment): Place => memberPlace(place, value, node, segment)
   const hit = hitAt(ctx, place.path)
   const rowKey = pathKey(place.path)
   const filter = ctx.find?.filter
@@ -624,158 +503,42 @@ interface ItemTreeProps {
   findChoices: FindChoices
 }
 
-/** Where the cursor is among the hits of one search (query and toggles). */
-interface FindCursor {
-  at: number
-  key: string | null
-}
-
-const START: FindCursor = { at: 0, key: null }
-
-const NO_ENTRIES: readonly FindEntry[] = []
-
 /**
  * The selected item as a tree: attributes (keys first) that open into their members, with a
  * find bar that highlights or filters what matches.
  */
 export function ItemTree(props: ItemTreeProps) {
   const { tabId, table, itemId, item, schema, edit, conflicts, expansion, editable } = props
-  const { mode, caseSensitive, keys, values } = props.findChoices
-  const treeRef = useRef<HTMLDivElement>(null)
   const columns = useMemo(
     () => itemColumns([item], schema).filter((c) => item[c.name]),
     [item, schema],
   )
   const names = useMemo(() => columns.map((c) => c.name), [columns])
+  const found = useTreeFind({
+    tabId,
+    table,
+    item,
+    names,
+    edit,
+    expansion,
+    findChoices: props.findChoices,
+  })
+  const { bar, barKey, searching, find, count, treeRef } = found
+  const filter = find?.filter ?? null
 
-  const barKey = findBarKey(tabId, table)
-  const bar = useItemFind((s) => s.bars[barKey] ?? CLOSED_FIND)
-  // Typing stays responsive on large items: matching and the tree follow a step behind.
-  const query = useDeferredValue(bar.open ? bar.query : "")
-  const search = JSON.stringify([query, caseSensitive, keys, values])
-  // The item is indexed only while the bar is open, once per shown item.
-  const entries = useMemo(
-    () => (bar.open ? findIndex(item, names) : NO_ENTRIES),
-    [bar.open, item, names],
-  )
-  const found = useMemo(
-    () => findInItem(entries, query, { caseSensitive, keys, values }),
-    [entries, query, caseSensitive, keys, values],
-  )
-  const searching = query.trim() !== ""
-
-  // Changes to the tree during a search: kept for that search only, never saved, and dropped
-  // as soon as the search changes, so typing the same query again starts afresh.
-  const [overlaid, setOverlaid] = useState<Scoped<SearchOverlay>>({ search, value: EMPTY_OVERLAY })
-  const scopedOverlay = rescope(overlaid, search, EMPTY_OVERLAY)
-  if (scopedOverlay !== overlaid) setOverlaid(scopedOverlay)
-  const overlay = scopedOverlay.value
-  // Updates build on the latest overlay, so two in one click (table, then open) both stay.
-  const updateOverlay = (update: (overlay: SearchOverlay) => SearchOverlay) =>
-    setOverlaid((prev) => {
-      const scoped = rescope(prev, search, EMPTY_OVERLAY)
-      return { search, value: update(scoped.value) }
-    })
-
-  // Lists shown as tables order their cells' hits by column, as they read.
-  const tables = useMemo(
-    () => (searching ? { ...expansion.tables, ...overlay.tables } : expansion.tables),
-    [searching, expansion.tables, overlay.tables],
-  )
-  const hits = useMemo(
-    () => orderHits(found.hits, item, (path) => tables[pathKey(path)] === true),
-    [found, item, tables],
-  )
-  const positions = useMemo(() => hitPositions({ ...found, hits }), [found, hits])
-  const count = hits.length
-
-  // The cursor stays on its hit while edits change the results, and restarts with a new search.
-  const [stored, setCursor] = useState<Scoped<FindCursor>>({ search, value: START })
-  const scopedCursor = rescope(stored, search, START)
-  if (scopedCursor !== stored) setCursor(scopedCursor)
-  const cursor = scopedCursor.value
-  const at =
-    (cursor.key !== null ? positions.get(cursor.key) : undefined) ??
-    Math.min(cursor.at, Math.max(count - 1, 0))
-  const currentPath = hits[at]?.path ?? null
-  const current = currentPath ? pathKey(currentPath) : null
-
-  // Pending changes and an open field stay in view in filter mode, so a value being edited
-  // never vanishes from under the cursor.
-  const [editing, setEditing] = useState<readonly PathSegment[] | null>(null)
-  const releaseEditing = useCallback(
-    (path: readonly PathSegment[]) => setEditing((current) => releasedPath(current, path)),
-    [],
-  )
-  const pinned = useMemo(
-    () => [
-      ...(edit ? Object.values(edit.changes).map((change) => change.path) : []),
-      ...(editing ? [editing] : []),
-    ],
-    [edit, editing],
-  )
-  const filter = useMemo(
-    () =>
-      searching && mode === "filter"
-        ? findFilter([...hits.map((hit) => hit.path), ...pinned])
-        : null,
-    [searching, mode, hits, pinned],
-  )
-  const hitPaths = useMemo(() => hits.map((hit) => hit.path), [hits])
-  // Rows above matches, which open; in highlight mode only up to REVEAL_LIMIT matches.
-  const above = useMemo(
-    () => (filter ? ancestorKeys([...hitPaths, ...pinned]) : ancestorKeys(hitPaths)),
-    [filter, hitPaths, pinned],
-  )
-  const reveal = useMemo(
-    () => (filter ? above : revealKeys(hitPaths, currentPath)),
-    [filter, above, hitPaths, currentPath],
-  )
-  const focus = useMemo(
-    () => (currentPath ? ancestorKeys([currentPath]) : new Set<string>()),
-    [currentPath],
-  )
-  const shownExpansion = searching ? searchExpansion(expansion, reveal, overlay, focus) : expansion
-  const capped = !filter && count > REVEAL_LIMIT
-
-  useEffect(() => {
-    if (currentPath) revealRow(treeRef.current, currentPath)
-    // Scrolls when the search or the current hit changes, not on every edit.
-  }, [search, current])
-
-  const find: TreeFind | null = searching
-    ? { via: found.via, hits, positions, current, above, filter }
-    : null
   const ctx: TreeContext = {
     tabId,
     itemId,
     edit,
     conflicts,
-    expansion: shownExpansion,
+    expansion: found.expansion,
     editable,
     find,
-    toggle: (path, holdsJson) =>
-      searching
-        ? updateOverlay((o) => overlayToggle(o, shownExpansion, path, holdsJson))
-        : toggleTreeNode(tabId, path, holdsJson),
-    toggleTable: (path) =>
-      searching
-        ? updateOverlay((o) => overlayToggleTable(o, shownExpansion, path))
-        : toggleTreeTable(tabId, path),
-    reveal: (path, target) => {
-      if (searching) updateOverlay((o) => overlayReveal(o, path, target))
-      else revealTreePath(tabId, path, target)
-      revealRow(treeRef.current, target)
-    },
-    setEditing,
-    releaseEditing,
-  }
-  const setAll = (open: boolean) =>
-    searching ? updateOverlay((o) => overlaySetAll(o, open)) : expandTree(tabId, open)
-  const step = (direction: 1 | -1) => {
-    if (count === 0) return
-    const next = stepMatch(at, count, direction)
-    setCursor({ search, value: { at: next, key: pathKey(hits[next].path) } })
+    toggle: found.toggle,
+    toggleTable: found.toggleTable,
+    reveal: found.reveal,
+    setEditing: found.setEditing,
+    releaseEditing: found.releaseEditing,
   }
   const shown = filter ? columns.filter((c) => filterShows(filter, [c.name])) : columns
 
@@ -788,11 +551,11 @@ export function ItemTree(props: ItemTreeProps) {
           bar={bar}
           choices={props.findChoices}
           count={searching ? count : 0}
-          at={at}
+          at={found.at}
           via={found.via}
           asText={found.asText}
-          capped={capped}
-          onStep={step}
+          capped={found.capped}
+          onStep={found.step}
           onClose={() => treeRef.current?.focus()}
         />
       )}
@@ -801,7 +564,7 @@ export function ItemTree(props: ItemTreeProps) {
           type="button"
           className="q-button q-button--ghost"
           title={searching ? "Opens everything until the search is cleared" : undefined}
-          onClick={() => setAll(true)}
+          onClick={() => found.setAll(true)}
         >
           <ChevronsUpDown size={12} strokeWidth={2.2} />
           Expand all
@@ -814,7 +577,7 @@ export function ItemTree(props: ItemTreeProps) {
               ? "Closes everything but the current match until the search is cleared"
               : undefined
           }
-          onClick={() => setAll(false)}
+          onClick={() => found.setAll(false)}
         >
           <ChevronsDownUp size={12} strokeWidth={2.2} />
           Collapse all
