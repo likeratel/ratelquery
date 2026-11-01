@@ -230,6 +230,30 @@ describe("jsonNumberSources", () => {
     expect(jsonInString('{"a": 1.50, "a": 2}')?.numbers.size).toBe(0)
   })
 
+  it("takes time linear in the text, with numbers recorded and no key repeated", () => {
+    // Not compact (1.50, 0.80), so every record adds two numbers before more keys follow.
+    const records = (n: number) =>
+      JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: i, name: "x" }))).replace(
+        /"name"/g,
+        '"price":10.50,"tax":0.80,"name"',
+      )
+    const fastest = (text: string) => {
+      let best = Infinity
+      for (let run = 0; run < 5; run += 1) {
+        const start = performance.now()
+        jsonNumberSources(text)
+        best = Math.min(best, performance.now() - start)
+      }
+      return best
+    }
+    const small = records(2_000)
+    const large = records(20_000)
+    expect(jsonNumberSources(large).size).toBe(40_000)
+    fastest(small)
+    // Ten times the text: linear is about 10x, the quadratic scan it replaces was about 100x.
+    expect(fastest(large)).toBeLessThan(Math.max(fastest(small), 0.5) * 40)
+  })
+
   it("skips paths deeper than the limit, without recursion", () => {
     expect(jsonNumberSources("[[1.0],2.0]", 1)).toEqual(new Map([[pathKey([1]), "2.0"]]))
     const depth = 100_000

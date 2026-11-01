@@ -288,7 +288,7 @@ const STRING_AT = /"(?:[^"\\]|\\.)*"/y
 const levelsKey = (stack: readonly Level[]) =>
   JSON.stringify(stack.map((l) => (l.array ? l.index : l.key)))
 
-/** Drops the entries at the path `key` and every path below it. */
+/** Drops the entries at the path `key` and every path below it. Runs only for a repeated key. */
 function dropFrom(sources: Map<string, string>, key: string): void {
   const below = `${key.slice(0, -1)},`
   for (const path of [...sources.keys()]) {
@@ -304,6 +304,8 @@ interface Level {
   key: string
   /** In an object, after `{` or `,`: the next string is a key. */
   expectsKey: boolean
+  /** The object's keys so far; only a key seen again can replace numbers already recorded. */
+  seen: Set<string> | null
 }
 
 /**
@@ -313,7 +315,8 @@ interface Level {
  * object replaces what came before it, as in `JSON.parse`: whatever the earlier value recorded,
  * at that key or below it, is dropped when the key comes again (`{"a":1.50,"a":2}` holds the
  * canonical `2`, so nothing is recorded). Paths deeper than `maxDepth` are skipped.
- * One pass over the text, without recursion, so deeply nested JSON costs no stack.
+ * One pass over the text, without recursion, so deeply nested JSON costs no stack, and linear
+ * time: recorded numbers are revisited only when an object repeats a key.
  */
 export function jsonNumberSources(
   text: string,
@@ -326,7 +329,14 @@ export function jsonNumberSources(
     const c = text[at]
     const level = stack.at(-1)
     if (c === "{" || c === "[") {
-      stack.push({ array: c === "[", index: 0, key: "", expectsKey: c === "{" })
+      const object = c === "{"
+      stack.push({
+        array: !object,
+        index: 0,
+        key: "",
+        expectsKey: object,
+        seen: object ? new Set() : null,
+      })
       at += 1
     } else if (c === "}" || c === "]") {
       stack.pop()
@@ -339,9 +349,16 @@ export function jsonNumberSources(
       STRING_AT.lastIndex = at
       const token = STRING_AT.exec(text)?.[0] ?? c
       if (level && !level.array && level.expectsKey) {
-        level.key = JSON.parse(token) as string
+        const key = JSON.parse(token) as string
+        level.key = key
         level.expectsKey = false
-        if (sources.size > 0 && stack.length <= maxDepth) dropFrom(sources, levelsKey(stack))
+        // Scanning the recorded numbers on every key would make large JSON quadratic; only a
+        // repeated key can replace them.
+        if (level.seen?.has(key)) {
+          if (sources.size > 0 && stack.length <= maxDepth) dropFrom(sources, levelsKey(stack))
+        } else {
+          level.seen?.add(key)
+        }
       }
       at += token.length
     } else if (c === "-" || (c >= "0" && c <= "9")) {
