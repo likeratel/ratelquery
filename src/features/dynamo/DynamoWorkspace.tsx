@@ -17,6 +17,9 @@ import { TablePanel } from "./TablePanel"
 import { useFindShortcut } from "./useFindShortcut"
 import "../query/query.css"
 import "./dynamo.css"
+// After dynamo.css, where these rules sat before they moved: `.dyn-type` and the tree's
+// badges match the same elements at the same specificity, so the later file must win.
+import "./itemTree.css"
 
 /** Identity of the item in the side panel: its table key, else its row. */
 function detailIdentity(item: Item, schema: KeySchema | null, row: number | null): string {

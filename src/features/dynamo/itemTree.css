@@ -237,7 +237,7 @@
   margin-top: 1px;
 }
 
-.dyn-tree__json {
+.dyn-type.dyn-tree__json {
   border-color: var(--accent-ring);
   color: var(--accent);
 }
