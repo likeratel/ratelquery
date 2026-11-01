@@ -217,8 +217,46 @@ fn expected_clauses(
     Ok(clauses)
 }
 
+/// Whether `value` is a wire list (`{"L": [...]}`).
+fn is_wire_list(value: &Value) -> bool {
+    value.as_object().is_some_and(|object| object.len() == 1 && object.contains_key("L"))
+}
+
+/// Refuses a nested `path` below `name` unless `expected` holds, for every list index
+/// `path[k]`, the whole list `path[..k]` as a list value (`rules[1].on` needs `rules`;
+/// `a[0].b[1].c` needs `a` and `a[0].b`). An element's own value says nothing about its
+/// position, so without the list a removal meanwhile would shift another element under the
+/// index and the write would change that one instead.
+fn require_list_guards(
+    name: &str,
+    path: &[PathSegment],
+    expected: &[ExpectedValue],
+) -> AppResult<()> {
+    for (k, segment) in path.iter().enumerate() {
+        if !matches!(segment, PathSegment::Index(_)) {
+            continue;
+        }
+        let list = &path[..k];
+        let guarded = expected.iter().any(|guard| {
+            guard.name == name
+                && guard.path == list
+                && guard.value.as_ref().is_some_and(is_wire_list)
+        });
+        if !guarded {
+            return Err(AppError::InvalidInput(format!(
+                "{} indexes into the list {}, so the list as loaded must be among the expected \
+                 values",
+                display_path(name, path),
+                display_path(name, list)
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// PutItem condition for `expect`. Saving over an existing item can also require values it
 /// must still hold (see `ExpectedValue`); creating an item can't, as there is nothing to hold.
+/// A value below a list index needs that whole list among them too (see `require_list_guards`).
 pub fn put_condition(
     expect: PutExpectation,
     hash_key: &str,
@@ -228,6 +266,9 @@ pub fn put_condition(
         return Err(AppError::InvalidInput(
             "expected values need a save over an existing item (expect: exists)".into(),
         ));
+    }
+    for value in expected {
+        require_list_guards(&value.name, &value.path, expected)?;
     }
     let name = format!("#{BASE_PREFIX}0");
     let condition = match expect {
@@ -264,7 +305,8 @@ fn paths_overlap(a: &AttributeUpdate, b: &AttributeUpdate) -> bool {
 /// `attribute_exists(#dbk0)` (the item is still there), per change `<pathN> = :dbkeN` (still the
 /// value the user saw) or `attribute_not_exists(#dbkaN)` (an attribute still missing), and every
 /// `expected` value (the lists the paths index into, see `ExpectedValue`). A path is the
-/// attribute, or a value nested in its maps and lists (see `path_expression`). Names, map keys
+/// attribute, or a value nested in its maps and lists (see `path_expression`); every list a path
+/// indexes into must be among the `expected` values (see `require_list_guards`). Names, map keys
 /// and values only ever travel as placeholders. Key attributes can't be set this way.
 pub fn build_update(
     schema: &KeySchema,
@@ -311,6 +353,7 @@ pub fn build_update(
             }
             None => format!("attribute_not_exists({path})"),
         });
+        require_list_guards(name, &change.path, expected)?;
     }
     conditions.extend(expected_clauses(expected, &mut names, &mut values)?);
     Ok(Expressions {
@@ -541,7 +584,9 @@ mod tests {
             ),
             change("note", json!({ "S": "n" }), Some(json!({ "S": "m" }))),
         ];
-        let e = build_update(&schema(true), &changes, &[]).unwrap();
+        let numbers = json!({ "L": [{ "M": { "sender": { "S": "01" } } }, { "N": "1" }] });
+        let guards = [expected("service", &[json!("numbers")], Some(numbers))];
+        let e = build_update(&schema(true), &changes, &guards).unwrap();
         assert_eq!(
             e.update.as_deref(),
             Some(
@@ -553,7 +598,8 @@ mod tests {
             e.condition.as_deref(),
             Some(
                 "attribute_exists(#dbk0) AND #dbka0.#dbka0_0[0].#dbka0_2 = :dbke0 \
-                 AND #dbka1.#dbka1_0[1] = :dbke1 AND #dbka2 = :dbke2"
+                 AND #dbka1.#dbka1_0[1] = :dbke1 AND #dbka2 = :dbke2 \
+                 AND #dbkc0.#dbkc0_0 = :dbkc0"
             )
         );
         assert_eq!(e.names["#dbka0"], "service");
@@ -621,14 +667,70 @@ mod tests {
     }
 
     #[test]
+    fn update_refuses_a_list_index_without_the_whole_list() {
+        let rules = json!({ "L": [{ "M": { "on": { "BOOL": false } } }] });
+        let edit = |path: &[Value]| {
+            [nested("rules", path, json!({ "BOOL": true }), Some(json!({ "BOOL": false })))]
+        };
+        let s = schema(false);
+        // `rules[1].on` with nothing, or with a guard that isn't the list as a list value.
+        let refused: [Vec<ExpectedValue>; 5] = [
+            vec![],
+            vec![expected("rules", &[], None)],
+            vec![expected("rules", &[], Some(json!({ "M": {} })))],
+            vec![expected("other", &[], Some(rules.clone()))],
+            vec![expected("rules", &[json!(0)], Some(rules.clone()))],
+        ];
+        for guards in refused {
+            let err = build_update(&s, &edit(&[json!(1), json!("on")]), &guards).unwrap_err();
+            assert_eq!(err.kind(), "invalid_input", "{guards:?}");
+            assert!(err.to_string().contains("rules[1].on"), "{err}");
+        }
+        let whole = [expected("rules", &[], Some(rules.clone()))];
+        build_update(&s, &edit(&[json!(1), json!("on")]), &whole).unwrap();
+
+        // Every list on the way: `a[0].b[1].c` needs `a` and `a[0].b`.
+        let deep = [nested(
+            "a",
+            &[json!(0), json!("b"), json!(1), json!("c")],
+            json!({ "S": "y" }),
+            Some(json!({ "S": "x" })),
+        )];
+        let outer = expected("a", &[], Some(json!({ "L": [] })));
+        let inner = expected("a", &[json!(0), json!("b")], Some(json!({ "L": [] })));
+        let err = build_update(&s, &deep, std::slice::from_ref(&outer)).unwrap_err();
+        assert!(err.to_string().contains("a[0].b"), "{err}");
+        let err = build_update(&s, &deep, std::slice::from_ref(&inner)).unwrap_err();
+        assert_eq!(err.kind(), "invalid_input");
+        build_update(&s, &deep, &[outer, inner]).unwrap();
+
+        // Map keys alone never shift, and need no guard.
+        let keyed = [nested(
+            "m",
+            &[json!("a"), json!("b")],
+            json!({ "S": "y" }),
+            Some(json!({ "S": "x" })),
+        )];
+        build_update(&s, &keyed, &[]).unwrap();
+    }
+
+    #[test]
     fn put_requires_expected_values_only_over_an_existing_item() {
-        let guards = [expected("rules", &[json!(1), json!("on")], Some(json!({ "BOOL": true })))];
+        let rules = json!({ "L": [{ "M": {} }, { "M": { "on": { "BOOL": true } } }] });
+        let guards = [
+            expected("rules", &[json!(1), json!("on")], Some(json!({ "BOOL": true }))),
+            expected("rules", &[], Some(rules)),
+        ];
         let e = put_condition(PutExpectation::Exists, "pk", &guards).unwrap();
         assert_eq!(
             e.condition.as_deref(),
-            Some("attribute_exists(#dbk0) AND #dbkc0[1].#dbkc0_1 = :dbkc0")
+            Some("attribute_exists(#dbk0) AND #dbkc0[1].#dbkc0_1 = :dbkc0 AND #dbkc1 = :dbkc1")
         );
         assert_eq!(e.names["#dbkc0_1"], "on");
+        // A value below a list index needs the whole list among the expected values too.
+        let err = put_condition(PutExpectation::Exists, "pk", &guards[..1]).unwrap_err();
+        assert_eq!(err.kind(), "invalid_input");
+        assert!(err.to_string().contains("rules[1].on"), "{err}");
         for expect in [PutExpectation::NotExists, PutExpectation::Any] {
             assert_eq!(put_condition(expect, "pk", &guards).unwrap_err().kind(), "invalid_input");
         }

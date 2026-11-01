@@ -290,16 +290,34 @@ async fn check_attribute_updates(handle: &DynamoHandle, table: &str) {
         value: s("03"),
         expected: Some(s("02")),
     };
+    // Every list the path indexes into goes along as loaded; without it nothing is sent.
+    let numbers_guard = ExpectedValue {
+        name: "service".into(),
+        path: serde_json::from_value(json!(["numbers"])).unwrap(),
+        value: Some(numbers["M"]["numbers"].clone()),
+    };
     let service = [update("service", numbers, None)];
     dynamo::update_item_attributes(handle, table, &key, &service, &[]).await.unwrap();
-    dynamo::update_item_attributes(handle, table, &key, std::slice::from_ref(&nested), &[])
-        .await
-        .unwrap();
+    let err =
+        dynamo::update_item_attributes(handle, table, &key, std::slice::from_ref(&nested), &[])
+            .await
+            .unwrap_err();
+    assert_eq!(err.kind(), "invalid_input");
+    dynamo::update_item_attributes(
+        handle,
+        table,
+        &key,
+        std::slice::from_ref(&nested),
+        std::slice::from_ref(&numbers_guard),
+    )
+    .await
+    .unwrap();
     let stored = dynamo::get_item(handle, table, &key).await.unwrap().unwrap();
     assert_eq!(stored["service"]["M"]["numbers"]["L"][1], json!({ "M": { "sender": s("03") } }));
     assert_eq!(stored["service"]["M"]["numbers"]["L"][0]["M"]["sender"], s("01"));
-    let err =
-        dynamo::update_item_attributes(handle, table, &key, &[nested], &[]).await.unwrap_err();
+    let err = dynamo::update_item_attributes(handle, table, &key, &[nested], &[numbers_guard])
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("changed or deleted"), "{err}");
 
     check_shifted_lists(handle, table, &key).await;
