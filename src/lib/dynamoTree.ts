@@ -257,18 +257,33 @@ export const EXPAND_LIMIT = 2000
 
 /**
  * The depth bound for a tree whose expansion has `base` (see `expandAllDepth`): null unless it
- * opens everything, and never while a search filter shows only the matching rows. Filter mode renders
- * those rows alone, so the row count is already small, and a bound would only hide the matches
- * below it (`l[2999].x.y` in a list of 3,000 maps).
+ * opens everything. It holds in a search filter too, which shows the whole subtree of a
+ * matching map or list; `boundExpansion` keeps the rows above the matches open past it.
  */
 export function shownExpandDepth(
   base: TreeExpansion["base"],
-  filtering: boolean,
   item: Item,
   names: readonly string[],
   limit = EXPAND_LIMIT,
 ): number | null {
-  return base === "all" && !filtering ? expandAllDepth(item, names, limit) : null
+  return base === "all" ? expandAllDepth(item, names, limit) : null
+}
+
+/**
+ * `shown` bounded to `depth` (null leaves it as it is), with the rows in `keep` open past the
+ * bound unless `shown` itself says otherwise (a row toggled closed stays closed). In filter mode
+ * `keep` is the rows above the matches, so a leaf deep in a large list (`l[2998].x.y`) still
+ * shows while a matching container's own subtree stays bounded.
+ */
+export function boundExpansion(
+  shown: TreeExpansion,
+  depth: number | null,
+  keep: ReadonlySet<string>,
+): TreeExpansion {
+  if (depth === null) return shown
+  const open: Record<string, boolean> = {}
+  for (const key of keep) open[key] = true
+  return { ...shown, open: { ...open, ...shown.open }, depth }
 }
 
 /**

@@ -33,8 +33,11 @@ import {
   isExpanded,
   isTable,
   MAX_TREE_DEPTH,
+  boundExpansion,
   shownExpandDepth,
+  treeNode,
   type TreeExpansion,
+  type TreeValue,
 } from "./dynamoTree"
 
 const item: Item = {
@@ -492,9 +495,46 @@ describe("find in JSON numbers and deep JSON", () => {
 })
 
 describe("Expand all during a filtered search", () => {
+  /** Rows the tree renders: open all the way down from an attribute, and shown by `filter`. */
+  function renderedRows(
+    item: Item,
+    expansion: TreeExpansion,
+    filter: ReturnType<typeof findFilter> | null,
+  ): PathSegment[][] {
+    const rows: PathSegment[][] = []
+    const visit = (value: TreeValue, path: PathSegment[]) => {
+      if (filter && !filterShows(filter, path)) return
+      rows.push(path)
+      const node = treeNode(value)
+      if (!node.children || !isExpanded(expansion, path, node.json !== null)) return
+      for (const child of node.children) visit(child.value, [...path, child.segment])
+    }
+    for (const name of Object.keys(item)) visit({ kind: "wire", value: item[name] }, [name])
+    return rows
+  }
+
+  /** The tree after Expand all during a search for `query`, in filter mode or not. */
+  function expandAllWith(item: Item, query: string, filtering: boolean) {
+    const names = Object.keys(item)
+    const hits = findInItem(findIndex(item, names), query, DEFAULT_FIND_OPTIONS).hits
+    const paths = hits.map((hit) => hit.path)
+    const filter = filtering ? findFilter(paths) : null
+    const above = ancestorKeys(paths)
+    // Only the current match's rows are opened by name once Expand all sets the base.
+    const shown = searchExpansion(
+      DEFAULT_TREE_EXPANSION,
+      above,
+      overlaySetAll(EMPTY_OVERLAY, true),
+      ancestorKeys(paths.slice(-1)),
+    )
+    const depth = shownExpandDepth(shown.base, item, names)
+    const expansion = boundExpansion(shown, depth, filter ? above : new Set())
+    return { paths, depth, rows: renderedRows(item, expansion, filter) }
+  }
+
   // 3,000 maps: opening everything would be 9,001 rows, past EXPAND_LIMIT.
   const needles = new Set([2998, 2999])
-  const big: Item = {
+  const deep: Item = {
     l: {
       L: Array.from({ length: 3000 }, (_, i) => ({
         M: { x: { M: { y: { S: needles.has(i) ? "needle" : "n" } } } },
@@ -504,31 +544,51 @@ describe("Expand all during a filtered search", () => {
   const other: PathSegment[] = ["l", 2998, "x", "y"]
   const current: PathSegment[] = ["l", 2999, "x", "y"]
 
-  it("bounds the depth in highlight mode, which renders every open row", () => {
-    expect(shownExpandDepth("all", false, big, ["l"])).toBe(1)
-    expect(shownExpandDepth("first", false, big, ["l"])).toBeNull()
+  it("bounds the depth whenever everything is opened", () => {
+    expect(shownExpandDepth("all", deep, ["l"])).toBe(1)
+    expect(shownExpandDepth("first", deep, ["l"])).toBeNull()
+    expect(boundExpansion(DEFAULT_TREE_EXPANSION, null, new Set(["x"]))).toBe(
+      DEFAULT_TREE_EXPANSION,
+    )
   })
 
-  it("keeps every deep match in view under a filter, which renders only matching rows", () => {
-    const hits = findInItem(findIndex(big, ["l"]), "needle", DEFAULT_FIND_OPTIONS).hits
-    expect(hits.map((hit) => hit.path)).toEqual([other, current])
-    const filter = findFilter([other, current])
-    // Expand all during the search; only the current match's rows are opened by name.
-    const shown = searchExpansion(
-      DEFAULT_TREE_EXPANSION,
-      ancestorKeys([other, current]),
-      overlaySetAll(EMPTY_OVERLAY, true),
-      ancestorKeys([current]),
-    )
-    expect(shownExpandDepth(shown.base, true, big, ["l"])).toBeNull()
-    for (const match of [other, current]) {
-      expect(filterShows(filter, match)).toBe(true)
-      for (let length = 1; length < match.length; length += 1) {
-        expect(isExpanded(shown, match.slice(0, length), false)).toBe(true)
-      }
+  it("keeps every deep leaf match in view under a filter", () => {
+    const { paths, depth, rows } = expandAllWith(deep, "needle", true)
+    expect(paths).toEqual([other, current])
+    expect(depth).toBe(1)
+    const keys = rows.map(pathKey)
+    for (const match of [other, current]) expect(keys).toContain(pathKey(match))
+    expect(rows.length).toBeLessThanOrEqual(10)
+  })
+
+  it("keeps a matching container's subtree bounded under a filter", () => {
+    // 3,000 maps of 20 fields: the whole of `l` would be 63,001 rows.
+    const wide: Item = {
+      l: {
+        L: Array.from({ length: 3000 }, () => ({
+          M: Object.fromEntries(Array.from({ length: 20 }, (_, f) => [`f${f}`, { S: "v" }])),
+        })),
+      },
     }
-    // Bounded, the other match's map would stay closed and hide it.
-    const depth = shownExpandDepth(shown.base, false, big, ["l"]) ?? undefined
-    expect(isExpanded({ ...shown, depth }, ["l", 2998], false)).toBe(false)
+    const { paths, depth, rows } = expandAllWith(wide, "l", true)
+    expect(paths).toEqual([["l"]])
+    expect(depth).toBe(1)
+    expect(rows).toHaveLength(3001)
+  })
+
+  it("bounds highlight mode the same way", () => {
+    const { rows } = expandAllWith(deep, "needle", false)
+    // Only the current match's rows open past the bound.
+    expect(rows.length).toBe(3001 + 2)
+  })
+
+  it("leaves a row the user closed during the search closed", () => {
+    const shown = {
+      ...DEFAULT_TREE_EXPANSION,
+      base: "all" as const,
+      open: { [pathKey(["l"])]: false },
+    }
+    const bounded = boundExpansion(shown, 1, new Set([pathKey(["l"])]))
+    expect(isExpanded(bounded, ["l"], false)).toBe(false)
   })
 })

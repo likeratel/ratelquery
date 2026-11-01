@@ -35,7 +35,7 @@ import {
   type SearchOverlay,
 } from "../../lib/dynamoSearch"
 import type { FindChoices } from "../../lib/dynamoTabs"
-import { shownExpandDepth, type TreeExpansion } from "../../lib/dynamoTree"
+import { boundExpansion, shownExpandDepth, type TreeExpansion } from "../../lib/dynamoTree"
 import { expandTree, revealTreePath, toggleTreeNode, toggleTreeTable } from "./actions"
 import { CLOSED_FIND, findBarKey, useItemFind } from "./findStore"
 
@@ -62,6 +62,8 @@ interface FindCursor {
 const START: FindCursor = { at: 0, key: null }
 
 const NO_ENTRIES: readonly FindEntry[] = []
+
+const NO_KEYS: ReadonlySet<string> = new Set()
 
 /** Scrolls to the row at `path`, or to the nearest row above it that shows. */
 export function revealRow(container: HTMLElement | null, path: readonly PathSegment[]) {
@@ -221,15 +223,11 @@ export function useTreeFind(input: TreeFindInput): TreeFindState {
     [currentPath],
   )
   const asked = searching ? searchExpansion(expansion, reveal, overlay, focus) : expansion
-  // Expand all on an item too large to render whole opens only as many levels as fit, except
-  // while a filter shows only the matching rows (see `shownExpandDepth`).
+  // Expand all on an item too large to render whole opens only as many levels as fit. A filter
+  // keeps the rows above its matches open past that, so every match still shows.
   const base = asked.base
-  const filtering = filter !== null
-  const depth = useMemo(
-    () => shownExpandDepth(base, filtering, item, names),
-    [base, filtering, item, names],
-  )
-  const shownExpansion = depth === null ? asked : { ...asked, depth }
+  const depth = useMemo(() => shownExpandDepth(base, item, names), [base, item, names])
+  const shownExpansion = boundExpansion(asked, depth, filter ? above : NO_KEYS)
 
   useEffect(() => {
     if (currentPath) revealRow(treeRef.current, currentPath)
