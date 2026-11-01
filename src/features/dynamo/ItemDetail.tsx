@@ -208,7 +208,8 @@ export function ItemDetail({ tab, item, schema, onEdit, onClose }: ItemDetailPro
   const count = Object.keys(shown).length
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.defaultPrevented) return
+    // A key that ends an IME composition (in a tree field) belongs to the IME, as in the Shell.
+    if (event.defaultPrevented || event.nativeEvent.isComposing) return
     if (matchesShortcut(event, APP_SHORTCUTS.apply)) {
       // Here Mod+S reviews, then applies, this item's changes only; elsewhere it applies all.
       // An open tree field has already staged its value, or kept the event when it couldn't.

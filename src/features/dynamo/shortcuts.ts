@@ -1,3 +1,4 @@
+import { TREE_EDIT_SHORTCUTS } from "../../lib/dynamoTreeView"
 import { FIND_SHORTCUT } from "../../lib/findShortcut"
 import { parseShortcut } from "../../lib/shortcuts"
 
@@ -8,4 +9,10 @@ export const DYNAMO_SHORTCUTS = {
   find: FIND_SHORTCUT,
   findNext: parseShortcut("Enter"),
   findPrevious: parseShortcut("Shift+Enter"),
+  /** Bare Enter or F2 on a focused tree value opens its field; see `startsTreeEdit`. */
+  editValue: TREE_EDIT_SHORTCUTS.edit,
+  editValueAlt: TREE_EDIT_SHORTCUTS.editAlt,
+  /** In a tree value's open field; see `treeFieldKey`. */
+  commitValue: TREE_EDIT_SHORTCUTS.commit,
+  cancelValue: TREE_EDIT_SHORTCUTS.cancel,
 } as const

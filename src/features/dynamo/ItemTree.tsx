@@ -69,6 +69,7 @@ import {
   type TreeNode,
   type TreeValue,
 } from "../../lib/dynamoTree"
+import { startsTreeEdit, treeFieldKey } from "../../lib/dynamoTreeView"
 import { itemColumns, type KeyRole } from "../../lib/dynamoView"
 import { formatShortcut, matchesShortcut } from "../../lib/shortcuts"
 import { APP_SHORTCUTS } from "../query/appShortcuts"
@@ -302,7 +303,11 @@ function LeafValue({ ctx, place, value, node, editable, label, marks }: LeafProp
             setError(null)
           }}
           onKeyDown={(event) => {
-            if (event.code === "Enter" || event.code === "NumpadEnter") {
+            // Enter that confirms a Hangul syllable (or kana) and Esc that drops a composition
+            // belong to the IME; neither commits nor closes the field mid-word.
+            const key = treeFieldKey(event.nativeEvent)
+            if (key === "composing") return
+            if (key === "commit") {
               event.preventDefault()
               commit(draft)
             } else if (matchesShortcut(event, APP_SHORTCUTS.apply)) {
@@ -312,7 +317,7 @@ function LeafValue({ ctx, place, value, node, editable, label, marks }: LeafProp
                 event.preventDefault()
                 event.stopPropagation()
               }
-            } else if (event.code === "Escape") {
+            } else if (key === "cancel") {
               event.preventDefault()
               event.stopPropagation()
               close()
@@ -336,7 +341,8 @@ function LeafValue({ ctx, place, value, node, editable, label, marks }: LeafProp
     setDraft(editText(value))
   }
   const onKeyDown = (event: ReactKeyboardEvent) => {
-    if (["Enter", "NumpadEnter", "F2"].includes(event.code)) {
+    // Only bare Enter or F2: Mod+Enter and Shift+Enter go on to the app's Run shortcut.
+    if (startsTreeEdit(event.nativeEvent)) {
       event.preventDefault()
       startEdit()
     }
