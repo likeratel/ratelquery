@@ -284,6 +284,18 @@ export function jsonInString(text: string): JsonInString | null {
 const NUMBER_AT = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y
 const STRING_AT = /"(?:[^"\\]|\\.)*"/y
 
+/** Same text as `pathKey` (dynamoPath imports this module, so it isn't imported here). */
+const levelsKey = (stack: readonly Level[]) =>
+  JSON.stringify(stack.map((l) => (l.array ? l.index : l.key)))
+
+/** Drops the entries at the path `key` and every path below it. */
+function dropFrom(sources: Map<string, string>, key: string): void {
+  const below = `${key.slice(0, -1)},`
+  for (const path of [...sources.keys()]) {
+    if (path === key || path.startsWith(below)) sources.delete(path)
+  }
+}
+
 interface Level {
   array: boolean
   /** Index of the current member of an array. */
@@ -298,7 +310,9 @@ interface Level {
  * Number literals of the valid JSON `text` that `String(JSON.parse(literal))` writes another
  * way (`1.50` → `1.5`, `1000000000000000000000` → `1e+21`), keyed by `pathKey` of their path in
  * the parsed value, so the tree can show and search the number as stored. A key repeated in an
- * object keeps its last value, as `JSON.parse` does. Paths deeper than `maxDepth` are skipped.
+ * object replaces what came before it, as in `JSON.parse`: whatever the earlier value recorded,
+ * at that key or below it, is dropped when the key comes again (`{"a":1.50,"a":2}` holds the
+ * canonical `2`, so nothing is recorded). Paths deeper than `maxDepth` are skipped.
  * One pass over the text, without recursion, so deeply nested JSON costs no stack.
  */
 export function jsonNumberSources(
@@ -327,15 +341,14 @@ export function jsonNumberSources(
       if (level && !level.array && level.expectsKey) {
         level.key = JSON.parse(token) as string
         level.expectsKey = false
+        if (sources.size > 0 && stack.length <= maxDepth) dropFrom(sources, levelsKey(stack))
       }
       at += token.length
     } else if (c === "-" || (c >= "0" && c <= "9")) {
       NUMBER_AT.lastIndex = at
       const token = NUMBER_AT.exec(text)?.[0] ?? c
       if (stack.length <= maxDepth && String(Number(token)) !== token) {
-        // Same text as `pathKey` (dynamoPath imports this module, so it isn't imported here).
-        const path = stack.map((l) => (l.array ? l.index : l.key))
-        sources.set(JSON.stringify(path), token)
+        sources.set(levelsKey(stack), token)
       }
       at += token.length
     } else {

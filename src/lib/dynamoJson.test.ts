@@ -212,6 +212,24 @@ describe("jsonNumberSources", () => {
     )
   })
 
+  it("drops what an earlier value of a repeated key recorded, at the key and below it", () => {
+    expect(jsonNumberSources('{"a": 1.50, "a": 2}')).toEqual(new Map())
+    expect(jsonNumberSources('{"a":[1.50],"a":[2]}')).toEqual(new Map())
+    expect(jsonNumberSources('{"a":{"b":1.50,"c":[1e3]},"a":{"b":2}}')).toEqual(new Map())
+    // Keys that only start alike, and the same key in another object, stay.
+    expect(
+      jsonNumberSources('{"ab":1.50,"a":{"x":1.0},"o":{"a":1e3},"a":2,"o2":{"a":1e2}}'),
+    ).toEqual(
+      new Map([
+        [pathKey(["ab"]), "1.50"],
+        [pathKey(["o", "a"]), "1e3"],
+        [pathKey(["o2", "a"]), "1e2"],
+      ]),
+    )
+    // The tree then shows the value JSON.parse kept.
+    expect(jsonInString('{"a": 1.50, "a": 2}')?.numbers.size).toBe(0)
+  })
+
   it("skips paths deeper than the limit, without recursion", () => {
     expect(jsonNumberSources("[[1.0],2.0]", 1)).toEqual(new Map([[pathKey([1]), "2.0"]]))
     const depth = 100_000
