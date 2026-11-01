@@ -116,8 +116,9 @@ frontend; the next save writes version 2.
 
 The backend itself tolerates far deeper nesting than that before it gives up: a hand-edited file
 is only ignored (like a corrupt or oversized one) once its `{`/`[` nesting passes roughly 250
-folder levels (`MAX_PARSE_DEPTH` in `layout_store.rs`), a bound chosen to stay well clear of a
-thread's stack even though reading past it disables `serde_json`'s own, lower recursion limit.
+folder levels (`MAX_PARSE_DEPTH` in `layout_store.rs`). Reading a file disables `serde_json`'s own,
+lower recursion limit, so this bound is what protects the stack: at the cap a parse takes about
+190 KiB in a release build and about 1 MiB in a debug build, against a 2 MiB thread stack.
 
 Connections missing from the layout are listed after it by name; ids that no longer exist are
 dropped when the frontend reconciles the layout with `connections_list`. While the saved layout is

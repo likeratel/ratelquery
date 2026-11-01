@@ -29,8 +29,9 @@ pub const MAX_LAYOUT_BYTES: usize = 1024 * 1024;
 /// hand-edited file nested past roughly 60 folders already failed to parse under that limit and
 /// was silently ignored instead of being flattened at `connectionLayout.MAX_FOLDER_DEPTH` as
 /// `docs/ipc-contract.md` promises. This bound allows roughly 250 folder levels -- eight times
-/// that frontend limit -- while staying far below what could exhaust a thread's stack, which
-/// matters because parsing below bypasses serde_json's own limit entirely (see `load`).
+/// that frontend limit. Parsing below bypasses serde_json's own limit (see `load`), so this bound
+/// is what protects the stack: at 512 levels a parse takes about 190 KiB in a release build and
+/// about 1 MiB in a debug build, against the 2 MiB stack of the blocking thread `load` runs on.
 const MAX_PARSE_DEPTH: usize = 512;
 
 /// Whether every `{`/`[` in `text` nests no deeper than `limit`, checked with a counter instead
@@ -217,6 +218,28 @@ mod tests {
             children = vec![json!({ "type": "folder", "id": id, "children": children })];
         }
         json!({ "version": 2, "folders": folders, "items": children })
+    }
+
+    #[test]
+    fn depth_scan_skips_brackets_and_escapes_inside_strings() {
+        let opens = "[".repeat(10);
+        // Closers inside a string must not hide real nesting.
+        assert!(!nests_no_deeper_than(&format!(r#"["]]]]]]]]]]",{opens}"#), 10));
+        // Openers inside a string must not count as nesting.
+        assert!(nests_no_deeper_than(r#"[{"name":"{[{[{[{["}]"#, 2));
+        // An escaped quote doesn't end the string, so the brackets after it are still text.
+        assert!(nests_no_deeper_than(r#"["a\"[[[[","b"]"#, 1));
+        // An escaped backslash does end the string before the quote, so later brackets count.
+        assert!(!nests_no_deeper_than(r#"["a\\",[[["#, 3));
+        assert!(nests_no_deeper_than(r#"["a\\",[[["#, 4));
+    }
+
+    #[test]
+    fn depth_scan_limit_is_exact() {
+        let at = format!("{}{}", "[".repeat(MAX_PARSE_DEPTH), "]".repeat(MAX_PARSE_DEPTH));
+        let past = format!("[{at}]");
+        assert!(nests_no_deeper_than(&at, MAX_PARSE_DEPTH));
+        assert!(!nests_no_deeper_than(&past, MAX_PARSE_DEPTH));
     }
 
     #[test]
