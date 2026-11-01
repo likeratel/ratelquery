@@ -288,14 +288,6 @@ const STRING_AT = /"(?:[^"\\]|\\.)*"/y
 const levelsKey = (stack: readonly Level[]) =>
   JSON.stringify(stack.map((l) => (l.array ? l.index : l.key)))
 
-/** Drops the entries at the path `key` and every path below it. Runs only for a repeated key. */
-function dropFrom(sources: Map<string, string>, key: string): void {
-  const below = `${key.slice(0, -1)},`
-  for (const path of [...sources.keys()]) {
-    if (path === key || path.startsWith(below)) sources.delete(path)
-  }
-}
-
 interface Level {
   array: boolean
   /** Index of the current member of an array. */
@@ -304,8 +296,11 @@ interface Level {
   key: string
   /** In an object, after `{` or `,`: the next string is a key. */
   expectsKey: boolean
-  /** The object's keys so far; only a key seen again can replace numbers already recorded. */
-  seen: Set<string> | null
+  /**
+   * In an object: the numbers recorded under each member so far, by key, as `sources` keys. A
+   * key that comes again drops just its own list, so repeats cost no scan of everything else.
+   */
+  recorded: Map<string, string[]> | null
 }
 
 /**
@@ -315,8 +310,9 @@ interface Level {
  * object replaces what came before it, as in `JSON.parse`: whatever the earlier value recorded,
  * at that key or below it, is dropped when the key comes again (`{"a":1.50,"a":2}` holds the
  * canonical `2`, so nothing is recorded). Paths deeper than `maxDepth` are skipped.
- * One pass over the text, without recursion, so deeply nested JSON costs no stack, and linear
- * time: recorded numbers are revisited only when an object repeats a key.
+ * One pass over the text, without recursion, so deeply nested JSON costs no stack. Time is
+ * linear: each recorded number is filed under every object around it (at most `maxDepth`), and
+ * a repeated key drops only the numbers filed under it, once.
  */
 export function jsonNumberSources(
   text: string,
@@ -335,7 +331,7 @@ export function jsonNumberSources(
         index: 0,
         key: "",
         expectsKey: object,
-        seen: object ? new Set() : null,
+        recorded: object ? new Map() : null,
       })
       at += 1
     } else if (c === "}" || c === "]") {
@@ -352,12 +348,11 @@ export function jsonNumberSources(
         const key = JSON.parse(token) as string
         level.key = key
         level.expectsKey = false
-        // Scanning the recorded numbers on every key would make large JSON quadratic; only a
-        // repeated key can replace them.
-        if (level.seen?.has(key)) {
-          if (sources.size > 0 && stack.length <= maxDepth) dropFrom(sources, levelsKey(stack))
-        } else {
-          level.seen?.add(key)
+        // A repeated key replaces its earlier value, and with it the numbers recorded there.
+        const replaced = level.recorded?.get(key)
+        if (replaced) {
+          for (const path of replaced) sources.delete(path)
+          level.recorded?.delete(key)
         }
       }
       at += token.length
@@ -365,7 +360,14 @@ export function jsonNumberSources(
       NUMBER_AT.lastIndex = at
       const token = NUMBER_AT.exec(text)?.[0] ?? c
       if (stack.length <= maxDepth && String(Number(token)) !== token) {
-        sources.set(levelsKey(stack), token)
+        const path = levelsKey(stack)
+        sources.set(path, token)
+        for (const outer of stack) {
+          if (!outer.recorded) continue
+          const under = outer.recorded.get(outer.key)
+          if (under) under.push(path)
+          else outer.recorded.set(outer.key, [path])
+        }
       }
       at += token.length
     } else {

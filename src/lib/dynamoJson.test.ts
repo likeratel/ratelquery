@@ -254,6 +254,48 @@ describe("jsonNumberSources", () => {
     expect(fastest(large)).toBeLessThan(Math.max(fastest(small), 0.5) * 40)
   })
 
+  it("takes time linear in the text when a key repeats many times", () => {
+    // A list of non-canonical numbers, then the same key over and over.
+    const repeats = (n: number) =>
+      `{"x":[${Array(n).fill("1.50").join(",")}],${Array(n).fill('"a":0').join(",")}}`
+    const fastest = (text: string) => {
+      let best = Infinity
+      for (let run = 0; run < 5; run += 1) {
+        const start = performance.now()
+        jsonNumberSources(text)
+        best = Math.min(best, performance.now() - start)
+      }
+      return best
+    }
+    const small = repeats(2_000)
+    const large = repeats(20_000)
+    expect(jsonNumberSources(large).size).toBe(20_000)
+    fastest(small)
+    // Ten times the text: linear is about 10x, scanning every number per repeat about 100x.
+    expect(fastest(large)).toBeLessThan(Math.max(fastest(small), 0.5) * 40)
+  })
+
+  it("drops a repeated key's numbers at every depth, and only those", () => {
+    const text =
+      '{"o":{"a":1.50,"a":[1e1,2.0],"b":{"c":3.0}},"p":1.0,' +
+      '"o":{"b":{"c":4.0,"c":5},"d":6.0},"q":[{"r":7.0,"r":8.0}]}'
+    expect(jsonNumberSources(text)).toEqual(
+      new Map([
+        [pathKey(["p"]), "1.0"],
+        [pathKey(["o", "d"]), "6.0"],
+        [pathKey(["q", 0, "r"]), "8.0"],
+      ]),
+    )
+    // The same path recorded again after a repeat survives until its own key repeats.
+    expect(jsonNumberSources('{"o":{"a":1.0,"a":2.0},"z":3.0}')).toEqual(
+      new Map([
+        [pathKey(["o", "a"]), "2.0"],
+        [pathKey(["z"]), "3.0"],
+      ]),
+    )
+    expect(jsonNumberSources('{"o":{"a":1.0,"a":2.0},"o":{}}')).toEqual(new Map())
+  })
+
   it("skips paths deeper than the limit, without recursion", () => {
     expect(jsonNumberSources("[[1.0],2.0]", 1)).toEqual(new Map([[pathKey([1]), "2.0"]]))
     const depth = 100_000
