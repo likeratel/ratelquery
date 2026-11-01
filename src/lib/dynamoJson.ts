@@ -232,6 +232,159 @@ export function inexactNumberLiterals(text: string): string[] {
     .filter((token) => !token.startsWith('"') && !isExactNumber(token))
 }
 
+/** DynamoDB nests maps and lists at most 32 levels deep; the item tree shows no deeper. */
+export const MAX_DOCUMENT_DEPTH = 32
+
+/** A JSON object or array stored in a string attribute. */
+export interface JsonInString {
+  value: PlainObject | PlainValue[]
+  /**
+   * False when a number literal would change through `JSON.parse` (beyond 2^53 or too precise),
+   * so the parsed value can't be shown or edited.
+   */
+  exact: boolean
+  /**
+   * True when re-stringifying gives the same text back. Only then can an edit be written as
+   * `JSON.stringify` of the edited value without reformatting anything else.
+   */
+  compact: boolean
+  /**
+   * Number literals written differently from how JavaScript prints them (`1.50`, `1e3`,
+   * `1000000000000000000000`, which prints as `1e+21`), as written, by `pathKey` of their path
+   * in the JSON (see `jsonNumberSources`). Empty when `compact`.
+   */
+  numbers: ReadonlyMap<string, string>
+}
+
+const NO_NUMBERS: ReadonlyMap<string, string> = new Map()
+
+/** `JSON.stringify(value) === text`, false for JSON nested too deep to stringify again. */
+function stringifiesTo(value: PlainValue, text: string): boolean {
+  try {
+    return JSON.stringify(value) === text
+  } catch {
+    // RangeError: thousands of levels parse fine but overflow the stack when stringified.
+    return false
+  }
+}
+
+/** The JSON a string holds when it is an object or array, otherwise null. */
+export function jsonInString(text: string): JsonInString | null {
+  const trimmed = text.trimStart()
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null
+  const parsed = parseJson(text)
+  if (!parsed.ok) return null
+  const value = parsed.value as PlainObject | PlainValue[]
+  const exact = inexactNumberLiterals(text).length === 0
+  const compact = exact && stringifiesTo(value, text)
+  const numbers = exact && !compact ? jsonNumberSources(text) : NO_NUMBERS
+  return { value, exact, compact, numbers }
+}
+
+const NUMBER_AT = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y
+const STRING_AT = /"(?:[^"\\]|\\.)*"/y
+
+/** Same text as `pathKey` (dynamoPath imports this module, so it isn't imported here). */
+const levelsKey = (stack: readonly Level[]) =>
+  JSON.stringify(stack.map((l) => (l.array ? l.index : l.key)))
+
+interface Level {
+  array: boolean
+  /** Index of the current member of an array. */
+  index: number
+  /** Key of the current member of an object. */
+  key: string
+  /** In an object, after `{` or `,`: the next string is a key. */
+  expectsKey: boolean
+  /**
+   * In an object: the numbers recorded under each member so far, by key, as `sources` keys. A
+   * key that comes again drops just its own list, so repeats cost no scan of everything else.
+   */
+  recorded: Map<string, string[]> | null
+}
+
+/**
+ * Number literals of the valid JSON `text` that `String(JSON.parse(literal))` writes another
+ * way (`1.50` → `1.5`, `1000000000000000000000` → `1e+21`), keyed by `pathKey` of their path in
+ * the parsed value, so the tree can show and search the number as stored. A key repeated in an
+ * object replaces what came before it, as in `JSON.parse`: whatever the earlier value recorded,
+ * at that key or below it, is dropped when the key comes again (`{"a":1.50,"a":2}` holds the
+ * canonical `2`, so nothing is recorded). Paths deeper than `maxDepth` are skipped.
+ * One pass over the text, without recursion, so deeply nested JSON costs no stack. Time is
+ * linear: each recorded number is filed under every object around it (at most `maxDepth`), and
+ * a repeated key drops only the numbers filed under it, once.
+ */
+export function jsonNumberSources(
+  text: string,
+  maxDepth = MAX_DOCUMENT_DEPTH,
+): Map<string, string> {
+  const sources = new Map<string, string>()
+  const stack: Level[] = []
+  let at = 0
+  while (at < text.length) {
+    const c = text[at]
+    const level = stack.at(-1)
+    if (c === "{" || c === "[") {
+      const object = c === "{"
+      stack.push({
+        array: !object,
+        index: 0,
+        key: "",
+        expectsKey: object,
+        recorded: object ? new Map() : null,
+      })
+      at += 1
+    } else if (c === "}" || c === "]") {
+      stack.pop()
+      at += 1
+    } else if (c === ",") {
+      if (level?.array) level.index += 1
+      else if (level) level.expectsKey = true
+      at += 1
+    } else if (c === '"') {
+      STRING_AT.lastIndex = at
+      const token = STRING_AT.exec(text)?.[0] ?? c
+      if (level && !level.array && level.expectsKey) {
+        const key = JSON.parse(token) as string
+        level.key = key
+        level.expectsKey = false
+        // A repeated key replaces its earlier value, and with it the numbers recorded there.
+        const replaced = level.recorded?.get(key)
+        if (replaced) {
+          for (const path of replaced) sources.delete(path)
+          level.recorded?.delete(key)
+        }
+      }
+      at += token.length
+    } else if (c === "-" || (c >= "0" && c <= "9")) {
+      NUMBER_AT.lastIndex = at
+      const token = NUMBER_AT.exec(text)?.[0] ?? c
+      if (stack.length <= maxDepth && String(Number(token)) !== token) {
+        const path = levelsKey(stack)
+        sources.set(path, token)
+        for (const outer of stack) {
+          if (!outer.recorded) continue
+          const under = outer.recorded.get(outer.key)
+          if (under) under.push(path)
+          else outer.recorded.set(outer.key, [path])
+        }
+      }
+      at += token.length
+    } else {
+      // Whitespace, `:`, and the letters of true, false and null.
+      at += 1
+    }
+  }
+  return sources
+}
+
+/** Why the JSON in a string is read-only, or null when it can be edited. */
+export function jsonStringReadOnlyReason(json: JsonInString): string | null {
+  if (!json.exact) return "Has numbers beyond 2^53 or too precise to show exactly"
+  if (!json.compact) return "Not compact JSON, so an edit would reformat it"
+  return null
+}
+
 /** Parses a plain JSON object and converts it to a wire item. */
 export function parsePlainItem(text: string): Result<Item> {
   const parsed = parseJson(text)

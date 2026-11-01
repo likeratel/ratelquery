@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { formatShortcut, matchesShortcut, parseShortcut } from "./shortcuts"
+import { formatShortcut, isImeComposing, matchesShortcut, parseShortcut } from "./shortcuts"
 
 const press = (
   code: string,
@@ -10,6 +10,33 @@ const press = (
   ctrlKey: mods.ctrl ?? false,
   shiftKey: mods.shift ?? false,
   altKey: mods.alt ?? false,
+})
+
+describe("isImeComposing", () => {
+  it("marks keys of an open composition", () => {
+    expect(isImeComposing({ isComposing: true })).toBe(true)
+    expect(isImeComposing({ isComposing: true, keyCode: 13 })).toBe(true)
+  })
+
+  it("marks the WebKit keydown that ends a composition after compositionend", () => {
+    // Safari / WKWebView (WebKit bug 165004): isComposing is already false, keyCode is 229.
+    expect(isImeComposing({ isComposing: false, keyCode: 229 })).toBe(true)
+  })
+
+  it("leaves Cmd or Ctrl shortcuts reported as 229 to the app, unless still composing", () => {
+    const enter = { isComposing: false, keyCode: 229 }
+    expect(isImeComposing({ ...enter, metaKey: true })).toBe(false)
+    expect(isImeComposing({ ...enter, ctrlKey: true })).toBe(false)
+    expect(isImeComposing({ ...enter, metaKey: false, ctrlKey: false })).toBe(true)
+    expect(isImeComposing({ isComposing: true, keyCode: 229, metaKey: true })).toBe(true)
+    expect(isImeComposing({ isComposing: true, keyCode: 13, ctrlKey: true })).toBe(true)
+  })
+
+  it("leaves ordinary keys alone, with or without a keyCode", () => {
+    expect(isImeComposing({ isComposing: false })).toBe(false)
+    expect(isImeComposing({ isComposing: false, keyCode: 13 })).toBe(false)
+    expect(isImeComposing({ isComposing: false, keyCode: 27 })).toBe(false)
+  })
 })
 
 describe("parseShortcut", () => {

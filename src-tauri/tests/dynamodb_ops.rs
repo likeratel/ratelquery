@@ -1,6 +1,8 @@
 //! Live DynamoDB Local tests. Run only with `RATELQUERY_TEST_DYNAMODB_ENDPOINT`
 //! (e.g. `http://localhost:8000`).
 
+mod common;
+
 use std::sync::Arc;
 
 use aws_sdk_dynamodb::types::{
@@ -11,8 +13,8 @@ use futures_util::FutureExt;
 use ratelquery_lib::connections::{DynamoAuth, DynamoConnectionConfig};
 use ratelquery_lib::dynamo::{
     self, AttributeUpdate, DynamoClients, DynamoExportFormat, DynamoExportOptions,
-    DynamoExportRequest, DynamoHandle, IndexKind, KeyType, Page, Projection, PutExpectation,
-    QueryRequest, RangeCondition, ScanRequest, WireItem,
+    DynamoExportRequest, DynamoHandle, ExpectedValue, IndexKind, KeyType, Page, Projection,
+    PutExpectation, QueryRequest, RangeCondition, ScanRequest, WireItem,
 };
 use serde_json::{Value, json};
 
@@ -20,7 +22,11 @@ fn endpoint() -> Option<String> {
     match std::env::var("RATELQUERY_TEST_DYNAMODB_ENDPOINT") {
         Ok(endpoint) => Some(endpoint),
         Err(_) => {
-            eprintln!("skipping: RATELQUERY_TEST_DYNAMODB_ENDPOINT is not set");
+            common::skipped(
+                "live DynamoDB test: RATELQUERY_TEST_DYNAMODB_ENDPOINT is not set. Run \
+                 `pnpm db:up` and set RATELQUERY_TEST_DYNAMODB_ENDPOINT=http://localhost:8000 \
+                 to run it.",
+            );
             None
         }
     }
@@ -212,22 +218,25 @@ async fn check_items(handle: &DynamoHandle, table: &str) {
         "tags": { "SS": ["a", "b"] }
     }));
     assert!(dynamo::get_item(handle, table, &key).await.unwrap().is_none());
-    let err = dynamo::put_item(handle, table, &new_item, PutExpectation::Exists).await.unwrap_err();
+    let err =
+        dynamo::put_item(handle, table, &new_item, PutExpectation::Exists, &[]).await.unwrap_err();
     assert_eq!(err.kind(), "query");
     assert!(err.to_string().contains("no item"), "{err}");
-    dynamo::put_item(handle, table, &new_item, PutExpectation::NotExists).await.unwrap();
-    let err =
-        dynamo::put_item(handle, table, &new_item, PutExpectation::NotExists).await.unwrap_err();
+    dynamo::put_item(handle, table, &new_item, PutExpectation::NotExists, &[]).await.unwrap();
+    let err = dynamo::put_item(handle, table, &new_item, PutExpectation::NotExists, &[])
+        .await
+        .unwrap_err();
     assert_eq!(err.kind(), "query");
     assert!(err.to_string().contains("already exists"), "{err}");
     let updated = item(json!({ "pk": s("u9"), "sk": s("x"), "v": { "BOOL": true } }));
-    dynamo::put_item(handle, table, &updated, PutExpectation::Exists).await.unwrap();
+    dynamo::put_item(handle, table, &updated, PutExpectation::Exists, &[]).await.unwrap();
     assert_eq!(dynamo::get_item(handle, table, &key).await.unwrap(), Some(updated.clone()));
-    dynamo::put_item(handle, table, &new_item, PutExpectation::Any).await.unwrap();
+    dynamo::put_item(handle, table, &new_item, PutExpectation::Any, &[]).await.unwrap();
     assert_eq!(dynamo::get_item(handle, table, &key).await.unwrap(), Some(new_item.clone()));
     let missing_hash = item(json!({ "sk": s("x") }));
-    let err =
-        dynamo::put_item(handle, table, &missing_hash, PutExpectation::Exists).await.unwrap_err();
+    let err = dynamo::put_item(handle, table, &missing_hash, PutExpectation::Exists, &[])
+        .await
+        .unwrap_err();
     assert_eq!(err.kind(), "invalid_input");
 
     dynamo::delete_item(handle, table, &key).await.unwrap();
@@ -243,42 +252,209 @@ async fn check_items(handle: &DynamoHandle, table: &str) {
 }
 
 fn update(name: &str, value: Value, expected: Option<Value>) -> AttributeUpdate {
-    AttributeUpdate { name: name.into(), value, expected }
+    AttributeUpdate { name: name.into(), path: vec![], value, expected }
 }
 
 async fn check_attribute_updates(handle: &DynamoHandle, table: &str) {
     let key = item(json!({ "pk": s("u8"), "sk": s("y") }));
     let original = item(json!({ "pk": s("u8"), "sk": s("y"), "cat": s("red"), "n": { "N": "1" } }));
-    dynamo::put_item(handle, table, &original, PutExpectation::NotExists).await.unwrap();
+    dynamo::put_item(handle, table, &original, PutExpectation::NotExists, &[]).await.unwrap();
     let changes = [
         update("cat", s("blue"), Some(s("red"))),
         update("n", json!({ "N": "2" }), Some(json!({ "N": "1.0" }))),
         update("flag", json!({ "BOOL": true }), None),
     ];
-    dynamo::update_item_attributes(handle, table, &key, &changes).await.unwrap();
+    dynamo::update_item_attributes(handle, table, &key, &changes, &[]).await.unwrap();
     let stored = dynamo::get_item(handle, table, &key).await.unwrap().unwrap();
     assert_eq!(stored["cat"], s("blue"));
     assert_eq!(stored["n"], json!({ "N": "2" }));
     assert_eq!(stored["flag"], json!({ "BOOL": true }));
 
     // The same edit again: `cat` is no longer "red", so nothing is written.
-    let err = dynamo::update_item_attributes(handle, table, &key, &changes[..1]).await.unwrap_err();
+    let err =
+        dynamo::update_item_attributes(handle, table, &key, &changes[..1], &[]).await.unwrap_err();
     assert_eq!(err.kind(), "query");
     assert!(err.to_string().contains("changed or deleted"), "{err}");
-    let err = dynamo::update_item_attributes(handle, table, &key, &changes[2..]).await.unwrap_err();
+    let err =
+        dynamo::update_item_attributes(handle, table, &key, &changes[2..], &[]).await.unwrap_err();
     assert!(err.to_string().contains("changed or deleted"), "{err}");
+
+    // A value inside maps and lists is set through its path, under the same condition.
+    let numbers = json!({ "M": { "numbers": { "L": [
+        { "M": { "sender": s("01"), "on": { "BOOL": false } } },
+        { "M": { "sender": s("02") } }
+    ] } } });
+    let nested = AttributeUpdate {
+        name: "service".into(),
+        path: serde_json::from_value(json!(["numbers", 1, "sender"])).unwrap(),
+        value: s("03"),
+        expected: Some(s("02")),
+    };
+    // Every list the path indexes into goes along as loaded; without it nothing is sent.
+    let numbers_guard = ExpectedValue {
+        name: "service".into(),
+        path: serde_json::from_value(json!(["numbers"])).unwrap(),
+        value: Some(numbers["M"]["numbers"].clone()),
+    };
+    let service = [update("service", numbers, None)];
+    dynamo::update_item_attributes(handle, table, &key, &service, &[]).await.unwrap();
+    let err =
+        dynamo::update_item_attributes(handle, table, &key, std::slice::from_ref(&nested), &[])
+            .await
+            .unwrap_err();
+    assert_eq!(err.kind(), "invalid_input");
+    dynamo::update_item_attributes(
+        handle,
+        table,
+        &key,
+        std::slice::from_ref(&nested),
+        std::slice::from_ref(&numbers_guard),
+    )
+    .await
+    .unwrap();
+    let stored = dynamo::get_item(handle, table, &key).await.unwrap().unwrap();
+    assert_eq!(stored["service"]["M"]["numbers"]["L"][1], json!({ "M": { "sender": s("03") } }));
+    assert_eq!(stored["service"]["M"]["numbers"]["L"][0]["M"]["sender"], s("01"));
+    let err = dynamo::update_item_attributes(handle, table, &key, &[nested], &[numbers_guard])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("changed or deleted"), "{err}");
+
+    check_shifted_lists(handle, table, &key).await;
 
     // A deleted item is not recreated.
     dynamo::delete_item(handle, table, &key).await.unwrap();
     let recreate = [update("cat", s("x"), None)];
-    let err = dynamo::update_item_attributes(handle, table, &key, &recreate).await.unwrap_err();
+    let err =
+        dynamo::update_item_attributes(handle, table, &key, &recreate, &[]).await.unwrap_err();
     assert!(err.to_string().contains("changed or deleted"), "{err}");
     assert!(dynamo::get_item(handle, table, &key).await.unwrap().is_none());
 
-    let err = dynamo::update_item_attributes(handle, table, &key, &[update("pk", s("z"), None)])
+    let err =
+        dynamo::update_item_attributes(handle, table, &key, &[update("pk", s("z"), None)], &[])
+            .await
+            .unwrap_err();
+    assert_eq!(err.kind(), "invalid_input");
+}
+
+/// A list element removed meanwhile shifts the next one to the edited index. The guard on the
+/// whole list as loaded (the app sends one for every list index on an edited path) refuses the
+/// write, even though the edited leaf, or an equal element, still holds what was seen.
+async fn check_shifted_lists(handle: &DynamoHandle, table: &str, key: &WireItem) {
+    let rule = |id: &str| json!({ "M": { "id": s(id), "on": { "BOOL": false } } });
+    let rules = json!({ "L": [rule("r1"), rule("r2")] });
+    let loaded = [update("rules", rules, None)];
+    dynamo::update_item_attributes(handle, table, key, &loaded, &[]).await.unwrap();
+    let removed = [update(
+        "rules",
+        json!({ "L": [rule("r2")] }),
+        Some(json!({ "L": [rule("r1"), rule("r2")] })),
+    )];
+    dynamo::update_item_attributes(handle, table, key, &removed, &[]).await.unwrap();
+
+    let edit = AttributeUpdate {
+        name: "rules".into(),
+        path: serde_json::from_value(json!([0, "on"])).unwrap(),
+        value: json!({ "BOOL": true }),
+        expected: Some(json!({ "BOOL": false })),
+    };
+    let guard = ExpectedValue {
+        name: "rules".into(),
+        path: vec![],
+        value: Some(json!({ "L": [rule("r1"), rule("r2")] })),
+    };
+    let err = dynamo::update_item_attributes(
+        handle,
+        table,
+        key,
+        std::slice::from_ref(&edit),
+        std::slice::from_ref(&guard),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("changed or deleted"), "{err}");
+    let stored = dynamo::get_item(handle, table, key).await.unwrap().unwrap();
+    assert_eq!(stored["rules"], json!({ "L": [rule("r2")] }));
+
+    // The item editor's save is held to the same values.
+    let mut overwrite = stored.clone();
+    overwrite.insert("rules".into(), json!({ "L": [] }));
+    let err = dynamo::put_item(handle, table, &overwrite, PutExpectation::Exists, &[guard])
         .await
         .unwrap_err();
-    assert_eq!(err.kind(), "invalid_input");
+    assert!(err.to_string().contains("changed or deleted"), "{err}");
+    let current = ExpectedValue {
+        name: "rules".into(),
+        path: vec![],
+        value: Some(json!({ "L": [rule("r2")] })),
+    };
+    dynamo::put_item(handle, table, &overwrite, PutExpectation::Exists, &[current]).await.unwrap();
+    let stored = dynamo::get_item(handle, table, key).await.unwrap().unwrap();
+    assert_eq!(stored["rules"], json!({ "L": [] }));
+    eprintln!("checked nested edits against a shifted list");
+
+    // An index in the middle of the path, among equal maps: without `rules[0]`, `rules[1]` is
+    // still `{ on: false }` (so even a guard on the element would hold), but it is the other one.
+    let off = json!({ "M": { "on": { "BOOL": false } } });
+    let first = json!({ "M": { "id": s("a") } });
+    let loaded_rules = json!({ "L": [first, off, off] });
+    let shifted_rules = json!({ "L": [off, off] });
+    let reset = [update("rules", loaded_rules.clone(), Some(json!({ "L": [] })))];
+    dynamo::update_item_attributes(handle, table, key, &reset, &[]).await.unwrap();
+    let remove = [update("rules", shifted_rules.clone(), Some(loaded_rules.clone()))];
+    dynamo::update_item_attributes(handle, table, key, &remove, &[]).await.unwrap();
+    let edit = AttributeUpdate {
+        name: "rules".into(),
+        path: serde_json::from_value(json!([1, "on"])).unwrap(),
+        value: json!({ "BOOL": true }),
+        expected: Some(json!({ "BOOL": false })),
+    };
+    let whole = ExpectedValue { name: "rules".into(), path: vec![], value: Some(loaded_rules) };
+    let err = dynamo::update_item_attributes(
+        handle,
+        table,
+        key,
+        std::slice::from_ref(&edit),
+        std::slice::from_ref(&whole),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("changed or deleted"), "{err}");
+    let stored = dynamo::get_item(handle, table, key).await.unwrap().unwrap();
+    assert_eq!(stored["rules"], shifted_rules);
+    eprintln!("checked a mid-path index against a shifted list of equal maps");
+
+    // The edited value is itself a list element. Without `y`, index 1 still holds an "x", but
+    // it is the other one, so only the guard on the whole list catches it.
+    let tags = |values: &[&str]| json!({ "L": values.iter().map(|v| s(v)).collect::<Vec<_>>() });
+    let loaded = [update("tags", tags(&["y", "x", "x", "w"]), None)];
+    dynamo::update_item_attributes(handle, table, key, &loaded, &[]).await.unwrap();
+    let removed = [update("tags", tags(&["x", "x", "w"]), Some(tags(&["y", "x", "x", "w"])))];
+    dynamo::update_item_attributes(handle, table, key, &removed, &[]).await.unwrap();
+    let edit = AttributeUpdate {
+        name: "tags".into(),
+        path: serde_json::from_value(json!([1])).unwrap(),
+        value: s("z"),
+        expected: Some(s("x")),
+    };
+    let whole_list = ExpectedValue {
+        name: "tags".into(),
+        path: vec![],
+        value: Some(tags(&["y", "x", "x", "w"])),
+    };
+    let err = dynamo::update_item_attributes(
+        handle,
+        table,
+        key,
+        std::slice::from_ref(&edit),
+        std::slice::from_ref(&whole_list),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("changed or deleted"), "{err}");
+    let stored = dynamo::get_item(handle, table, key).await.unwrap().unwrap();
+    assert_eq!(stored["tags"], tags(&["x", "x", "w"]));
+    eprintln!("checked a list element edit against a shifted list of equal values");
 }
 
 async fn export(
@@ -321,7 +497,7 @@ async fn check_exports(handle: &DynamoHandle, table: &str) {
     assert!(jsonl.lines().all(|l| serde_json::from_str::<WireItem>(l).is_ok()));
 
     let odd = item(json!({ "pk": s("u2"), "sk": s("2099"), "extra": { "M": { "k": s("v") } } }));
-    dynamo::put_item(handle, table, &odd, PutExpectation::Any).await.unwrap();
+    dynamo::put_item(handle, table, &odd, PutExpectation::Any, &[]).await.unwrap();
     let (csv_text, rows) =
         export(handle, &scan, DynamoExportFormat::Csv, dir.path(), "s.csv").await;
     assert_eq!(rows, 7);
@@ -382,7 +558,7 @@ async fn check_metadata(handle: &DynamoHandle, table: &str) {
 
 async fn run_all(handle: &DynamoHandle, table: &str) {
     for seeded in seed() {
-        dynamo::put_item(handle, table, &seeded, PutExpectation::NotExists).await.unwrap();
+        dynamo::put_item(handle, table, &seeded, PutExpectation::NotExists, &[]).await.unwrap();
     }
     check_metadata(handle, table).await;
     check_queries(handle, table).await;

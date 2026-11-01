@@ -4,12 +4,14 @@
 //! here use a prefix (`#dbk0`, `:dbk0` ...) that is lengthened with `_` until no user placeholder
 //! starts with it, so the two sets can never collide.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use aws_sdk_dynamodb::types::AttributeValue;
 use serde_json::Value;
 
-use super::model::{AttributeUpdate, KeySchema, PutExpectation, RangeCondition, RangeOp};
+use super::model::{
+    AttributeUpdate, ExpectedValue, KeySchema, PathSegment, PutExpectation, RangeCondition, RangeOp,
+};
 use super::wire::{WireItem, from_wire};
 use crate::error::{AppError, AppResult};
 
@@ -155,26 +157,162 @@ pub fn build_scan(user: &UserParts<'_>) -> AppResult<Expressions> {
     user_base(user)
 }
 
-/// PutItem condition for `expect`.
-pub fn put_condition(expect: PutExpectation, hash_key: &str) -> Expressions {
+/// `#{attr}` for the attribute, then `.#{attr}_{j}` for every map key and `[n]` for every list
+/// index below it. Map keys travel as placeholders like attribute names.
+fn path_expression(
+    attr: &str,
+    name: &str,
+    path: &[PathSegment],
+    names: &mut HashMap<String, String>,
+) -> AppResult<String> {
+    if name.is_empty() {
+        return Err(AppError::InvalidInput("attribute name must not be empty".into()));
+    }
+    let attr = format!("#{attr}");
+    names.insert(attr.clone(), name.to_string());
+    let mut expression = attr.clone();
+    for (j, segment) in path.iter().enumerate() {
+        match segment {
+            PathSegment::Index(index) => expression.push_str(&format!("[{index}]")),
+            PathSegment::Key(key) if key.is_empty() => {
+                return Err(AppError::InvalidInput(format!(
+                    "a map key in {} is empty",
+                    display_path(name, path)
+                )));
+            }
+            PathSegment::Key(key) => {
+                let placeholder = format!("{attr}_{j}");
+                names.insert(placeholder.clone(), key.clone());
+                expression.push('.');
+                expression.push_str(&placeholder);
+            }
+        }
+    }
+    Ok(expression)
+}
+
+/// `<path> = :dbkcN`, or `attribute_not_exists(<path>)` for a value that must be missing, per
+/// expected value. Repeated ones (several edits in one list) are sent once.
+fn expected_clauses(
+    expected: &[ExpectedValue],
+    names: &mut HashMap<String, String>,
+    values: &mut HashMap<String, AttributeValue>,
+) -> AppResult<Vec<String>> {
+    let mut clauses = Vec::with_capacity(expected.len());
+    for (i, condition) in expected.iter().enumerate() {
+        if expected[..i].contains(condition) {
+            continue;
+        }
+        let attr = format!("{BASE_PREFIX}c{i}");
+        let path = path_expression(&attr, &condition.name, &condition.path, names)?;
+        clauses.push(match &condition.value {
+            Some(value) => {
+                let placeholder = format!(":{attr}");
+                values.insert(placeholder.clone(), from_wire(value)?);
+                format!("{path} = {placeholder}")
+            }
+            None => format!("attribute_not_exists({path})"),
+        });
+    }
+    Ok(clauses)
+}
+
+/// Whether `value` is a wire list (`{"L": [...]}`).
+fn is_wire_list(value: &Value) -> bool {
+    value.as_object().is_some_and(|object| object.len() == 1 && object.contains_key("L"))
+}
+
+/// Refuses a nested `path` below `name` unless `expected` holds, for every list index
+/// `path[k]`, the whole list `path[..k]` as a list value (`rules[1].on` needs `rules`;
+/// `a[0].b[1].c` needs `a` and `a[0].b`). An element's own value says nothing about its
+/// position, so without the list a removal meanwhile would shift another element under the
+/// index and the write would change that one instead.
+fn require_list_guards(
+    name: &str,
+    path: &[PathSegment],
+    expected: &[ExpectedValue],
+) -> AppResult<()> {
+    for (k, segment) in path.iter().enumerate() {
+        if !matches!(segment, PathSegment::Index(_)) {
+            continue;
+        }
+        let list = &path[..k];
+        let guarded = expected.iter().any(|guard| {
+            guard.name == name
+                && guard.path == list
+                && guard.value.as_ref().is_some_and(is_wire_list)
+        });
+        if !guarded {
+            return Err(AppError::InvalidInput(format!(
+                "{} indexes into the list {}, so the list as loaded must be among the expected \
+                 values",
+                display_path(name, path),
+                display_path(name, list)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// PutItem condition for `expect`. Saving over an existing item can also require values it
+/// must still hold (see `ExpectedValue`); creating an item can't, as there is nothing to hold.
+/// A value below a list index needs that whole list among them too (see `require_list_guards`).
+pub fn put_condition(
+    expect: PutExpectation,
+    hash_key: &str,
+    expected: &[ExpectedValue],
+) -> AppResult<Expressions> {
+    if !expected.is_empty() && expect != PutExpectation::Exists {
+        return Err(AppError::InvalidInput(
+            "expected values need a save over an existing item (expect: exists)".into(),
+        ));
+    }
+    for value in expected {
+        require_list_guards(&value.name, &value.path, expected)?;
+    }
     let name = format!("#{BASE_PREFIX}0");
     let condition = match expect {
-        PutExpectation::Any => return Expressions::default(),
+        PutExpectation::Any => return Ok(Expressions::default()),
         PutExpectation::Exists => format!("attribute_exists({name})"),
         PutExpectation::NotExists => format!("attribute_not_exists({name})"),
     };
-    Expressions {
-        condition: Some(condition),
-        names: HashMap::from([(name, hash_key.to_string())]),
+    let mut names = HashMap::from([(name, hash_key.to_string())]);
+    let mut values = HashMap::new();
+    let clauses = expected_clauses(expected, &mut names, &mut values)?;
+    Ok(Expressions {
+        condition: Some([condition].into_iter().chain(clauses).collect::<Vec<_>>().join(" AND ")),
+        names,
+        values,
         ..Default::default()
-    }
+    })
 }
 
-/// UpdateItem for inline grid edits: `SET #dbka0 = :dbkv0, ...` with the condition
-/// `attribute_exists(#dbk0)` (the item is still there) and, per attribute, `#dbkaN = :dbkeN`
-/// (still the value the user saw) or `attribute_not_exists(#dbkaN)` (still missing). Names and
-/// values only ever travel as placeholders. Key attributes can't be set this way.
-pub fn build_update(schema: &KeySchema, changes: &[AttributeUpdate]) -> AppResult<Expressions> {
+/// A document path such as `tags.list[0]`, for error messages only.
+fn display_path(name: &str, path: &[PathSegment]) -> String {
+    path.iter().fold(name.to_string(), |text, segment| match segment {
+        PathSegment::Index(i) => format!("{text}[{i}]"),
+        PathSegment::Key(key) => format!("{text}.{key}"),
+    })
+}
+
+/// Whether `a` is `b` or lies inside it (or the other way round). DynamoDB refuses an update
+/// whose paths overlap like that, so it is reported before sending.
+fn paths_overlap(a: &AttributeUpdate, b: &AttributeUpdate) -> bool {
+    a.name == b.name && a.path.iter().zip(&b.path).all(|(x, y)| x == y)
+}
+
+/// UpdateItem for inline edits: `SET <path0> = :dbkv0, ...` with the condition
+/// `attribute_exists(#dbk0)` (the item is still there), per change `<pathN> = :dbkeN` (still the
+/// value the user saw) or `attribute_not_exists(#dbkaN)` (an attribute still missing), and every
+/// `expected` value (the lists the paths index into, see `ExpectedValue`). A path is the
+/// attribute, or a value nested in its maps and lists (see `path_expression`); every list a path
+/// indexes into must be among the `expected` values (see `require_list_guards`). Names, map keys
+/// and values only ever travel as placeholders. Key attributes can't be set this way.
+pub fn build_update(
+    schema: &KeySchema,
+    changes: &[AttributeUpdate],
+    expected: &[ExpectedValue],
+) -> AppResult<Expressions> {
     if changes.is_empty() {
         return Err(AppError::InvalidInput("no attribute changes to apply".into()));
     }
@@ -183,33 +321,41 @@ pub fn build_update(schema: &KeySchema, changes: &[AttributeUpdate]) -> AppResul
     let mut values = HashMap::new();
     let mut sets = Vec::with_capacity(changes.len());
     let mut conditions = vec![format!("attribute_exists({key_name})")];
-    let mut seen = HashSet::new();
     for (i, change) in changes.iter().enumerate() {
         let name = change.name.as_str();
-        if name.is_empty() {
-            return Err(AppError::InvalidInput("attribute name must not be empty".into()));
-        }
         if name == schema.hash.name || schema.range.as_ref().is_some_and(|r| r.name == name) {
             return Err(AppError::InvalidInput(format!(
                 "{name} is part of the table key; edit the item as JSON to change it"
             )));
         }
-        if !seen.insert(name) {
-            return Err(AppError::InvalidInput(format!("attribute {name} is changed twice")));
+        if changes[..i].iter().any(|earlier| paths_overlap(earlier, change)) {
+            return Err(AppError::InvalidInput(format!(
+                "{} is changed twice",
+                display_path(name, &change.path)
+            )));
         }
-        let (attr, value) = (format!("#{BASE_PREFIX}a{i}"), format!(":{BASE_PREFIX}v{i}"));
-        names.insert(attr.clone(), name.to_string());
+        let path = path_expression(&format!("{BASE_PREFIX}a{i}"), name, &change.path, &mut names)?;
+        let value = format!(":{BASE_PREFIX}v{i}");
         values.insert(value.clone(), from_wire(&change.value)?);
-        sets.push(format!("{attr} = {value}"));
+        sets.push(format!("{path} = {value}"));
         conditions.push(match &change.expected {
             Some(expected) => {
                 let placeholder = format!(":{BASE_PREFIX}e{i}");
                 values.insert(placeholder.clone(), from_wire(expected)?);
-                format!("{attr} = {placeholder}")
+                format!("{path} = {placeholder}")
             }
-            None => format!("attribute_not_exists({attr})"),
+            // Missing inside a map or list is no guard: `SET #a[7]` past the end appends.
+            None if !change.path.is_empty() => {
+                return Err(AppError::InvalidInput(format!(
+                    "{} needs the value it is expected to replace",
+                    display_path(name, &change.path)
+                )));
+            }
+            None => format!("attribute_not_exists({path})"),
         });
+        require_list_guards(name, &change.path, expected)?;
     }
+    conditions.extend(expected_clauses(expected, &mut names, &mut values)?);
     Ok(Expressions {
         update: Some(format!("SET {}", sets.join(", "))),
         condition: Some(conditions.join(" AND ")),
@@ -334,16 +480,26 @@ mod tests {
 
     #[test]
     fn put_conditions() {
-        assert_eq!(put_condition(PutExpectation::Any, "pk"), Expressions::default());
-        let e = put_condition(PutExpectation::Exists, "pk");
+        assert_eq!(put_condition(PutExpectation::Any, "pk", &[]).unwrap(), Expressions::default());
+        let e = put_condition(PutExpectation::Exists, "pk", &[]).unwrap();
         assert_eq!(e.condition.as_deref(), Some("attribute_exists(#dbk0)"));
         assert_eq!(e.names["#dbk0"], "pk");
-        let e = put_condition(PutExpectation::NotExists, "pk");
+        let e = put_condition(PutExpectation::NotExists, "pk", &[]).unwrap();
         assert_eq!(e.condition.as_deref(), Some("attribute_not_exists(#dbk0)"));
     }
 
     fn change(name: &str, value: Value, expected: Option<Value>) -> AttributeUpdate {
-        AttributeUpdate { name: name.into(), value, expected }
+        AttributeUpdate { name: name.into(), path: vec![], value, expected }
+    }
+
+    fn nested(
+        name: &str,
+        path: &[Value],
+        value: Value,
+        expected: Option<Value>,
+    ) -> AttributeUpdate {
+        let path = path.iter().map(|s| serde_json::from_value(s.clone()).unwrap()).collect();
+        AttributeUpdate { name: name.into(), path, value, expected }
     }
 
     #[test]
@@ -352,7 +508,7 @@ mod tests {
             change("status", json!({ "S": "on" }), Some(json!({ "S": "off" }))),
             change("count", json!({ "N": "2" }), None),
         ];
-        let e = build_update(&schema(true), &changes).unwrap();
+        let e = build_update(&schema(true), &changes, &[]).unwrap();
         assert_eq!(e.update.as_deref(), Some("SET #dbka0 = :dbkv0, #dbka1 = :dbkv1"));
         assert_eq!(
             e.condition.as_deref(),
@@ -372,7 +528,7 @@ mod tests {
     fn update_keeps_odd_attribute_names_out_of_the_expression() {
         let name = "a = :x OR #y";
         let changes = [change(name, json!({ "BOOL": true }), Some(json!({ "BOOL": false })))];
-        let e = build_update(&schema(false), &changes).unwrap();
+        let e = build_update(&schema(false), &changes, &[]).unwrap();
         assert!(!e.update.unwrap().contains(name));
         assert!(!e.condition.unwrap().contains(name));
         assert_eq!(e.names["#dbka0"], name);
@@ -389,11 +545,205 @@ mod tests {
             vec![change("a", json!({ "S": "x" }), None), change("a", json!({ "S": "y" }), None)],
             vec![change("a", json!({ "N": 1 }), None)],
             vec![change("a", json!({ "S": "x" }), Some(json!({ "Q": "?" })))],
+            vec![nested("pk", &[json!("x")], json!({ "S": "x" }), None)],
+            vec![nested("a", &[json!("")], json!({ "S": "x" }), None)],
+            vec![
+                nested("a", &[json!("b"), json!(0)], json!({ "S": "x" }), None),
+                nested("a", &[json!("b"), json!(0)], json!({ "S": "y" }), None),
+            ],
+            // A value and one inside it overlap, in either order.
+            vec![
+                change("a", json!({ "M": {} }), None),
+                nested("a", &[json!("b")], json!({ "S": "y" }), None),
+            ],
+            vec![
+                nested("a", &[json!("b"), json!(1)], json!({ "S": "y" }), None),
+                nested("a", &[json!("b")], json!({ "L": [] }), None),
+            ],
         ];
         for changes in cases {
-            let err = build_update(&s, &changes).unwrap_err();
+            let err = build_update(&s, &changes, &[]).unwrap_err();
             assert_eq!(err.kind(), "invalid_input", "{changes:?}");
         }
+    }
+
+    #[test]
+    fn update_sets_nested_values_through_placeholders() {
+        let changes = [
+            nested(
+                "service",
+                &[json!("numbers"), json!(0), json!("sender")],
+                json!({ "S": "02" }),
+                Some(json!({ "S": "01" })),
+            ),
+            nested(
+                "service",
+                &[json!("numbers"), json!(1)],
+                json!({ "N": "2" }),
+                Some(json!({ "N": "1" })),
+            ),
+            change("note", json!({ "S": "n" }), Some(json!({ "S": "m" }))),
+        ];
+        let numbers = json!({ "L": [{ "M": { "sender": { "S": "01" } } }, { "N": "1" }] });
+        let guards = [expected("service", &[json!("numbers")], Some(numbers))];
+        let e = build_update(&schema(true), &changes, &guards).unwrap();
+        assert_eq!(
+            e.update.as_deref(),
+            Some(
+                "SET #dbka0.#dbka0_0[0].#dbka0_2 = :dbkv0, #dbka1.#dbka1_0[1] = :dbkv1, \
+                 #dbka2 = :dbkv2"
+            )
+        );
+        assert_eq!(
+            e.condition.as_deref(),
+            Some(
+                "attribute_exists(#dbk0) AND #dbka0.#dbka0_0[0].#dbka0_2 = :dbke0 \
+                 AND #dbka1.#dbka1_0[1] = :dbke1 AND #dbka2 = :dbke2 \
+                 AND #dbkc0.#dbkc0_0 = :dbkc0"
+            )
+        );
+        assert_eq!(e.names["#dbka0"], "service");
+        assert_eq!(e.names["#dbka0_0"], "numbers");
+        assert_eq!(e.names["#dbka0_2"], "sender");
+        assert_eq!(e.names["#dbka1_0"], "numbers");
+        assert_eq!(e.values[":dbke0"], AttributeValue::S("01".into()));
+        assert_eq!(e.values[":dbkv1"], AttributeValue::N("2".into()));
+    }
+
+    #[test]
+    fn update_refuses_a_nested_value_without_the_value_it_replaces() {
+        // `attribute_not_exists(#a[7])` holds and `SET #a[7]` would append to the list.
+        let changes = [nested("a", &[json!(7)], json!({ "S": "x" }), None)];
+        let err = build_update(&schema(false), &changes, &[]).unwrap_err();
+        assert_eq!(err.kind(), "invalid_input");
+        assert!(err.to_string().contains("a[7]"), "{err}");
+    }
+
+    fn expected(name: &str, path: &[Value], value: Option<Value>) -> ExpectedValue {
+        let path = path.iter().map(|s| serde_json::from_value(s.clone()).unwrap()).collect();
+        ExpectedValue { name: name.into(), path, value }
+    }
+
+    #[test]
+    fn update_guards_the_lists_on_its_paths_once_each() {
+        let rules = json!({ "L": [{ "M": { "on": { "BOOL": false }, "n": { "N": "1" } } }] });
+        let changes = [
+            nested(
+                "rules",
+                &[json!(0), json!("on")],
+                json!({ "BOOL": true }),
+                Some(json!({ "BOOL": false })),
+            ),
+            nested(
+                "rules",
+                &[json!(0), json!("n")],
+                json!({ "N": "2" }),
+                Some(json!({ "N": "1" })),
+            ),
+        ];
+        let guards = [
+            expected("rules", &[], Some(rules.clone())),
+            expected("rules", &[], Some(rules)),
+            expected("gone", &[], None),
+        ];
+        let e = build_update(&schema(false), &changes, &guards).unwrap();
+        assert_eq!(
+            e.condition.as_deref(),
+            Some(
+                "attribute_exists(#dbk0) AND #dbka0[0].#dbka0_1 = :dbke0 \
+                 AND #dbka1[0].#dbka1_1 = :dbke1 AND #dbkc0 = :dbkc0 \
+                 AND attribute_not_exists(#dbkc2)"
+            )
+        );
+        assert_eq!(e.names["#dbkc0"], "rules");
+        assert_eq!(e.names["#dbkc2"], "gone");
+        assert!(matches!(e.values[":dbkc0"], AttributeValue::L(_)));
+        assert!(!e.values.contains_key(":dbkc1"));
+        let bad = [expected("", &[], None)];
+        assert_eq!(
+            build_update(&schema(false), &changes, &bad).unwrap_err().kind(),
+            "invalid_input"
+        );
+    }
+
+    #[test]
+    fn update_refuses_a_list_index_without_the_whole_list() {
+        let rules = json!({ "L": [{ "M": { "on": { "BOOL": false } } }] });
+        let edit = |path: &[Value]| {
+            [nested("rules", path, json!({ "BOOL": true }), Some(json!({ "BOOL": false })))]
+        };
+        let s = schema(false);
+        // `rules[1].on` with nothing, or with a guard that isn't the list as a list value.
+        let refused: [Vec<ExpectedValue>; 5] = [
+            vec![],
+            vec![expected("rules", &[], None)],
+            vec![expected("rules", &[], Some(json!({ "M": {} })))],
+            vec![expected("other", &[], Some(rules.clone()))],
+            vec![expected("rules", &[json!(0)], Some(rules.clone()))],
+        ];
+        for guards in refused {
+            let err = build_update(&s, &edit(&[json!(1), json!("on")]), &guards).unwrap_err();
+            assert_eq!(err.kind(), "invalid_input", "{guards:?}");
+            assert!(err.to_string().contains("rules[1].on"), "{err}");
+        }
+        let whole = [expected("rules", &[], Some(rules.clone()))];
+        build_update(&s, &edit(&[json!(1), json!("on")]), &whole).unwrap();
+
+        // Every list on the way: `a[0].b[1].c` needs `a` and `a[0].b`.
+        let deep = [nested(
+            "a",
+            &[json!(0), json!("b"), json!(1), json!("c")],
+            json!({ "S": "y" }),
+            Some(json!({ "S": "x" })),
+        )];
+        let outer = expected("a", &[], Some(json!({ "L": [] })));
+        let inner = expected("a", &[json!(0), json!("b")], Some(json!({ "L": [] })));
+        let err = build_update(&s, &deep, std::slice::from_ref(&outer)).unwrap_err();
+        assert!(err.to_string().contains("a[0].b"), "{err}");
+        let err = build_update(&s, &deep, std::slice::from_ref(&inner)).unwrap_err();
+        assert_eq!(err.kind(), "invalid_input");
+        build_update(&s, &deep, &[outer, inner]).unwrap();
+
+        // Map keys alone never shift, and need no guard.
+        let keyed = [nested(
+            "m",
+            &[json!("a"), json!("b")],
+            json!({ "S": "y" }),
+            Some(json!({ "S": "x" })),
+        )];
+        build_update(&s, &keyed, &[]).unwrap();
+    }
+
+    #[test]
+    fn put_requires_expected_values_only_over_an_existing_item() {
+        let rules = json!({ "L": [{ "M": {} }, { "M": { "on": { "BOOL": true } } }] });
+        let guards = [
+            expected("rules", &[json!(1), json!("on")], Some(json!({ "BOOL": true }))),
+            expected("rules", &[], Some(rules)),
+        ];
+        let e = put_condition(PutExpectation::Exists, "pk", &guards).unwrap();
+        assert_eq!(
+            e.condition.as_deref(),
+            Some("attribute_exists(#dbk0) AND #dbkc0[1].#dbkc0_1 = :dbkc0 AND #dbkc1 = :dbkc1")
+        );
+        assert_eq!(e.names["#dbkc0_1"], "on");
+        // A value below a list index needs the whole list among the expected values too.
+        let err = put_condition(PutExpectation::Exists, "pk", &guards[..1]).unwrap_err();
+        assert_eq!(err.kind(), "invalid_input");
+        assert!(err.to_string().contains("rules[1].on"), "{err}");
+        for expect in [PutExpectation::NotExists, PutExpectation::Any] {
+            assert_eq!(put_condition(expect, "pk", &guards).unwrap_err().kind(), "invalid_input");
+        }
+    }
+
+    #[test]
+    fn update_keeps_odd_map_keys_out_of_the_expression() {
+        let key = "x.y[0] = :v OR #z";
+        let changes = [nested("m", &[json!(key)], json!({ "S": "b" }), Some(json!({ "S": "a" })))];
+        let e = build_update(&schema(false), &changes, &[]).unwrap();
+        assert!(!e.update.unwrap().contains(key));
+        assert!(!e.condition.unwrap().contains(key));
+        assert_eq!(e.names["#dbka0_0"], key);
     }
 
     #[test]

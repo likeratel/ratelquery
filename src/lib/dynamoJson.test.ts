@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { pathKey } from "./dynamoPath"
 import type { Item } from "./dynamo"
 import {
   canonicalDecimal,
@@ -7,6 +8,9 @@ import {
   inexactNumberLiterals,
   isExactNumber,
   itemToPlain,
+  jsonInString,
+  jsonNumberSources,
+  jsonStringReadOnlyReason,
   parsePlainItem,
   parseWireItem,
   plainToItem,
@@ -129,5 +133,173 @@ describe("parsing", () => {
       ok: false,
       error: expect.stringContaining("wire mode"),
     })
+  })
+})
+
+describe("jsonInString", () => {
+  it("finds objects and arrays only", () => {
+    expect(jsonInString('{"a":1}')).toEqual({
+      value: { a: 1 },
+      exact: true,
+      compact: true,
+      numbers: new Map(),
+    })
+    expect(jsonInString("[1,2]")?.compact).toBe(true)
+    for (const text of ["", "plain", "12", '"s"', "{broken", "true"]) {
+      expect(jsonInString(text)).toBeNull()
+    }
+  })
+
+  it("allows edits only when re-stringifying gives the same text", () => {
+    for (const text of [
+      ' {"a":1}',
+      '{ "a": 1 }',
+      '{"a":1.0}',
+      '{"b":1,"2":2}',
+      '{"e":"\\u00e9"}',
+    ]) {
+      const json = jsonInString(text)
+      expect(json?.compact).toBe(false)
+      expect(json && jsonStringReadOnlyReason(json)).toMatch(/Not compact JSON/)
+    }
+  })
+
+  it("flags numbers a JS number would change", () => {
+    const json = jsonInString('{"id":12345678901234567890}')
+    expect(json).toMatchObject({ exact: false, compact: false })
+    expect(json && jsonStringReadOnlyReason(json)).toMatch(/beyond 2\^53/)
+    const exact = jsonInString('{"n":9007199254740991}')
+    expect(exact && jsonStringReadOnlyReason(exact)).toBeNull()
+  })
+
+  it("keeps numbers written another way as they are stored", () => {
+    const json = jsonInString('{"big":1000000000000000000000,"price":1.50,"n":2}')
+    expect(json).toMatchObject({ exact: true, compact: false })
+    expect(json?.numbers).toEqual(
+      new Map([
+        [pathKey(["big"]), "1000000000000000000000"],
+        [pathKey(["price"]), "1.50"],
+      ]),
+    )
+    expect(jsonInString('{"n":1}')?.numbers.size).toBe(0)
+  })
+
+  it("stays read-only rather than failing on JSON nested too deep to stringify", () => {
+    const depth = 200_000
+    const json = jsonInString("[".repeat(depth) + "]".repeat(depth))
+    expect(json).toMatchObject({ exact: true, compact: false })
+  })
+})
+
+describe("jsonNumberSources", () => {
+  it("maps each number literal written another way to its path", () => {
+    const text = '{"a":[1.0, 2, {"b": -0.50e1, "s": "1.0 \\" 2e3"}], "c": 1e3, "d": 100, "e": true}'
+    expect(jsonNumberSources(text)).toEqual(
+      new Map([
+        [pathKey(["a", 0]), "1.0"],
+        [pathKey(["a", 2, "b"]), "-0.50e1"],
+        [pathKey(["c"]), "1e3"],
+      ]),
+    )
+  })
+
+  it("follows JSON.parse: a repeated key keeps its last value, digit keys stay keys", () => {
+    expect(jsonNumberSources('{"a":1.0,"a":2.0,"1":3.0}')).toEqual(
+      new Map([
+        [pathKey(["a"]), "2.0"],
+        [pathKey(["1"]), "3.0"],
+      ]),
+    )
+  })
+
+  it("drops what an earlier value of a repeated key recorded, at the key and below it", () => {
+    expect(jsonNumberSources('{"a": 1.50, "a": 2}')).toEqual(new Map())
+    expect(jsonNumberSources('{"a":[1.50],"a":[2]}')).toEqual(new Map())
+    expect(jsonNumberSources('{"a":{"b":1.50,"c":[1e3]},"a":{"b":2}}')).toEqual(new Map())
+    // Keys that only start alike, and the same key in another object, stay.
+    expect(
+      jsonNumberSources('{"ab":1.50,"a":{"x":1.0},"o":{"a":1e3},"a":2,"o2":{"a":1e2}}'),
+    ).toEqual(
+      new Map([
+        [pathKey(["ab"]), "1.50"],
+        [pathKey(["o", "a"]), "1e3"],
+        [pathKey(["o2", "a"]), "1e2"],
+      ]),
+    )
+    // The tree then shows the value JSON.parse kept.
+    expect(jsonInString('{"a": 1.50, "a": 2}')?.numbers.size).toBe(0)
+  })
+
+  it("takes time linear in the text, with numbers recorded and no key repeated", () => {
+    // Not compact (1.50, 0.80), so every record adds two numbers before more keys follow.
+    const records = (n: number) =>
+      JSON.stringify(Array.from({ length: n }, (_, i) => ({ id: i, name: "x" }))).replace(
+        /"name"/g,
+        '"price":10.50,"tax":0.80,"name"',
+      )
+    const fastest = (text: string) => {
+      let best = Infinity
+      for (let run = 0; run < 5; run += 1) {
+        const start = performance.now()
+        jsonNumberSources(text)
+        best = Math.min(best, performance.now() - start)
+      }
+      return best
+    }
+    const small = records(2_000)
+    const large = records(20_000)
+    expect(jsonNumberSources(large).size).toBe(40_000)
+    fastest(small)
+    // Ten times the text: linear is about 10x, the quadratic scan it replaces was about 100x.
+    expect(fastest(large)).toBeLessThan(Math.max(fastest(small), 0.5) * 40)
+  })
+
+  it("takes time linear in the text when a key repeats many times", () => {
+    // A list of non-canonical numbers, then the same key over and over.
+    const repeats = (n: number) =>
+      `{"x":[${Array(n).fill("1.50").join(",")}],${Array(n).fill('"a":0').join(",")}}`
+    const fastest = (text: string) => {
+      let best = Infinity
+      for (let run = 0; run < 5; run += 1) {
+        const start = performance.now()
+        jsonNumberSources(text)
+        best = Math.min(best, performance.now() - start)
+      }
+      return best
+    }
+    const small = repeats(2_000)
+    const large = repeats(20_000)
+    expect(jsonNumberSources(large).size).toBe(20_000)
+    fastest(small)
+    // Ten times the text: linear is about 10x, scanning every number per repeat about 100x.
+    expect(fastest(large)).toBeLessThan(Math.max(fastest(small), 0.5) * 40)
+  })
+
+  it("drops a repeated key's numbers at every depth, and only those", () => {
+    const text =
+      '{"o":{"a":1.50,"a":[1e1,2.0],"b":{"c":3.0}},"p":1.0,' +
+      '"o":{"b":{"c":4.0,"c":5},"d":6.0},"q":[{"r":7.0,"r":8.0}]}'
+    expect(jsonNumberSources(text)).toEqual(
+      new Map([
+        [pathKey(["p"]), "1.0"],
+        [pathKey(["o", "d"]), "6.0"],
+        [pathKey(["q", 0, "r"]), "8.0"],
+      ]),
+    )
+    // The same path recorded again after a repeat survives until its own key repeats.
+    expect(jsonNumberSources('{"o":{"a":1.0,"a":2.0},"z":3.0}')).toEqual(
+      new Map([
+        [pathKey(["o", "a"]), "2.0"],
+        [pathKey(["z"]), "3.0"],
+      ]),
+    )
+    expect(jsonNumberSources('{"o":{"a":1.0,"a":2.0},"o":{}}')).toEqual(new Map())
+  })
+
+  it("skips paths deeper than the limit, without recursion", () => {
+    expect(jsonNumberSources("[[1.0],2.0]", 1)).toEqual(new Map([[pathKey([1]), "2.0"]]))
+    const depth = 100_000
+    const deep = "[".repeat(depth) + "1.0" + "]".repeat(depth)
+    expect(jsonNumberSources(deep).size).toBe(0)
   })
 })

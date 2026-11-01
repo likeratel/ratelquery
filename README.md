@@ -12,12 +12,12 @@ A minimal, modern desktop client for MySQL, DynamoDB and Amazon Athena. Tauri 2,
 
 Download the latest build from [Releases](https://github.com/likeratel/ratelquery/releases/latest):
 
-| Platform | File |
-| --- | --- |
-| macOS, Apple silicon | `ratelquery_<version>_aarch64.dmg` |
-| macOS, Intel | `ratelquery_<version>_x64.dmg` |
-| Windows | `ratelquery_<version>_x64-setup.exe` or `ratelquery_<version>_x64_en-US.msi` |
-| Linux | `ratelquery_<version>_amd64.AppImage`, `.deb` or `.rpm` |
+| Platform             | File                                                                         |
+| -------------------- | ---------------------------------------------------------------------------- |
+| macOS, Apple silicon | `ratelquery_<version>_aarch64.dmg`                                           |
+| macOS, Intel         | `ratelquery_<version>_x64.dmg`                                               |
+| Windows              | `ratelquery_<version>_x64-setup.exe` or `ratelquery_<version>_x64_en-US.msi` |
+| Linux                | `ratelquery_<version>_amd64.AppImage`, `.deb` or `.rpm`                      |
 
 On macOS, open the `.dmg` and drag **ratelquery** into Applications. Builds are not notarized by Apple, so the first launch is blocked with "ratelquery can't be opened" or "is damaged". Either right-click the app in Applications and choose **Open**, or clear the download flag once:
 
@@ -61,8 +61,8 @@ What I did: decided what to build and what to leave out, picked the stack (Tauri
 
 - Browse tables with their key schema and indexes
 - Scan and Query with key conditions, filter expressions and paging
-- Table and JSON views, item detail, a wire/plain JSON editor and a diff before every save
-- Edit string, number and boolean cells right in the grid, then apply them together; each write only succeeds if the item still holds the values you started from
+- Table and JSON views, an item panel with a Tree and a JSON view, a wire/plain JSON editor and a diff before every save
+- Edit string, number and boolean values right in the grid or anywhere in the item tree, including inside JSON stored in a string, then apply them together; each write only succeeds if the item still holds the values you started from
 - Export a scan or query as JSON, JSON Lines or CSV
 
 **Athena**
@@ -127,7 +127,17 @@ String, number and boolean cells can be edited right in the grid; keys, `NULL`, 
 
 ![DynamoDB grid edits waiting for Apply](docs/screenshots/dynamo-inline-edit.png)
 
-**Edit item** opens the JSON editor, in plain JSON or the DynamoDB wire format. `⌘S` shows every added, changed and removed attribute before anything is saved.
+The item panel has two views. **Tree** shows every attribute, keys first, with its type; maps, lists and sets open level by level, down to the 32 levels DynamoDB allows (JSON in a string nested deeper shows a summary there), and a closed node shows its size (`M · 16 keys`, `L · 2 items`). It opens the first level by default, **Expand all** and **Collapse all** do the rest (on an item of more than 2,000 rows, **Expand all** opens only as many levels as fit and says how many), and what you open stays open as you move to other items of the table. Each row can copy its path (`senderService.numbers[0].senderNumber`) or its value. A list of two or more maps that share keys can be shown as a table, with the union of their keys as columns; click a nested cell to follow it into the tree. A string that holds a JSON object or array gets a **JSON** badge and opens like a map. **JSON** shows the item read-only with highlighting and folding, in plain JSON or the wire format, the same mode **Edit** opens in.
+
+Double-click a string, number or boolean in the tree (or press Enter or F2 on it) to edit it in place, at any depth. Enter keeps the value and Esc leaves it as it was; while a Korean or Japanese input composes, Enter and Esc finish or drop the composition instead, and `⌘⏎` still runs the request. Keys stay read-only and numbers are checked like in the grid. Inside JSON stored in a string, values can be edited only when the string is compact JSON that `JSON.stringify` gives back unchanged; otherwise the badge says why (not compact, or numbers beyond 2^53), so nothing is reformatted or rounded. Numbers in such JSON show as the string writes them (`1000000000000000000000`, not `1e+21`). Tree and grid edits of an item are the same pending changes: **Apply** (`⌘S` in the panel) lists them, then writes them with one `UpdateItem` that sets each nested path only if it, and every list on the way to it, still holds what you loaded. A list that shifted in the meantime refuses the write rather than changing another element. If a refresh shows the item changed under a pending edit, the edit is marked as a conflict instead of being laid over the new values. **Discard** drops them.
+
+**Find** (`⌘F` anywhere in a DynamoDB tab while an item is open) searches the tree: attribute names, map keys and values at every depth, set members, and the inside of JSON stored in a string. It ignores case unless **Aa** is on, and **Keys** and **Values** pick what is searched. Values match on the text the tree shows: numbers on their exact text (inside JSON in a string, as the string writes them), booleans as `true` and `false`, and `NULL` (DynamoDB's or JSON's) as `NULL`, so `null` finds it unless **Aa** is on; binary values are not searched. A long value shows its first 400 characters, and a `+N` after it counts the matches past them.
+
+Text that reads as a path, written the way **Copy path** writes it (`numbers[0].senderStatus`, `senderService.numbers[1]`, `["odd key"]`), jumps to that row from the top, or else to every row whose path ends with it; a path that leads nowhere is searched as text. When a path jump hides text matches of the same query, the bar offers **N as text**, which wraps the query in double quotes: a quoted query is always searched as text.
+
+By default matches are highlighted in the whole tree, the rows above them open, and `⏎` / `⇧⏎` (or the arrows) step through them with a `3 / 12` count, left to right through the cells of a list shown as a table. Past 500 matches only the current match's rows are opened, so a short query on a large item doesn't open all of it. The filter button instead shows only the matching rows and the rows above them, keeping pending changes and an open field in view; a table keeps only the rows that hold a match. Matching runs on the values shown, pending edits included, and they stay editable. Opening and closing nodes, **Expand all**, **Collapse all** (which keeps the current match open) and table toggles during a search last until it is cleared, and the tree then returns to the way you left it. The filter, **Aa**, **Keys** and **Values** choices are kept for the tab, and the query for the table while you move between items. `⎋` clears the query, then closes the bar. Switching to **JSON** carries the query into the editor's search (a path the tree jumped to as its last key), which opens folded regions to show a match. `⌘F` inside a JSON editor is the editor's own search; in other text fields it does nothing, and with no item open it goes to **Filter tables**.
+
+**Edit item** opens the JSON editor, in plain JSON or the DynamoDB wire format, for structural changes such as adding or removing attributes. Pending tree or grid changes of the item move into the editor's text, so its review lists them and saving writes everything at once, still only while the values they started from hold; discarding the editor drops them. Changes that already failed or conflict with the item stay in the panel until you discard them. `⌘S` shows every added, changed and removed attribute before anything is saved.
 
 ![Diff review before saving an item](docs/screenshots/dynamo-diff-review.png)
 
@@ -141,20 +151,22 @@ Athena tabs use the same editor, with tables and columns from the Glue Data Cata
 
 ## Shortcuts
 
-| Shortcut | Action |
-| --- | --- |
-| `⌘N` | New connection |
-| `⌘T` | New tab on the current connection |
-| `⌘W` | Close tab |
-| `⌘1`…`⌘8` / `⌘9` | Go to that tab of the current connection / its last tab |
-| `⌥⌘1`…`⌥⌘8` / `⌥⌘9` | Go to that connection (its last used tab) / the last connection |
-| `⌘⏎` | Run the statement at the cursor, or the DynamoDB form |
-| `⇧⌘⏎` | Run the selected text, or everything when nothing is selected |
-| `⌘S` | Apply pending grid edits, or review a DynamoDB item |
-| `⌘C` / `⇧⌘C` | Copy the focused cell, or the selected rows when several are selected; `⇧` copies rows with a line of column names |
-| `⌘B` | Toggle the sidebar |
-| `⌘,` | Settings |
-| `Esc` | Close the item or cell editor, or a prompt |
+| Shortcut            | Action                                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `⌘N`                | New connection                                                                                                                              |
+| `⌘T`                | New tab on the current connection                                                                                                           |
+| `⌘W`                | Close tab                                                                                                                                   |
+| `⌘1`…`⌘8` / `⌘9`    | Go to that tab of the current connection / its last tab                                                                                     |
+| `⌥⌘1`…`⌥⌘8` / `⌥⌘9` | Go to that connection (its last used tab) / the last connection                                                                             |
+| `⌘⏎`                | Run the statement at the cursor, or the DynamoDB form                                                                                       |
+| `⇧⌘⏎`               | Run the selected text, or everything when nothing is selected                                                                               |
+| `⌘S`                | Apply pending grid edits, or review a DynamoDB item (in the item panel: review, then apply its changes)                                     |
+| `⌘F`                | Find in the DynamoDB item panel (selects the query when already there); search inside a JSON editor; **Filter tables** when no item is open |
+| `⏎` / `⇧⏎`          | Next / previous match in the item find bar; `⎋` clears it, then closes it                                                                   |
+| `⌘C` / `⇧⌘C`        | Copy the focused cell, or the selected rows when several are selected; `⇧` copies rows with a line of column names                          |
+| `⌘B`                | Toggle the sidebar                                                                                                                          |
+| `⌘,`                | Settings                                                                                                                                    |
+| `Esc`               | Close the item or cell editor, or a prompt                                                                                                  |
 
 `⌘` is `Ctrl` on Windows and Linux.
 

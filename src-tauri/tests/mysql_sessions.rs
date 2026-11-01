@@ -190,7 +190,7 @@ async fn tls_modes_against_a_self_signed_server() {
         assert_eq!(err.kind(), "connection", "{mode:?} must reject an unknown CA");
     }
     let Ok(ca) = std::env::var(CA_VAR) else {
-        eprintln!("SKIPPED verify_ca with the server CA: {CA_VAR} is not set");
+        common::skipped(&format!("verify_ca with the server CA: {CA_VAR} is not set"));
         return;
     };
     let verified =

@@ -22,6 +22,7 @@ import { useTabsStore } from "../../state/tabsStore"
 import { applyPlatformAttribute, applyTheme, useUiStore } from "../../state/uiStore"
 import { startWorkspaceSync } from "../../state/workspaceSync"
 import { PANEL_SPECS } from "../../lib/panelWidths"
+import { isImeComposing } from "../../lib/shortcuts"
 import { isModalOpen, ResizeHandle, Toaster } from "../ui"
 import { ConnectionBanner } from "./ConnectionBanner"
 import { EmptyWorkspace } from "./EmptyWorkspace"
@@ -72,7 +73,7 @@ export function Shell() {
     // open the page behind it is inert, so its shortcuts must not fire either (Esc belongs to
     // the dialog and isn't an app shortcut).
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || event.isComposing) return
+      if (event.defaultPrevented || isImeComposing(event)) return
       if (event.code !== "Escape" && isModalOpen()) return
       if (handleAppShortcut(event)) event.preventDefault()
     }

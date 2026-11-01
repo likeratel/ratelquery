@@ -4,10 +4,9 @@ import { isFromEditorPanel } from "../../components/editor/editorPanel"
 import { JsonEditor } from "../../components/editor/lazyEditors"
 import { SegmentedControl } from "../../components/ui"
 import type { KeySchema } from "../../lib/dynamo"
-import { diffItems, keyChanged, putExpectation, type AttributeChange } from "../../lib/dynamoDiff"
+import { diffItems, keyChanged, putExpectation } from "../../lib/dynamoDiff"
 import { findLossyAttributes, parseItem, type JsonMode } from "../../lib/dynamoJson"
 import type { DiscardIntent, DynamoTab, ItemEditorState } from "../../lib/dynamoTabs"
-import { attributeSummary } from "../../lib/dynamoView"
 import { formatShortcut, matchesShortcut } from "../../lib/shortcuts"
 import { APP_SHORTCUTS, handleAppShortcut } from "../query/appShortcuts"
 import {
@@ -21,33 +20,8 @@ import {
   setEditorText,
   switchEditorMode,
 } from "./actions"
+import { DiffList } from "./DiffList"
 import { DYNAMO_SHORTCUTS } from "./shortcuts"
-
-const SIGN: Record<AttributeChange["kind"], string> = { added: "+", changed: "~", removed: "−" }
-
-function DiffList({ changes }: { changes: readonly AttributeChange[] }) {
-  return (
-    <ul className="dyn-diff" aria-label="Changes">
-      {changes.map((change) => (
-        <li key={change.name} className="dyn-diff__row" data-kind={change.kind}>
-          <span className="dyn-diff__sign" aria-label={change.kind}>
-            {SIGN[change.kind]}
-          </span>
-          <span className="dyn-diff__name mono">{change.name}</span>
-          <span className="dyn-diff__values mono">
-            {change.before && (
-              <span className="dyn-diff__before">{attributeSummary(change.before)}</span>
-            )}
-            {change.before && change.after && <span className="dyn-diff__arrow">→</span>}
-            {change.after && (
-              <span className="dyn-diff__after">{attributeSummary(change.after)}</span>
-            )}
-          </span>
-        </li>
-      ))}
-    </ul>
-  )
-}
 
 interface ConfirmationProps {
   tabId: string
@@ -68,7 +42,9 @@ function Confirmation({ tabId, editor, schema }: ConfirmationProps) {
       <p className="dyn-editor__summary">
         {changes.length} {noun} ·{" "}
         {expect === "exists"
-          ? "saves only if the item still exists"
+          ? editor.expected.length > 0
+            ? "saves only if the item still exists and the values its grid or tree changes started from still hold"
+            : "saves only if the item still exists"
           : "creates the item only if no item has this key"}
       </p>
       <DiffList changes={changes} />
@@ -214,6 +190,12 @@ export function ItemEditor({ tab, editor, schema }: ItemEditorProps) {
         <p className="dyn-note">
           Plain mode is off: {plainReason}
           {lossy.length > 1 ? ` (and ${lossy.length - 1} more)` : ""}.
+        </p>
+      )}
+      {editor.carried > 0 && (
+        <p className="dyn-note">
+          Includes {editor.carried} pending {editor.carried === 1 ? "change" : "changes"} from the
+          grid or tree. Saving the item writes them; discarding drops them.
         </p>
       )}
       {editor.discard && <DiscardPrompt tabId={tab.id} intent={editor.discard} />}

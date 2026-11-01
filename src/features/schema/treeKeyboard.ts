@@ -1,4 +1,5 @@
 import type { FocusEvent, KeyboardEvent } from "react"
+import { isImeComposing } from "../../lib/shortcuts"
 import { useSchemaTree } from "./treeStore"
 
 /**
@@ -69,7 +70,7 @@ function handleItemKey(tree: HTMLElement, item: HTMLElement, event: KeyboardEven
 }
 
 export function handleTreeKeyDown(event: KeyboardEvent<HTMLElement>): void {
-  if (event.nativeEvent.isComposing || event.metaKey || event.ctrlKey || event.altKey) return
+  if (isImeComposing(event.nativeEvent) || event.metaKey || event.ctrlKey || event.altKey) return
   const tree = event.currentTarget
   const target = event.target as HTMLElement
   let handled = false

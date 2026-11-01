@@ -1,6 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from "react"
 import { TextField } from "../../components/ui"
 import { numericCommit, parseNumericSetting, type NumericSetting } from "../../lib/settings"
+import { isImeComposing } from "../../lib/shortcuts"
 
 interface NumberSettingProps {
   field: NumericSetting
@@ -34,7 +35,7 @@ export function NumberSetting({ field, label, value, hint, onCommit }: NumberSet
 
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // Enter that confirms an IME composition must not commit.
-    if (event.nativeEvent.isComposing) return
+    if (isImeComposing(event.nativeEvent)) return
     if (event.code === "Enter" || event.code === "NumpadEnter") commit()
   }
 

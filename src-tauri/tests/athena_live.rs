@@ -7,6 +7,8 @@
 //! writes to the workgroup's result location: no bucket, table or database is created, and
 //! every statement is a constant `SELECT` or a metadata statement that scans no data.
 
+mod common;
+
 use ratelquery_lib::athena::{self, AthenaClients, AthenaQueryOptions};
 use ratelquery_lib::connections::{AthenaConnectionConfig, AwsAuth, probe_athena};
 use ratelquery_lib::mysql::Cell;
@@ -19,7 +21,7 @@ struct Env {
 
 fn env() -> Option<Env> {
     let Ok(profile) = std::env::var("RATELQUERY_TEST_ATHENA_PROFILE") else {
-        eprintln!("skipping: RATELQUERY_TEST_ATHENA_PROFILE is not set");
+        common::skipped("live Athena test: RATELQUERY_TEST_ATHENA_PROFILE is not set");
         return None;
     };
     let region =

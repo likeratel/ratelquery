@@ -1,11 +1,18 @@
 import { useEffect } from "react"
 import { isModalOpen } from "../../components/ui"
-import { isMac, matchesShortcut, parseShortcut, type KeyLike } from "../../lib/shortcuts"
+import {
+  isImeComposing,
+  isMac,
+  matchesShortcut,
+  parseShortcut,
+  type ImeKeyLike,
+  type KeyLike,
+} from "../../lib/shortcuts"
 import { useConnectionsStore } from "../../state/connectionsStore"
 
 export const NEW_CONNECTION_SHORTCUT = parseShortcut("Mod+N")
 
-type NewConnectionEvent = KeyLike & { isComposing: boolean; defaultPrevented: boolean }
+type NewConnectionEvent = KeyLike & ImeKeyLike & { defaultPrevented: boolean }
 
 /**
  * What Mod+N does: `ignore` keys that aren't the shortcut, belong to an IME composition, were
@@ -17,7 +24,7 @@ export function newConnectionAction(
   modalOpen: boolean,
   mac = isMac(),
 ): "ignore" | "swallow" | "open" {
-  if (event.isComposing || event.defaultPrevented || event.repeat) return "ignore"
+  if (isImeComposing(event) || event.defaultPrevented || event.repeat) return "ignore"
   if (!matchesShortcut(event, NEW_CONNECTION_SHORTCUT, mac)) return "ignore"
   return modalOpen ? "swallow" : "open"
 }

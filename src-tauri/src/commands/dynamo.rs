@@ -6,8 +6,8 @@ use tauri::{AppHandle, State};
 use super::export::authorize_export_path;
 use crate::connections::{ConnectionConfig, DynamoAuth};
 use crate::dynamo::{
-    self, AttributeUpdate, DynamoExportOptions, DynamoExportRequest, DynamoHandle, Page,
-    PutExpectation, QueryRequest, ScanRequest, TableDescription, WireItem,
+    self, AttributeUpdate, DynamoExportOptions, DynamoExportRequest, DynamoHandle, ExpectedValue,
+    Page, PutExpectation, QueryRequest, ScanRequest, TableDescription, WireItem,
 };
 use crate::error::{AppError, AppResult};
 use crate::export::ExportResult;
@@ -120,9 +120,10 @@ pub async fn dynamo_put_item(
     table: String,
     item: WireItem,
     expect: PutExpectation,
+    expected: Option<Vec<ExpectedValue>>,
 ) -> AppResult<()> {
     with_handle(&state, &connection_id, |h| async move {
-        dynamo::put_item(&h, &table, &item, expect).await
+        dynamo::put_item(&h, &table, &item, expect, &expected.unwrap_or_default()).await
     })
     .await
 }
@@ -149,9 +150,11 @@ pub async fn dynamo_update_item_attributes(
     table: String,
     key: WireItem,
     changes: Vec<AttributeUpdate>,
+    expected: Option<Vec<ExpectedValue>>,
 ) -> AppResult<()> {
     with_handle(&state, &connection_id, |h| async move {
-        dynamo::update_item_attributes(&h, &table, &key, &changes).await
+        let expected = expected.unwrap_or_default();
+        dynamo::update_item_attributes(&h, &table, &key, &changes, &expected).await
     })
     .await
 }

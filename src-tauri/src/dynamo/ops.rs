@@ -6,7 +6,9 @@ use aws_sdk_dynamodb::error::{ProvideErrorMetadata, SdkError};
 
 use super::errors::{is_conditional_check_failed, map_sdk_error};
 use super::expr::{UserParts, build_query, build_scan, build_update, page_limit, put_condition};
-use super::model::{AttributeUpdate, Page, PutExpectation, QueryRequest, ScanRequest};
+use super::model::{
+    AttributeUpdate, ExpectedValue, Page, PutExpectation, QueryRequest, ScanRequest,
+};
 use super::registry::DynamoHandle;
 use super::schema::key_schema_for;
 use super::wire::{SdkItem, WireItem, from_wire_item, to_wire_item};
@@ -151,11 +153,14 @@ fn condition_failed_message(expect: PutExpectation, hash_key: &str) -> String {
     }
 }
 
+/// Writes a whole item under `expect`. Over an existing item, `expected` values must also
+/// still hold (the item editor sends the values its carried inline edits started from).
 pub async fn put_item(
     handle: &DynamoHandle,
     table: &str,
     item: &WireItem,
     expect: PutExpectation,
+    expected: &[ExpectedValue],
 ) -> AppResult<()> {
     require_table(table)?;
     let sdk_item = require_attributes(item, "item")?;
@@ -166,7 +171,7 @@ pub async fn put_item(
     if let Some(hash) = hash_key.as_deref().filter(|h| !sdk_item.contains_key(*h)) {
         return Err(AppError::InvalidInput(format!("the item is missing its hash key {hash}")));
     }
-    let condition = hash_key.as_deref().map(|h| put_condition(expect, h)).unwrap_or_default();
+    let condition = put_condition(expect, hash_key.as_deref().unwrap_or_default(), expected)?;
     let output = handle
         .client()
         .put_item()
@@ -174,10 +179,14 @@ pub async fn put_item(
         .set_item(Some(sdk_item))
         .set_condition_expression(condition.condition.clone())
         .set_expression_attribute_names(condition.names_or_none())
+        .set_expression_attribute_values(condition.values_or_none())
         .send()
         .await;
     match output {
         Ok(_) => Ok(()),
+        Err(err) if is_conditional_check_failed(&err) && !expected.is_empty() => {
+            Err(AppError::Query(UPDATE_CONFLICT_MESSAGE.to_string()))
+        }
         Err(err) if is_conditional_check_failed(&err) => Err(AppError::Query(
             condition_failed_message(expect, hash_key.as_deref().unwrap_or("key")),
         )),
@@ -188,14 +197,16 @@ pub async fn put_item(
 const UPDATE_CONFLICT_MESSAGE: &str = "the item was changed or deleted since it was loaded; \
                                        refresh to see its current values";
 
-/// Sets some top-level attributes of one existing item with a single UpdateItem. The write is
-/// refused (nothing changes) when the item is gone or any edited attribute no longer has the
-/// value the user saw.
+/// Sets some attributes, or values nested in their maps and lists, of one existing item with a
+/// single UpdateItem. The write is refused (nothing changes) when the item is gone, any edited
+/// value no longer is what the user saw, or an `expected` value (such as a list an edited path
+/// indexes into) no longer holds.
 pub async fn update_item_attributes(
     handle: &DynamoHandle,
     table: &str,
     key: &WireItem,
     changes: &[AttributeUpdate],
+    expected: &[ExpectedValue],
 ) -> AppResult<()> {
     require_table(table)?;
     let key = require_attributes(key, "item key")?;
@@ -206,7 +217,7 @@ pub async fn update_item_attributes(
             schema.hash.name
         )));
     }
-    let expressions = build_update(&schema, changes)?;
+    let expressions = build_update(&schema, changes, expected)?;
     let output = handle
         .client()
         .update_item()

@@ -3,7 +3,8 @@ import type { Cell, ColumnInfo } from "./mysql"
 /** Colour family for a cell; maps to the `--data-*` tokens. */
 export type CellTone = "number" | "string" | "bool" | "null" | "date" | "json" | "bytes"
 
-const MAX_DISPLAY_CHARS = 400
+/** Longest text a cell or tree value shows before it is cut off with `…`. */
+export const MAX_DISPLAY_CHARS = 400
 
 export function cellTone(cell: Cell): CellTone {
   switch (cell.t) {
@@ -47,8 +48,10 @@ export function formatCell(cell: Cell): string {
     case "bytes":
       return `(binary, ${base64ByteLength(cell.v)} bytes)`
     default: {
-      const flat =
-        cell.v.length > MAX_DISPLAY_CHARS ? `${cell.v.slice(0, MAX_DISPLAY_CHARS)}…` : cell.v
+      // The cut never splits a surrogate pair (an emoji, say) in two.
+      const cut =
+        MAX_DISPLAY_CHARS - (/[\uD800-\uDBFF]/.test(cell.v[MAX_DISPLAY_CHARS - 1]) ? 1 : 0)
+      const flat = cell.v.length > MAX_DISPLAY_CHARS ? `${cell.v.slice(0, cut)}…` : cell.v
       return flat.replace(/[\r\n\t]+/g, " ")
     }
   }

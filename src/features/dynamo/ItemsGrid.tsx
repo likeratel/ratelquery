@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react"
 import { ResultGrid, type GridSelection } from "../../components/grid/ResultGrid"
 import type { KeySchema, Page } from "../../lib/dynamo"
 import {
+  changesUnder,
   inlineEditType,
   itemEdit,
   withPendingValues,
@@ -50,7 +51,7 @@ export function ItemsGrid(props: ItemsGridProps) {
         return {
           ref: { kind: "existing", index },
           cells: itemCells(withPendingValues(item, edit), columns),
-          changed: columns.map((column) => Boolean(edit?.changes[column.name])),
+          changed: columns.map((column) => changesUnder(edit, [column.name]).length > 0),
           deleted: false,
         }
       }),

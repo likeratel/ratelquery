@@ -157,13 +157,37 @@ pub enum PutExpectation {
     Any,
 }
 
-/// One attribute set by `dynamo_update_item_attributes`. `expected` is the value the user saw
-/// when editing, or `None` when the attribute was missing; the write only goes through while
-/// the stored attribute still matches it.
+/// One step below a top-level attribute: a map key or a list index.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum PathSegment {
+    Index(u32),
+    Key(String),
+}
+
+/// A value the stored item must still hold for a write to go through: the attribute `name`, or
+/// the value `path` leads to inside it. `None` means it must be missing. Edits send the whole
+/// list for every list index on an edited path, so a list that shifted meanwhile refuses the
+/// write instead of changing whatever element now sits at the old index.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpectedValue {
+    pub name: String,
+    #[serde(default)]
+    pub path: Vec<PathSegment>,
+    #[serde(default)]
+    pub value: Option<Value>,
+}
+
+/// One value set by `dynamo_update_item_attributes`: the attribute `name`, or the value `path`
+/// leads to inside it. `expected` is the value the user saw when editing, or `None` when it was
+/// missing; the write only goes through while the stored value still matches it.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttributeUpdate {
     pub name: String,
+    #[serde(default)]
+    pub path: Vec<PathSegment>,
     pub value: Value,
     #[serde(default)]
     pub expected: Option<Value>,
@@ -229,6 +253,22 @@ mod tests {
             serde_json::from_value(json!({ "name": "n", "value": { "S": "" }, "expected": null }))
                 .unwrap();
         assert_eq!(added.expected, None);
+        assert!(added.path.is_empty());
+        let nested: AttributeUpdate = serde_json::from_value(json!({
+            "name": "service", "path": ["numbers", 0, "7"],
+            "value": { "S": "b" }, "expected": { "S": "a" }
+        }))
+        .unwrap();
+        assert_eq!(
+            nested.path,
+            [
+                PathSegment::Key("numbers".into()),
+                PathSegment::Index(0),
+                PathSegment::Key("7".into())
+            ]
+        );
+        let negative = json!({ "name": "l", "path": [-1], "value": { "S": "" } });
+        assert!(serde_json::from_value::<AttributeUpdate>(negative).is_err());
     }
 
     #[test]
