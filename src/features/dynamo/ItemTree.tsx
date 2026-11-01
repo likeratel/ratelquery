@@ -64,6 +64,7 @@ import { FindBar } from "./FindBar"
 import { requestFind } from "./findStore"
 import { DYNAMO_SHORTCUTS } from "./shortcuts"
 import { useTreeFind, type TreeFind } from "./useTreeFind"
+import "./itemTree.css"
 
 /** Shared by every row of one tree. */
 interface TreeContext extends TreeEditView {
