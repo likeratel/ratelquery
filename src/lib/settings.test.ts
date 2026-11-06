@@ -17,6 +17,9 @@ describe("settingsSchema", () => {
     const bad = [
       mergeSettings(DEFAULT_SETTINGS, { editorFontSize: 10 }),
       mergeSettings(DEFAULT_SETTINGS, { editorFontSize: 21 }),
+      mergeSettings(DEFAULT_SETTINGS, { uiZoom: 79 }),
+      mergeSettings(DEFAULT_SETTINGS, { uiZoom: 176 }),
+      mergeSettings(DEFAULT_SETTINGS, { uiZoom: 112.5 }),
       mergeSettings(DEFAULT_SETTINGS, { query: { defaultLimit: 0 } }),
       mergeSettings(DEFAULT_SETTINGS, { query: { defaultLimit: 100_001 } }),
       mergeSettings(DEFAULT_SETTINGS, { query: { maxRows: 1.5 } }),
@@ -31,6 +34,12 @@ describe("settingsSchema", () => {
 })
 
 describe("normalizeSettings", () => {
+  it("keeps a saved zoom and defaults one outside the levels' range", () => {
+    expect(normalizeSettings({ uiZoom: 150 }).uiZoom).toBe(150)
+    expect(normalizeSettings({ uiZoom: 400 }).uiZoom).toBe(DEFAULT_SETTINGS.uiZoom)
+    expect(normalizeSettings({}).uiZoom).toBe(100)
+  })
+
   it("fills missing groups and fields from the defaults", () => {
     expect(normalizeSettings(null)).toEqual(DEFAULT_SETTINGS)
     expect(normalizeSettings({ dynamo: { pageSize: 25 }, extra: true })).toEqual(

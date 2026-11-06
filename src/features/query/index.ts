@@ -11,7 +11,7 @@ export {
   openQueryTabFor,
   subscribeConnectionCleanup,
 } from "./actions"
-export { APP_SHORTCUTS, handleAppShortcut } from "./appShortcuts"
+export { APP_SHORTCUTS, handleAppShortcut, isZoomShortcut } from "./appShortcuts"
 export { athenaTabDatabase, tabDatabase } from "./editing"
 export { QueryWorkspace } from "./QueryWorkspace"
 export { RunConfirmDialog } from "./RunConfirmDialog"

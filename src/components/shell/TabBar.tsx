@@ -1,4 +1,4 @@
-import { Cloud, Database, PanelLeft, Plus, Table2, X, type LucideIcon } from "lucide-react"
+import { Cloud, Database, Plus, Table2, X, type LucideIcon } from "lucide-react"
 import { type CSSProperties, type KeyboardEvent, type MouseEvent } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { CONNECTION_KIND_ICON, CONNECTION_KIND_LABEL } from "../../features/connections"
@@ -19,7 +19,6 @@ import { tabKeyTarget } from "./tabKeyboard"
 import { Button, Dialog } from "../ui"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useTabsStore } from "../../state/tabsStore"
-import { useUiStore } from "../../state/uiStore"
 
 const MIDDLE_BUTTON = 1
 
@@ -303,8 +302,6 @@ function GroupTabs({ connectionId }: { connectionId: ConnectionId }) {
 }
 
 export function TabBar() {
-  const collapsed = useUiStore((s) => s.sidebarCollapsed)
-  const toggleSidebar = useUiStore((s) => s.toggleSidebar)
   const activeConnection = useTabsStore(activeConnectionId)
 
   return (
@@ -312,19 +309,6 @@ export function TabBar() {
       <div className="tabbar__row tabbar__row--connections" data-tauri-drag-region>
         <ConnectionTabs activeConnection={activeConnection} />
         <div className="tabbar__spacer" data-tauri-drag-region />
-        <div className="tabbar__actions">
-          <button
-            type="button"
-            className="ui-icon-button"
-            data-size="md"
-            onClick={toggleSidebar}
-            aria-pressed={!collapsed}
-            aria-label={collapsed ? "Show sidebar" : "Hide sidebar"}
-            title={collapsed ? "Show sidebar" : "Hide sidebar"}
-          >
-            <PanelLeft size={15} strokeWidth={2} />
-          </button>
-        </div>
       </div>
       {activeConnection && <GroupTabs connectionId={activeConnection} />}
       <CloseTabDialog />

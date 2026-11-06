@@ -77,6 +77,7 @@ What I did: decided what to build and what to leave out, picked the stack (Tauri
 - Nested folders and your own order for connections; duplicate a connection with its saved password
 - An Output log next to the results with every statement's outcome, kept for the number of days you choose
 - Resizable sidebar and DynamoDB panels
+- Whole-window zoom from 80% to 175% (`⌘=`, `⌘-`, `⌘0`) for screen sharing, kept between launches
 - Secrets live in the OS keyring, never in the settings file
 - Export paths are limited to files you chose in the save dialog
 - Light and dark themes that follow the system
@@ -164,6 +165,7 @@ Athena tabs use the same editor, with tables and columns from the Glue Data Cata
 | `⌘F`                | Find in the DynamoDB item panel (selects the query when already there); search inside a JSON editor; **Filter tables** when no item is open |
 | `⏎` / `⇧⏎`          | Next / previous match in the item find bar; `⎋` clears it, then closes it                                                                   |
 | `⌘C` / `⇧⌘C`        | Copy the focused cell, or the selected rows when several are selected; `⇧` copies rows with a line of column names                          |
+| `⌘=` / `⌘-` / `⌘0`  | Zoom the whole window in / out / back to 100%                                                                                               |
 | `⌘B`                | Toggle the sidebar                                                                                                                          |
 | `⌘,`                | Settings                                                                                                                                    |
 | `Esc`               | Close the item or cell editor, or a prompt                                                                                                  |

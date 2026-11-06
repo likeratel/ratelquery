@@ -4,9 +4,12 @@ import {
   defaultPanelWidths,
   dragWidth,
   loadPanelWidths,
+  panelCap,
+  panelColumn,
   PANEL_SPECS,
   parseStoredWidth,
   savePanelWidth,
+  shownWidth,
   type WidthStorage,
 } from "./panelWidths"
 
@@ -77,5 +80,34 @@ describe("dragWidth", () => {
     expect(dragWidth(sidebar, 264, 40, "end")).toBe(304)
     expect(dragWidth(PANEL_SPECS.dynamoSide, 400, -60, "start")).toBe(460)
     expect(dragWidth(PANEL_SPECS.dynamoSide, 400, 500, "start")).toBe(280)
+  })
+
+  it("starts a capped panel from the width shown, so its edge follows the pointer", () => {
+    // A 900px window at 35% shows a 400px sidebar at 315px.
+    expect(dragWidth(sidebar, 400, -40, "end", 900)).toBe(275)
+    // An 800px items area at 45% shows a 400px item panel at 360px.
+    expect(dragWidth(PANEL_SPECS.dynamoSide, 400, 20, "start", 800)).toBe(340)
+  })
+
+  it("never stores more than the cap shows", () => {
+    expect(dragWidth(sidebar, 400, 60, "end", 900)).toBe(315)
+    expect(dragWidth(sidebar, 264, 200, "end", 900)).toBe(315)
+    expect(dragWidth(PANEL_SPECS.dynamoSide, 300, -100, "start", 800)).toBe(360)
+  })
+})
+
+describe("panel caps", () => {
+  it("caps the column at the panel's share of its container in CSS", () => {
+    expect(panelColumn(sidebar, 264)).toBe("min(264px, 35%)")
+    expect(panelColumn(PANEL_SPECS.dynamoSide, 400)).toBe("min(400px, 45%)")
+  })
+
+  it("computes the width shown, even below the panel's minimum", () => {
+    expect(panelCap(sidebar, 900)).toBe(315)
+    expect(panelCap(sidebar, 300)).toBe(105)
+    expect(panelCap(sidebar, Infinity)).toBe(Infinity)
+    expect(shownWidth(sidebar, 400, 900)).toBe(315)
+    expect(shownWidth(sidebar, 264, 900)).toBe(264)
+    expect(shownWidth(sidebar, 264, Infinity)).toBe(264)
   })
 })

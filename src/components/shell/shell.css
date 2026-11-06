@@ -1,7 +1,9 @@
+/* `--sidebar-column` (set inline) caps the stored width at a share of the window, so at a high
+   zoom a wide sidebar can't squeeze the workspace out. */
 .shell {
   position: relative;
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: var(--sidebar-column) 1fr;
   grid-template-rows: 1fr;
   height: 100%;
   background: var(--bg);
@@ -17,8 +19,34 @@
   transition: none;
 }
 
+/* The sidebar toggle keeps the same place in both sidebar states and grows with the interface
+   zoom like the rest of the window. Without native window chrome it sits at the start of the
+   top row, centred like the sidebar header's buttons, and the header and the connection tabs
+   make room for it. On macOS it follows the traffic lights, which don't zoom: its left edge is
+   in screen points, divided by `--ui-zoom` into CSS pixels, so it never slides under them below
+   100%, and vertically it lines up with them while it fits, then stays just inside the window's
+   top edge. */
+.shell {
+  --sidebar-toggle-left: 8px;
+}
+
+:root[data-platform="macos"] .shell {
+  --sidebar-toggle-left: calc(76px / var(--ui-zoom, 1));
+}
+
+.shell__sidebar-toggle {
+  position: absolute;
+  top: calc((var(--tabbar-height) - var(--icon-button-md)) / 2);
+  left: var(--sidebar-toggle-left);
+  z-index: 6;
+}
+
+:root[data-platform="macos"] .shell__sidebar-toggle {
+  top: max(1px, 15.5px / var(--ui-zoom, 1) - var(--icon-button-md) / 2);
+}
+
 .shell__resize {
-  left: calc(var(--sidebar-width) - 3px);
+  left: calc(var(--sidebar-column) - 3px);
 }
 
 .sidebar {
@@ -45,6 +73,11 @@
   align-items: center;
   justify-content: space-between;
   padding: 6px 10px 6px 14px;
+}
+
+/* Without the macOS title bar inset the header is the top row, where the sidebar toggle sits. */
+:root:not([data-platform="macos"]) .sidebar__header {
+  padding-left: calc(var(--sidebar-toggle-left) + var(--icon-button-md) + 6px);
 }
 
 .sidebar__title {
@@ -112,9 +145,10 @@
   box-shadow: inset 0 -2px 0 var(--conn);
 }
 
-/* Room for the macOS traffic lights when the sidebar that normally holds them is hidden. */
-:root[data-platform="macos"] .shell[data-sidebar="collapsed"] .tabbar__row--connections {
-  padding-left: 78px;
+/* Room for the sidebar toggle (and on macOS the traffic lights before it) when the sidebar
+   that normally sits under them is hidden. */
+.shell[data-sidebar="collapsed"] .tabbar__row--connections {
+  padding-left: calc(var(--sidebar-toggle-left) + var(--icon-button-md) + 6px);
 }
 
 /* A connection's colour, or a neutral one when it has none (`--conn` set inline). */
@@ -269,13 +303,6 @@
 
 .tabbar__spacer {
   flex: 1;
-}
-
-.tabbar__actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 8px;
 }
 
 .workspace__main {

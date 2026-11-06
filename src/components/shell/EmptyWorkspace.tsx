@@ -9,6 +9,8 @@ const HINTS = [
   { keys: "Mod+1", label: "Tab 1–8 of this connection, 9 for its last" },
   { keys: "Mod+Alt+1", label: "Connection 1–8, 9 for the last" },
   { keys: "Mod+B", label: "Toggle sidebar" },
+  { keys: "Mod+=", label: "Zoom in" },
+  { keys: "Mod+-", label: "Zoom out" },
   { keys: "Mod+,", label: "Settings" },
 ]
 

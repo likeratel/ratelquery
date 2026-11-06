@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { ipc } from "./ipc"
+import { DEFAULT_ZOOM, ZOOM_LEVELS } from "./zoom"
 
 /** User preferences persisted by the backend (`settings_get` / `settings_set`). */
 export type ThemePreference = "system" | "light" | "dark"
@@ -27,6 +28,8 @@ export interface Settings {
   theme: ThemePreference
   /** Editor font size in px. */
   editorFontSize: number
+  /** Whole-window zoom in percent; Mod+= and Mod+- step through `ZOOM_LEVELS`. */
+  uiZoom: number
   query: QuerySettings
   dynamo: DynamoSettings
   secretStore: SecretStore
@@ -36,6 +39,7 @@ export interface Settings {
 export interface SettingsPatch {
   theme?: ThemePreference
   editorFontSize?: number
+  uiZoom?: number
   query?: Partial<QuerySettings>
   dynamo?: Partial<DynamoSettings>
   secretStore?: SecretStore
@@ -49,6 +53,7 @@ export interface Range {
 /** Accepted ranges; they mirror the backend validation in docs/ipc-contract.md. */
 export const SETTING_RANGES = {
   editorFontSize: { min: 11, max: 20 },
+  uiZoom: { min: ZOOM_LEVELS[0], max: ZOOM_LEVELS.at(-1)! },
   defaultLimit: { min: 1, max: 100_000 },
   maxRows: { min: 1, max: 100_000 },
   outputRetentionDays: { min: 0, max: 365 },
@@ -60,6 +65,7 @@ export type NumericSetting = keyof typeof SETTING_RANGES
 export const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   editorFontSize: 13,
+  uiZoom: DEFAULT_ZOOM,
   query: {
     defaultLimit: 1000,
     addLimitToSelect: true,
@@ -80,6 +86,7 @@ const intIn = ({ min, max }: Range) => z.number().int().min(min).max(max)
 export const settingsSchema = z.object({
   theme: z.enum(THEME_PREFERENCES),
   editorFontSize: intIn(SETTING_RANGES.editorFontSize),
+  uiZoom: intIn(SETTING_RANGES.uiZoom),
   query: z.object({
     defaultLimit: intIn(SETTING_RANGES.defaultLimit),
     addLimitToSelect: z.boolean(),
@@ -97,6 +104,7 @@ const D = DEFAULT_SETTINGS
 const lenientSchema = z.object({
   theme: z.enum(THEME_PREFERENCES).catch(D.theme),
   editorFontSize: intIn(SETTING_RANGES.editorFontSize).catch(D.editorFontSize),
+  uiZoom: intIn(SETTING_RANGES.uiZoom).catch(D.uiZoom),
   query: z
     .object({
       defaultLimit: intIn(SETTING_RANGES.defaultLimit).catch(D.query.defaultLimit),
@@ -126,6 +134,7 @@ export function mergeSettings(base: Settings, patch: SettingsPatch): Settings {
     ...base,
     ...(patch.theme !== undefined ? { theme: patch.theme } : {}),
     ...(patch.editorFontSize !== undefined ? { editorFontSize: patch.editorFontSize } : {}),
+    ...(patch.uiZoom !== undefined ? { uiZoom: patch.uiZoom } : {}),
     ...(patch.secretStore !== undefined ? { secretStore: patch.secretStore } : {}),
     query: { ...base.query, ...patch.query },
     dynamo: { ...base.dynamo, ...patch.dynamo },

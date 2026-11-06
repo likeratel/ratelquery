@@ -490,6 +490,7 @@ older builds don't drop newer settings.
 interface Settings {
   theme: "system" | "light" | "dark"           // default "system"
   editorFontSize: number                        // px, 11..20, default 13
+  uiZoom: number                                // whole-window zoom in percent, 80..175, default 100
   query: {
     defaultLimit: number                        // 1..100000, default 1000
     addLimitToSelect: boolean                   // append LIMIT when a SELECT has none, default true

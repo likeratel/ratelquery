@@ -8,6 +8,8 @@ use serde_json::{Map, Value};
 use crate::error::{AppError, AppResult};
 
 pub const EDITOR_FONT_SIZE_RANGE: RangeInclusive<u32> = 11..=20;
+/// Whole-window zoom in percent; the frontend steps through levels inside this range.
+pub const UI_ZOOM_RANGE: RangeInclusive<u32> = 80..=175;
 pub const DEFAULT_LIMIT_RANGE: RangeInclusive<u32> = 1..=100_000;
 pub const MAX_ROWS_RANGE: RangeInclusive<u32> = 1..=100_000;
 pub const DYNAMO_PAGE_SIZE_RANGE: RangeInclusive<u32> = 1..=1000;
@@ -39,6 +41,7 @@ pub enum SecretStoreKind {
 pub struct Settings {
     pub theme: Theme,
     pub editor_font_size: u32,
+    pub ui_zoom: u32,
     pub query: QuerySettings,
     pub dynamo: DynamoSettings,
     pub secret_store: SecretStoreKind,
@@ -72,6 +75,7 @@ impl Default for Settings {
         Self {
             theme: Theme::System,
             editor_font_size: 13,
+            ui_zoom: 100,
             query: QuerySettings::default(),
             dynamo: DynamoSettings::default(),
             secret_store: SecretStoreKind::Keychain,
@@ -115,6 +119,7 @@ impl Settings {
     /// Rejects out-of-range numbers with `invalid_input`.
     pub fn validate(&self) -> AppResult<()> {
         check_range("editorFontSize", self.editor_font_size, &EDITOR_FONT_SIZE_RANGE)?;
+        check_range("uiZoom", self.ui_zoom, &UI_ZOOM_RANGE)?;
         check_range("query.defaultLimit", self.query.default_limit, &DEFAULT_LIMIT_RANGE)?;
         check_range("query.maxRows", self.query.max_rows, &MAX_ROWS_RANGE)?;
         check_range(
@@ -194,6 +199,7 @@ mod tests {
             Settings::from_value(json!({ "theme": "dark", "query": { "maxRows": 50 } })).unwrap();
         assert_eq!(s.theme, Theme::Dark);
         assert_eq!(s.editor_font_size, 13);
+        assert_eq!(s.ui_zoom, 100);
         assert_eq!(s.query.max_rows, 50);
         assert_eq!(s.query.default_limit, 1000);
         assert_eq!(s.query.output_retention_days, 30);
@@ -228,6 +234,9 @@ mod tests {
         for bad in [
             json!({ "editorFontSize": 10 }),
             json!({ "editorFontSize": 21 }),
+            json!({ "uiZoom": 79 }),
+            json!({ "uiZoom": 176 }),
+            json!({ "uiZoom": 112.5 }),
             json!({ "query": { "defaultLimit": 0 } }),
             json!({ "query": { "defaultLimit": 100_001 } }),
             json!({ "query": { "maxRows": 0 } }),
@@ -247,6 +256,8 @@ mod tests {
             Settings::from_value(json!({ "editorFontSize": 11, "dynamo": { "pageSize": 1000 } }))
                 .is_ok()
         );
+        assert!(Settings::from_value(json!({ "uiZoom": 80 })).is_ok());
+        assert!(Settings::from_value(json!({ "uiZoom": 175 })).is_ok());
     }
 
     #[test]
@@ -274,12 +285,14 @@ mod tests {
         let file = json!({
             "theme": "neon",
             "editorFontSize": 15,
+            "uiZoom": 400,
             "query": { "defaultLimit": 0, "maxRows": 200, "later": 1 },
             "future": "kept"
         });
         let s = sanitize(&file);
         assert_eq!(s.theme, Theme::System);
         assert_eq!(s.editor_font_size, 15);
+        assert_eq!(s.ui_zoom, 100);
         assert_eq!(s.query.default_limit, 1000);
         assert_eq!(s.query.max_rows, 200);
         assert_eq!(s.query.extra.get("later"), Some(&json!(1)));

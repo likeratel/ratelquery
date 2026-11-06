@@ -9,6 +9,7 @@ import { DynamoWorkspace } from "../../features/dynamo"
 import { subscribeTreeCleanup, TableWorkspace } from "../../features/schema"
 import {
   handleAppShortcut,
+  isZoomShortcut,
   QueryWorkspace,
   RunConfirmDialog,
   subscribeConnectionCleanup,
@@ -19,20 +20,23 @@ import { ensureQueryOutputSync } from "../../state/queryOutputSync"
 import { subscribeSessionEvents } from "../../state/sessionsStore"
 import { applyEditorFontSize, useSettingsStore } from "../../state/settingsStore"
 import { useTabsStore } from "../../state/tabsStore"
-import { applyPlatformAttribute, applyTheme, useUiStore } from "../../state/uiStore"
+import { applyTheme, useUiStore } from "../../state/uiStore"
+import { startUiZoomSync } from "../../state/uiZoom"
 import { startWorkspaceSync } from "../../state/workspaceSync"
-import { PANEL_SPECS } from "../../lib/panelWidths"
+import { PANEL_SPECS, panelColumn } from "../../lib/panelWidths"
 import { isImeComposing } from "../../lib/shortcuts"
 import { isModalOpen, ResizeHandle, Toaster } from "../ui"
 import { ConnectionBanner } from "./ConnectionBanner"
 import { EmptyWorkspace } from "./EmptyWorkspace"
 import { Sidebar } from "./Sidebar"
+import { SidebarToggle } from "./SidebarToggle"
 import { TabBar } from "./TabBar"
 import "./shell.css"
 
 export function Shell() {
   const theme = useSettingsStore((s) => s.settings.theme)
   const editorFontSize = useSettingsStore((s) => s.settings.editorFontSize)
+  const settingsReady = useSettingsStore((s) => s.status === "ready")
   const collapsed = useUiStore((s) => s.sidebarCollapsed)
   const sidebarWidth = useUiStore((s) => s.panelWidths.sidebar)
   const setPanelWidth = useUiStore((s) => s.setPanelWidth)
@@ -48,7 +52,9 @@ export function Shell() {
 
   useEffect(() => applyEditorFontSize(editorFontSize), [editorFontSize])
 
-  useEffect(() => applyPlatformAttribute(), [])
+  // Waits for the saved settings: the defaults in use until then would undo the zoom the backend
+  // already applied at startup.
+  useEffect(() => startUiZoomSync(), [])
 
   // App-wide subscriptions and listeners live here, mounted once for the whole window.
   useNewConnectionShortcut()
@@ -71,10 +77,10 @@ export function Shell() {
     // The SQL editor handles these in its own capture phase and stops the event, so this
     // listener only sees shortcuts pressed elsewhere in the window. While a modal dialog is
     // open the page behind it is inert, so its shortcuts must not fire either (Esc belongs to
-    // the dialog and isn't an app shortcut).
+    // the dialog and isn't an app shortcut). Zoom is the exception: it scales the dialog too.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isImeComposing(event)) return
-      if (event.code !== "Escape" && isModalOpen()) return
+      if (event.code !== "Escape" && isModalOpen() && !isZoomShortcut(event)) return
       if (handleAppShortcut(event)) event.preventDefault()
     }
     window.addEventListener("keydown", onKeyDown)
@@ -86,9 +92,13 @@ export function Shell() {
       className="shell"
       data-sidebar={collapsed ? "collapsed" : "open"}
       data-resizing={resizing || undefined}
-      style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+      style={
+        { "--sidebar-column": panelColumn(PANEL_SPECS.sidebar, sidebarWidth) } as CSSProperties
+      }
     >
       <Sidebar onAddConnection={() => openDialog()} inert={collapsed} />
+      {/* Placed by `--ui-zoom`, which is only known once the saved settings have loaded. */}
+      {settingsReady && <SidebarToggle />}
       {/* Not rendered while collapsed, so it can't be focused or dragged. */}
       {!collapsed && (
         <ResizeHandle
