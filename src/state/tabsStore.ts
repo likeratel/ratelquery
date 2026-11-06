@@ -6,6 +6,7 @@ import {
   buildRowChanges,
   editSchemaDatabases,
   EMPTY_EDITS,
+  schemaDatabase,
   type EditTarget,
   type GridEdits,
 } from "../lib/gridEdits"
@@ -45,6 +46,7 @@ import {
   slotGroupTab,
   slotTab,
 } from "../lib/tabGroups"
+import { lastUseTarget } from "../lib/sqlUse"
 import { mergeRestoredTabs } from "../lib/workspace"
 import { useAthenaStore } from "./athenaStore"
 import { runAthenaStatements } from "./athenaRun"
@@ -145,14 +147,39 @@ export const useTabsStore = create<TabsStore>((set, get) => {
   const loadEditSchemas = (
     connectionId: ConnectionId,
     results: readonly QueryResult[],
-    ranDatabase: string | null,
+    resultDatabases: readonly (string | null)[],
   ) => {
     const sessions = useSessionsStore.getState()
     const session = sessions.sessions[connectionId]
     if (session?.state !== "connected") return
-    for (const database of editSchemaDatabases(results, ranDatabase, knownDatabases(session))) {
+    const known = knownDatabases(session)
+    const needed = results.flatMap((r, i) =>
+      editSchemaDatabases([r], resultDatabases[i] ?? null, known),
+    )
+    for (const database of new Set(needed)) {
       if (!session.schemaLoading[database]) void sessions.ensureSchema(connectionId, database)
     }
+  }
+
+  /**
+   * A `USE` among the results moves this tab's Database picker, so the next run sends that
+   * database instead of landing on a pooled connection that never saw the `USE`. Only this tab
+   * follows: a `USE` is per connection in MySQL, so the session's shared current database (what
+   * other tabs without a database of their own use) stays as it was.
+   */
+  const followUse = (
+    tab: QueryTab,
+    results: readonly QueryResult[],
+    ranDatabase: string | null,
+  ) => {
+    const switched = lastUseTarget(results.map((r) => r.statement))
+    if (switched === null) return
+    const sessions = useSessionsStore.getState()
+    // `USE APP` succeeds where the listed name is `app`; keep the listed spelling.
+    const database = schemaDatabase(switched, knownDatabases(sessions.sessions[tab.connectionId]))
+    if (database === ranDatabase) return
+    patchTab(tab.id, (t) => ({ ...t, database }))
+    void sessions.ensureSchema(tab.connectionId, database)
   }
 
   /** Commits one batch, then re-reads the result in the database the edits target. */
@@ -329,7 +356,12 @@ export const useTabsStore = create<TabsStore>((set, get) => {
         patchTab(id, (t) => (isCurrent(t) ? finishRun(t, text, results, ranDatabase) : t))
         logRunResults(tab.connectionId, id, results)
         noteReconnects(tab.connectionId, results)
-        loadEditSchemas(tab.connectionId, results, ranDatabase)
+        const finished = findTab(id)
+        if (finished?.runId === runId + 1) {
+          loadEditSchemas(tab.connectionId, results, finished.resultDatabases)
+          // A picker changed by hand while the run was going wins over a `USE` in it.
+          if (finished.database === tab.database) followUse(finished, results, ranDatabase)
+        }
         return "ran"
       } catch (raw) {
         const error = normalizeError(raw)

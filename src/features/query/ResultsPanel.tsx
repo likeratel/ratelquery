@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, type KeyboardEvent } from "react"
 import { PanelErrorBoundary } from "../../components/ui"
 import type { QueryResult } from "../../lib/mysql"
+import { resultDatabase } from "../../lib/queryTabs"
 import type { ResultsView } from "../../lib/tabViews"
 import { useQueryOutputStore, type BottomPanel } from "../../state/queryOutputStore"
 import { useTabsStore } from "../../state/tabsStore"
@@ -26,10 +27,11 @@ function resultLabel(result: QueryResult, index: number): string {
 function ResultsContent({ tab, session }: ResultsPanelProps) {
   const setActiveResult = useTabsStore((s) => s.setActiveResult)
   const result = tab.results[tab.activeResult]
-  const { ranDatabase, engine } = tab
+  const { engine } = tab
+  const database = resultDatabase(tab, tab.activeResult)
   const edit = useMemo(
-    () => editTargetFor({ ranDatabase, engine }, result, session),
-    [ranDatabase, engine, result, session],
+    () => editTargetFor({ ranDatabase: database, engine }, result, session),
+    [database, engine, result, session],
   )
 
   if (tab.error) {
@@ -76,7 +78,7 @@ function ResultsContent({ tab, session }: ResultsPanelProps) {
           applying={tab.applying}
           // Athena has no streaming export, and re-running a statement would be billed again.
           allowFull={engine === "mysql" && tab.results.length === 1}
-          database={tab.ranDatabase}
+          database={database}
         />
       ) : (
         <div className="rows-view">

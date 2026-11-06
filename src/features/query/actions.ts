@@ -6,6 +6,7 @@ import { isAppError } from "../../lib/ipc"
 import { sqlInsertion } from "../../lib/queryOutput"
 import {
   hasUnsavedWork,
+  resultDatabase,
   tabPendingCount,
   tabsForConnection,
   type QueryTab,
@@ -350,7 +351,8 @@ export async function applyActiveEdits(): Promise<void> {
   if (!tab || tab.applying) return
   const index = tab.activeResult
   const session = useSessionsStore.getState().sessions[tab.connectionId]
-  const resolved = editTargetFor(tab, tab.results[index], session)
+  const ranDatabase = resultDatabase(tab, index)
+  const resolved = editTargetFor({ ranDatabase, engine: tab.engine }, tab.results[index], session)
   if (!resolved.editable || !tab.edits[index]) return
   try {
     const applied = await useTabsStore.getState().applyEdits(tab.id, index, resolved.target)

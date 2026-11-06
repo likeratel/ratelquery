@@ -103,7 +103,7 @@ Click a connection to open a tab on it. The top row has one tab per connection w
 
 ### Running SQL
 
-`⌘⏎` runs the statement at the cursor, `⇧⌘⏎` runs the selection or the whole editor. Pick the database next to **Run**. A `SELECT` without a `LIMIT` gets the default limit from Settings, and `UPDATE` or `DELETE` without a `WHERE`, `DROP`, `TRUNCATE`, `ALTER` and `RENAME TABLE` ask first.
+`⌘⏎` runs the statement at the cursor, `⇧⌘⏎` runs the selection or the whole editor. Pick the database next to **Run**, or run `USE <database>`: the picker follows it, so the next statement runs there too. A `SELECT` without a `LIMIT` gets the default limit from Settings, and `UPDATE` or `DELETE` without a `WHERE`, `DROP`, `TRUNCATE`, `ALTER` and `RENAME TABLE` ask first.
 
 ![Schema completion](docs/screenshots/mysql-autocomplete.png)
 

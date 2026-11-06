@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { EMPTY_EDITS, resolveEditTarget, setCellEdit } from "../lib/gridEdits"
 import { setTransport } from "../lib/ipc"
-import { INITIAL_TABS, type QueryTab } from "../lib/queryTabs"
+import { INITIAL_TABS, resultDatabase, type QueryTab } from "../lib/queryTabs"
 import type { QueryResult, RowsResult, SchemaSnapshot } from "../lib/mysql"
 import { editTargetFor } from "../features/query/editing"
 import { emptySession, useSessionsStore } from "./sessionsStore"
@@ -101,6 +101,113 @@ describe("run", () => {
     await useTabsStore.getState().run(id)
     const queries = calls.filter((c) => c.command === "mysql_query")
     expect(queries[1].args?.options).toEqual({ maxRows: 1000 })
+  })
+
+  describe("a USE in what ran", () => {
+    const useResult = (statement: string): QueryResult => ({
+      kind: "exec",
+      affectedRows: 0,
+      lastInsertId: null,
+      elapsedMs: 1,
+      reconnected: false,
+      statement,
+    })
+    const queryTab = (id: string) =>
+      useTabsStore.getState().tabs.find((t) => t.id === id) as QueryTab
+
+    it("moves the tab's Database picker, so the next run sends that database", async () => {
+      queryResults = [useResult("use `Shop`"), { ...usersResult("a@x"), statement: "show tables" }]
+      const id = useTabsStore.getState().open("c1", null)
+      await expect(useTabsStore.getState().run(id, "use `Shop`;\nshow tables;")).resolves.toBe(
+        "ran",
+      )
+      expect(queryTab(id)).toMatchObject({
+        database: "Shop",
+        ranDatabase: null,
+        resultDatabases: [null, "Shop"],
+      })
+
+      await useTabsStore.getState().run(id, "show tables")
+      const queries = calls.filter((c) => c.command === "mysql_query")
+      expect(queries[1].args?.options).toEqual({ maxRows: 1000, database: "Shop" })
+    })
+
+    it("edits rows read after it in the database it switched to", async () => {
+      const session = {
+        ...emptySession(),
+        state: "connected" as const,
+        currentDatabase: "app",
+        schemas: { app: schema, app_test: { ...schema, database: "app_test" } },
+      }
+      useSessionsStore.setState({ sessions: { c1: session } })
+      queryResults = [useResult("use app_test"), usersResult("a@x")]
+      const id = useTabsStore.getState().open("c1", "app")
+      await useTabsStore.getState().run(id, "use app_test; select id, email from users")
+      const tab = queryTab(id)
+      expect(tab.ranDatabase).toBe("app")
+      expect(resultDatabase(tab, 1)).toBe("app_test")
+      const edit = editTargetFor(
+        { ranDatabase: resultDatabase(tab, 1), engine: tab.engine },
+        tab.results[1],
+        useSessionsStore.getState().sessions.c1,
+      )
+      expect(edit).toMatchObject({
+        editable: true,
+        target: { database: "app_test", table: "users" },
+      })
+    })
+
+    it("leaves the session's database, and so other tabs without one, alone", async () => {
+      useSessionsStore.setState({
+        sessions: { c1: { ...emptySession(), state: "connected", currentDatabase: "app" } },
+      })
+      queryResults = [useResult("use reports")]
+      const a = useTabsStore.getState().open("c1", null)
+      const b = useTabsStore.getState().open("c1", null)
+      await useTabsStore.getState().run(a, "use reports")
+      expect(queryTab(a).database).toBe("reports")
+      expect(queryTab(b).database).toBeNull()
+      expect(useSessionsStore.getState().sessions.c1.currentDatabase).toBe("app")
+    })
+
+    it("keeps the listed spelling of a database switched to in another letter case", async () => {
+      useSessionsStore.setState({
+        sessions: { c1: { ...emptySession(), state: "connected", databases: ["app", "shop"] } },
+      })
+      queryResults = [useResult("USE SHOP")]
+      const id = useTabsStore.getState().open("c1", "app")
+      await useTabsStore.getState().run(id, "USE SHOP")
+      expect(queryTab(id).database).toBe("shop")
+    })
+
+    it("yields to a database picked by hand while the run was going", async () => {
+      let release: () => void = () => {}
+      restore()
+      restore = setTransport(async (command) => {
+        calls.push({ command })
+        if (command !== "mysql_query") throw { kind: "not_found", message: command }
+        await new Promise<void>((resolve) => (release = resolve))
+        return [useResult("use reports")]
+      })
+      const id = useTabsStore.getState().open("c1", "app")
+      const running = useTabsStore.getState().run(id, "use reports")
+      await vi.waitFor(() => expect(calls).toHaveLength(1))
+      useTabsStore.setState((state) => ({
+        tabs: state.tabs.map((t) => (t.id === id ? { ...t, database: "picked" } : t)),
+      }))
+      release()
+      await running
+      expect(queryTab(id).database).toBe("picked")
+    })
+
+    it("changes nothing when no statement switches or the run failed", async () => {
+      queryResults = [usersResult("a@x")]
+      const id = useTabsStore.getState().open("c1", "app")
+      await useTabsStore.getState().run(id, "select id, email from users")
+      expect(queryTab(id)).toMatchObject({ database: "app", resultDatabases: ["app"] })
+      await useTabsStore.getState().run(id, "use other; bad sql")
+      expect(queryTab(id).database).toBe("app")
+    })
   })
 
   it("runs an explicit statement and records failures", async () => {

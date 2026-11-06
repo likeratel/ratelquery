@@ -4,6 +4,7 @@ import type { GridEdits } from "./gridEdits"
 import { pendingCount } from "./gridEdits"
 import type { AppError } from "./ipc"
 import type { QueryResult, TableDetails } from "./mysql"
+import { databasesWhileRunning } from "./sqlUse"
 import {
   forgetRecent,
   insertTab,
@@ -30,6 +31,11 @@ export interface QueryTab {
    * and full exports use it, so changing the database afterwards can't retarget them.
    */
   ranDatabase: string | null
+  /**
+   * The database each result was read in, by index: `ranDatabase` until a `USE` in the same
+   * run switched it. Empty for Athena, where `USE` doesn't carry over between statements.
+   */
+  resultDatabases: readonly (string | null)[]
   results: readonly QueryResult[]
   activeResult: number
   running: boolean
@@ -107,6 +113,7 @@ export function createTab(
     sql: "",
     database,
     ranDatabase: null,
+    resultDatabases: [],
     results: [],
     activeResult: 0,
     running: false,
@@ -329,6 +336,14 @@ export function preferredResultIndex(results: readonly QueryResult[]): number {
   return Math.max(0, results.length - 1)
 }
 
+/** The database result `index` was read in, which editing and full exports target. */
+export function resultDatabase(
+  tab: Pick<QueryTab, "ranDatabase" | "resultDatabases">,
+  index: number,
+): string | null {
+  return tab.resultDatabases[index] ?? tab.ranDatabase
+}
+
 /** `ranDatabase` is the database the statement ran against (defaults to the tab's own). */
 export function finishRun(
   tab: QueryTab,
@@ -342,6 +357,13 @@ export function finishRun(
     executionId: null,
     error: null,
     ranDatabase,
+    resultDatabases:
+      tab.engine === "mysql"
+        ? databasesWhileRunning(
+            results.map((r) => r.statement),
+            ranDatabase,
+          )
+        : [],
     results,
     activeResult: preferredResultIndex(results),
     edits: {},

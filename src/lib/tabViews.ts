@@ -46,6 +46,7 @@ export type ResultsView = Pick<
   | "applying"
   | "runId"
   | "ranDatabase"
+  | "resultDatabases"
 >
 
 export function selectResultsView(state: TabsState, id: string): ResultsView | null {
@@ -64,5 +65,6 @@ export function selectResultsView(state: TabsState, id: string): ResultsView | n
     applying,
     runId,
     ranDatabase: tab.ranDatabase,
+    resultDatabases: tab.resultDatabases,
   }
 }
