@@ -81,6 +81,7 @@ export function ConnectionList() {
           className="conn-list"
           role="tree"
           aria-label="Connections"
+          data-schema-tree=""
           data-dragging={dragging || undefined}
           onKeyDown={handleTreeKeyDown}
           onFocus={handleTreeFocus}

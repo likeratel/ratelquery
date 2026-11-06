@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   childKey,
   databaseKey,
+  expandAll,
   failLoad,
   filterChildren,
   finishLoad,
@@ -39,6 +40,16 @@ describe("expansion", () => {
     expect(once.expanded).toEqual({ conn: true })
     expect(toggleExpanded(once, "conn").expanded).toEqual({ conn: false })
     expect(INITIAL_TREE.expanded).toEqual({})
+  })
+
+  it("expands several nodes at once and leaves expanded ones alone", () => {
+    const db = databaseKey("conn", "app")
+    const some = setExpanded(setExpanded(INITIAL_TREE, "other", false), "conn", true)
+    const both = expandAll(some, ["conn", db])
+    expect(both.expanded).toEqual({ other: false, conn: true, [db]: true })
+    expect(expandAll(both, [db, "conn"])).toBe(both)
+    expect(expandAll(both, [])).toBe(both)
+    expect(some.expanded).toEqual({ other: false, conn: true })
   })
 
   it("moves the tab stop up when collapsing hides the focused node", () => {

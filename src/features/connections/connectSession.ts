@@ -6,7 +6,7 @@ import {
   type SecretSlot,
 } from "../../lib/connections"
 import { normalizeError, type AppError } from "../../lib/ipc"
-import type { MysqlSessionInfo } from "../../lib/mysql"
+import type { MysqlSessionInfo, MysqlSessionState } from "../../lib/mysql"
 import { isPassphraseRequired } from "../../lib/ssh"
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { useSessionsStore } from "../../state/sessionsStore"
@@ -29,7 +29,15 @@ export function isPasswordCancelled(raw: unknown): boolean {
 }
 
 /** States in which the session needs no new connect (and so no password). */
-const LIVE_STATES = new Set(["connected", "reconnecting", "connecting"])
+const LIVE_STATES: ReadonlySet<MysqlSessionState> = new Set([
+  "connected",
+  "reconnecting",
+  "connecting",
+])
+
+/** True when `connectMysql` would reuse the session instead of connecting (and maybe prompting). */
+export const isMysqlSessionLive = (state: MysqlSessionState | undefined): boolean =>
+  state !== undefined && LIVE_STATES.has(state)
 
 /** Unknown keyring state counts as stored: the backend then reports its own error on connect. */
 async function hasStoredSecret(id: ConnectionId, which: SecretSlot): Promise<boolean> {
@@ -145,8 +153,9 @@ export async function connectMysql(connectionId: ConnectionId): Promise<MysqlSes
   const config = useConnectionsStore.getState().byId(connectionId)
   if (config?.kind !== "mysql") return sessions.connect(connectionId)
   const fallback = config.database ?? null
-  const state = sessions.sessions[connectionId]?.state
-  if (state && LIVE_STATES.has(state)) return sessions.connect(connectionId, fallback)
+  if (isMysqlSessionLive(sessions.sessions[connectionId]?.state)) {
+    return sessions.connect(connectionId, fallback)
+  }
   const secrets = await collectSecrets(config)
   return withPassphrase(config, secrets.sshSecret, (sshSecret) =>
     withHostKeyTrust(config.ssh, () =>

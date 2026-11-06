@@ -42,6 +42,8 @@ pub struct Settings {
     pub query: QuerySettings,
     pub dynamo: DynamoSettings,
     pub secret_store: SecretStoreKind,
+    /// Expand the sidebar to the active tab's connection, database or table as tabs change.
+    pub reveal_active_tab: bool,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -75,6 +77,7 @@ impl Default for Settings {
             query: QuerySettings::default(),
             dynamo: DynamoSettings::default(),
             secret_store: SecretStoreKind::Keychain,
+            reveal_active_tab: false,
             extra: Map::new(),
         }
     }
@@ -200,6 +203,17 @@ mod tests {
         assert!(s.query.add_limit_to_select && s.query.confirm_destructive);
         assert_eq!(s.dynamo.page_size, 100);
         assert_eq!(s.secret_store, SecretStoreKind::Keychain);
+        assert!(!s.reveal_active_tab);
+    }
+
+    #[test]
+    fn reveal_active_tab_defaults_off_and_round_trips() {
+        let out = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(out["revealActiveTab"], json!(false));
+        let s = Settings::from_value(json!({ "revealActiveTab": true })).unwrap();
+        assert!(s.reveal_active_tab);
+        assert_eq!(serde_json::to_value(&s).unwrap()["revealActiveTab"], json!(true));
+        assert!(!sanitize(&json!({ "revealActiveTab": "yes", "theme": "dark" })).reveal_active_tab);
     }
 
     #[test]
@@ -239,6 +253,8 @@ mod tests {
             json!({ "editorFontSize": 12.5 }),
             json!({ "secretStore": "vault" }),
             json!({ "secretStore": 1 }),
+            json!({ "revealActiveTab": "yes" }),
+            json!({ "revealActiveTab": 1 }),
         ] {
             let err = Settings::from_value(bad.clone()).unwrap_err();
             assert_eq!(err.kind(), "invalid_input", "{bad}");

@@ -5,8 +5,10 @@ import {
   createFolder,
   deleteFolder,
   EMPTY_LAYOUT,
+  expandFoldersAround,
   FOLDER_NAME_MAX,
   folderPaths,
+  foldersAround,
   layoutEntries,
   MAX_FOLDER_DEPTH,
   moveItem,
@@ -535,6 +537,35 @@ describe("folders", () => {
       ["H", "Folder F › Folder G › mysql"],
       ["K", "Folder K"],
     ])
+  })
+})
+
+describe("foldersAround", () => {
+  it("lists the folders around a connection, outermost first", () => {
+    const base = layout(["a", ["F", "b", ["G", "c"]], ["K"]])
+    expect(foldersAround(base, "c")).toEqual(["F", "G"])
+    expect(foldersAround(base, "b")).toEqual(["F"])
+    expect(foldersAround(base, "a")).toEqual([])
+    expect(foldersAround(base, "nope")).toEqual([])
+  })
+
+  it("expands only the collapsed folders around a connection", () => {
+    const base = ["F", "G", "K"].reduce(
+      (acc, id) => setFolderCollapsed(acc, id, true),
+      layout([
+        ["F", "b", ["G", "c"]],
+        ["K", "d"],
+      ]),
+    )
+    const result = expandFoldersAround(base, "c")
+    expect(result.folders.map((x) => [x.id, x.collapsed])).toEqual([
+      ["F", false],
+      ["G", false],
+      ["K", true],
+    ])
+    expect(base.folders.every((x) => x.collapsed)).toBe(true)
+    expect(expandFoldersAround(result, "c")).toBe(result)
+    expect(expandFoldersAround(base, "nope")).toBe(base)
   })
 })
 

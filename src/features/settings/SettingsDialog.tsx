@@ -1,8 +1,10 @@
 import type { ReactNode } from "react"
 import { Button, Dialog, SegmentedControl, type SegmentOption } from "../../components/ui"
 import type { SecretStore, SettingsPatch, ThemePreference } from "../../lib/settings"
+import { formatShortcut } from "../../lib/shortcuts"
 import { useSettingsStore } from "../../state/settingsStore"
 import { useUiStore } from "../../state/uiStore"
+import { APP_SHORTCUTS } from "../query"
 import { NumberSetting } from "./NumberSetting"
 import { ToggleSetting } from "./ToggleSetting"
 import "./settings.css"
@@ -17,6 +19,8 @@ const SECRET_STORE_OPTIONS: readonly SegmentOption<SecretStore>[] = [
   { value: "keychain", label: "Keychain" },
   { value: "file", label: "App file" },
 ]
+
+const REVEAL_HINT = `Expands the connection, database or table of the tab you switch to, opening collapsed folders on the way. ${formatShortcut(APP_SHORTCUTS.revealInSidebar)} reveals and focuses it at any time.`
 
 const SECRET_STORE_HINTS: Record<SecretStore, string> = {
   keychain:
@@ -80,6 +84,14 @@ function SettingsForm() {
           hint="Pixels, 11 to 20"
           value={settings.editorFontSize}
           onCommit={(editorFontSize) => save({ editorFontSize })}
+        />
+      </Section>
+      <Section title="Sidebar">
+        <ToggleSetting
+          label="Reveal the active tab in the sidebar"
+          hint={REVEAL_HINT}
+          checked={settings.revealActiveTab}
+          onChange={(revealActiveTab) => save({ revealActiveTab })}
         />
       </Section>
       <Section title="Queries">

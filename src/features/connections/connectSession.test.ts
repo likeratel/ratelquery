@@ -8,7 +8,7 @@ import { useTabsStore } from "../../state/tabsStore"
 import { useToastStore } from "../../components/ui/toastStore"
 import { openConnection } from "../query/actions"
 import { selectRows } from "../schema/actions"
-import { connectMysql, isPasswordCancelled } from "./connectSession"
+import { connectMysql, isMysqlSessionLive, isPasswordCancelled } from "./connectSession"
 import { resetHostKeyPrompt, useHostKeyPrompt } from "./hostKeyPrompt"
 import { HOST_KEY_DECLINED } from "./hostKeyTrust"
 import { resetPasswordPrompt, usePasswordPrompt, type PasswordAnswer } from "./passwordPrompt"
@@ -393,5 +393,16 @@ describe("SSH host keys", () => {
     await Promise.all([opening, selecting])
     expect(fake.trusted).toHaveLength(1)
     expect(useHostKeyPrompt.getState().queue).toEqual([])
+  })
+})
+
+describe("isMysqlSessionLive", () => {
+  it("counts only states that connect without a new login", () => {
+    expect(isMysqlSessionLive("connected")).toBe(true)
+    expect(isMysqlSessionLive("reconnecting")).toBe(true)
+    expect(isMysqlSessionLive("connecting")).toBe(true)
+    expect(isMysqlSessionLive("error")).toBe(false)
+    expect(isMysqlSessionLive("disconnected")).toBe(false)
+    expect(isMysqlSessionLive(undefined)).toBe(false)
   })
 })

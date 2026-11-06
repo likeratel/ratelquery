@@ -2,6 +2,7 @@ import { create } from "zustand"
 import type { ConnectionId } from "../../lib/connections"
 import type { AppError } from "../../lib/ipc"
 import {
+  expandAll,
   failLoad,
   finishLoad,
   forgetConnection,
@@ -19,6 +20,7 @@ import {
 interface TreeStore extends TreeState {
   toggle: (key: TreeKey) => void
   setExpanded: (key: TreeKey, expanded: boolean) => void
+  expandAll: (keys: readonly TreeKey[]) => void
   /** Starts a children request for `key` and returns its id for `resolve` / `reject`. */
   begin: (key: TreeKey) => number
   resolve: (key: TreeKey, requestId: number, children: readonly TreeChild[]) => void
@@ -35,6 +37,8 @@ export const useSchemaTree = create<TreeStore>((set, get) => ({
   toggle: (key) => set((state) => toggleExpanded(state, key)),
 
   setExpanded: (key, expanded) => set((state) => setExpanded(state, key, expanded)),
+
+  expandAll: (keys) => set((state) => expandAll(state, keys)),
 
   begin: (key) => {
     set((state) => startLoad(state, key))

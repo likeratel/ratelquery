@@ -25,6 +25,7 @@ describe("settingsSchema", () => {
       mergeSettings(DEFAULT_SETTINGS, { query: { outputRetentionDays: -1 } }),
       { ...DEFAULT_SETTINGS, theme: "sepia" },
       { ...DEFAULT_SETTINGS, secretStore: "vault" },
+      { ...DEFAULT_SETTINGS, revealActiveTab: "yes" },
     ]
     for (const value of bad) expect(settingsSchema.safeParse(value).success).toBe(false)
   })
@@ -68,6 +69,22 @@ describe("secretStore", () => {
     expect(normalizeSettings({ theme: "dark" }).secretStore).toBe("keychain")
     expect(normalizeSettings({ secretStore: "vault" }).secretStore).toBe("keychain")
     expect(normalizeSettings({ secretStore: "file" }).secretStore).toBe("file")
+  })
+})
+
+describe("revealActiveTab", () => {
+  it("is off by default and falls back to off when the stored value is missing or unusable", () => {
+    expect(DEFAULT_SETTINGS.revealActiveTab).toBe(false)
+    expect(normalizeSettings({ theme: "dark" }).revealActiveTab).toBe(false)
+    expect(normalizeSettings({ revealActiveTab: "yes" }).revealActiveTab).toBe(false)
+    expect(normalizeSettings({ revealActiveTab: true }).revealActiveTab).toBe(true)
+  })
+
+  it("merges as a top-level field", () => {
+    const on = mergeSettings(DEFAULT_SETTINGS, { revealActiveTab: true })
+    expect(on).toEqual({ ...DEFAULT_SETTINGS, revealActiveTab: true })
+    expect(mergeSettings(on, { query: { maxRows: 5 } }).revealActiveTab).toBe(true)
+    expect(settingsSchema.safeParse(on).success).toBe(true)
   })
 })
 

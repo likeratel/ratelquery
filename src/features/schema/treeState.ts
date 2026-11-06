@@ -62,6 +62,13 @@ export function setExpanded(state: TreeState, key: TreeKey, expanded: boolean): 
   return { ...state, expanded: { ...state.expanded, [key]: expanded }, focused }
 }
 
+/** Expands every node in `keys`; the same state when they all are already. */
+export function expandAll(state: TreeState, keys: readonly TreeKey[]): TreeState {
+  if (keys.every((key) => state.expanded[key])) return state
+  const opened = Object.fromEntries(keys.map((key) => [key, true]))
+  return { ...state, expanded: { ...state.expanded, ...opened } }
+}
+
 export function toggleExpanded(state: TreeState, key: TreeKey): TreeState {
   return setExpanded(state, key, !state.expanded[key])
 }

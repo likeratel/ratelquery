@@ -6,7 +6,7 @@ import {
   useNewConnectionShortcut,
 } from "../../features/connections"
 import { DynamoWorkspace } from "../../features/dynamo"
-import { subscribeTreeCleanup, TableWorkspace } from "../../features/schema"
+import { subscribeAutoReveal, subscribeTreeCleanup, TableWorkspace } from "../../features/schema"
 import {
   handleAppShortcut,
   QueryWorkspace,
@@ -58,6 +58,9 @@ export function Shell() {
   useEffect(() => subscribeConnectionCleanup(), [])
 
   useEffect(() => subscribeTreeCleanup(), [])
+
+  // With "Reveal the active tab in the sidebar" on, the tree follows the active tab.
+  useEffect(() => subscribeAutoReveal(), [])
 
   // Reopens the last session's query tabs once the connection list has loaded, then keeps
   // `workspace.json` up to date. No connection is opened for them.

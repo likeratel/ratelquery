@@ -501,6 +501,7 @@ interface Settings {
     pageSize: number                            // 1..1000, default 100
   }
   secretStore: "keychain" | "file"              // default "keychain", see Secret storage
+  revealActiveTab: boolean                      // expand the sidebar to the active tab's row as tabs change, default false
 }
 ```
 

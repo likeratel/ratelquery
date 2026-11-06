@@ -422,6 +422,23 @@ export function setFolderCollapsed(
   return updateFolder(layout, id, { collapsed })
 }
 
+/** Folders around connection `id`, outermost first; empty at the top level or when not placed. */
+export function foldersAround(layout: ConnectionLayout, id: ConnectionId): FolderId[] {
+  return [...(findSlot(layout.items, { type: "connection", id })?.path ?? [])]
+}
+
+/** Expands the collapsed folders around connection `id`; the same layout when none are. */
+export function expandFoldersAround(layout: ConnectionLayout, id: ConnectionId): ConnectionLayout {
+  const around = new Set(foldersAround(layout, id))
+  if (!layout.folders.some((f) => f.collapsed && around.has(f.id))) return layout
+  return {
+    ...layout,
+    folders: layout.folders.map((f) =>
+      f.collapsed && around.has(f.id) ? { ...f, collapsed: false } : f,
+    ),
+  }
+}
+
 /** Removes a folder; what it holds, subfolders included, takes its place in its parent, in order. */
 export function deleteFolder(layout: ConnectionLayout, id: FolderId): ConnectionLayout {
   if (!layout.folders.some((f) => f.id === id)) return layout
