@@ -53,6 +53,11 @@ pub fn is_connection_error(err: &sqlx::Error) -> bool {
     }
 }
 
+/// The MySQL error number of a server error.
+pub fn mysql_error_number(err: &sqlx::Error) -> Option<u16> {
+    mysql_error(err).map(MySqlDatabaseError::number)
+}
+
 pub fn is_unusable_database(err: &sqlx::Error) -> bool {
     mysql_error(err).is_some_and(|db| UNUSABLE_DATABASE_CODES.contains(&db.number()))
 }

@@ -2,6 +2,7 @@ import { isAthenaResult, type AthenaStats } from "../../lib/athena"
 import { formatDataSize } from "../../lib/athenaRun"
 import { formatElapsed } from "../../lib/cellFormat"
 import type { QueryResult } from "../../lib/mysql"
+import { trashedNote } from "../../lib/sqlTrash"
 import { useCountUp } from "./useCountUp"
 
 interface ResultMetaProps {
@@ -52,6 +53,11 @@ export function ResultMeta({ result, runKey }: ResultMetaProps) {
           title={`Only the first ${result.rows.length.toLocaleString()} rows were kept (Settings › Queries › Max rows)`}
         >
           Limited to {result.rows.length.toLocaleString()}
+        </span>
+      )}
+      {result.kind === "exec" && trashedNote(result) && (
+        <span className="badge" title="These rows were saved to the Trash before they were deleted">
+          {trashedNote(result)}
         </span>
       )}
       {result.kind === "exec" && result.lastInsertId && (

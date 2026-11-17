@@ -23,6 +23,9 @@ describe("settingsSchema", () => {
       mergeSettings(DEFAULT_SETTINGS, { dynamo: { pageSize: 1001 } }),
       mergeSettings(DEFAULT_SETTINGS, { query: { outputRetentionDays: 366 } }),
       mergeSettings(DEFAULT_SETTINGS, { query: { outputRetentionDays: -1 } }),
+      mergeSettings(DEFAULT_SETTINGS, { query: { trashRetentionDays: 0 } }),
+      mergeSettings(DEFAULT_SETTINGS, { query: { trashRetentionDays: 366 } }),
+      mergeSettings(DEFAULT_SETTINGS, { query: { trashRetentionDays: 1.5 } }),
       { ...DEFAULT_SETTINGS, theme: "sepia" },
       { ...DEFAULT_SETTINGS, secretStore: "vault" },
     ]
@@ -51,6 +54,23 @@ describe("outputRetentionDays", () => {
     expect(parseNumericSetting("outputRetentionDays", "366")).toEqual({
       ok: false,
       error: "Enter a whole number from 0 to 365",
+    })
+  })
+})
+
+describe("trashRetentionDays", () => {
+  it("defaults to 30 days and accepts 1 to 365", () => {
+    expect(DEFAULT_SETTINGS.query.trashRetentionDays).toBe(30)
+    expect(normalizeSettings({ query: { maxRows: 5 } }).query.trashRetentionDays).toBe(30)
+    expect(normalizeSettings({ query: { trashRetentionDays: 0 } }).query.trashRetentionDays).toBe(
+      30,
+    )
+    expect(normalizeSettings({ query: { trashRetentionDays: 7 } }).query.trashRetentionDays).toBe(7)
+    expect(parseNumericSetting("trashRetentionDays", "1")).toEqual({ ok: true, value: 1 })
+    expect(parseNumericSetting("trashRetentionDays", "365")).toEqual({ ok: true, value: 365 })
+    expect(parseNumericSetting("trashRetentionDays", "0")).toEqual({
+      ok: false,
+      error: "Enter a whole number from 1 to 365",
     })
   })
 })

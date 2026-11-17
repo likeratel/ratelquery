@@ -12,6 +12,7 @@ const HINTS: Record<AppErrorKind, string> = {
   io: "A local file or system operation failed.",
   ssh: "An SSH tunnel failed.",
   ssh_host_key: "An SSH host key wasn't trusted.",
+  backup_failed: "The deleted rows couldn't be saved to the trash, so nothing was changed.",
   unknown: "Something unexpected happened.",
 }
 

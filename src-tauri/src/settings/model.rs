@@ -13,6 +13,8 @@ pub const MAX_ROWS_RANGE: RangeInclusive<u32> = 1..=100_000;
 pub const DYNAMO_PAGE_SIZE_RANGE: RangeInclusive<u32> = 1..=1000;
 /// Days the query output log is kept on disk; 0 keeps it for the session only.
 pub const OUTPUT_RETENTION_DAYS_RANGE: RangeInclusive<u32> = 0..=365;
+/// Days deleted rows stay in the trash before they are removed for good.
+pub const TRASH_RETENTION_DAYS_RANGE: RangeInclusive<u32> = 1..=365;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -55,6 +57,8 @@ pub struct QuerySettings {
     pub max_rows: u32,
     /// Days to keep the query output log (SQL text and outcomes) in `query-output.json`.
     pub output_retention_days: u32,
+    /// Days to keep deleted rows in the trash (`<config dir>/trash/`).
+    pub trash_retention_days: u32,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -88,6 +92,7 @@ impl Default for QuerySettings {
             confirm_destructive: true,
             max_rows: 1000,
             output_retention_days: 30,
+            trash_retention_days: 30,
             extra: Map::new(),
         }
     }
@@ -121,6 +126,11 @@ impl Settings {
             "query.outputRetentionDays",
             self.query.output_retention_days,
             &OUTPUT_RETENTION_DAYS_RANGE,
+        )?;
+        check_range(
+            "query.trashRetentionDays",
+            self.query.trash_retention_days,
+            &TRASH_RETENTION_DAYS_RANGE,
         )?;
         check_range("dynamo.pageSize", self.dynamo.page_size, &DYNAMO_PAGE_SIZE_RANGE)
     }
@@ -197,6 +207,7 @@ mod tests {
         assert_eq!(s.query.max_rows, 50);
         assert_eq!(s.query.default_limit, 1000);
         assert_eq!(s.query.output_retention_days, 30);
+        assert_eq!(s.query.trash_retention_days, 30);
         assert!(s.query.add_limit_to_select && s.query.confirm_destructive);
         assert_eq!(s.dynamo.page_size, 100);
         assert_eq!(s.secret_store, SecretStoreKind::Keychain);
@@ -233,6 +244,9 @@ mod tests {
             json!({ "query": { "maxRows": 0 } }),
             json!({ "query": { "outputRetentionDays": 366 } }),
             json!({ "query": { "outputRetentionDays": -1 } }),
+            json!({ "query": { "trashRetentionDays": 0 } }),
+            json!({ "query": { "trashRetentionDays": 366 } }),
+            json!({ "query": { "trashRetentionDays": 1.5 } }),
             json!({ "dynamo": { "pageSize": 1001 } }),
             json!({ "dynamo": { "pageSize": -1 } }),
             json!({ "theme": "neon" }),
@@ -258,6 +272,23 @@ mod tests {
         }
         let out = serde_json::to_value(Settings::default()).unwrap();
         assert_eq!(out["query"]["outputRetentionDays"], json!(30));
+    }
+
+    #[test]
+    fn trash_retention_accepts_one_day_to_a_year() {
+        for days in [1, 30, 365] {
+            let s =
+                Settings::from_value(json!({ "query": { "trashRetentionDays": days } })).unwrap();
+            assert_eq!(s.query.trash_retention_days, days);
+        }
+        let out = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(out["query"]["trashRetentionDays"], json!(30));
+        let s = sanitize(&json!({ "query": { "maxRows": 10, "trashRetentionDays": 0 } }));
+        assert_eq!(s.query.trash_retention_days, 30, "an invalid value falls back to the default");
+        assert_eq!(s.query.max_rows, 10);
+        let s = sanitize(&json!({ "query": { "trashRetentionDays": 7 } }));
+        assert_eq!(s.query.trash_retention_days, 7);
+        assert_eq!(sanitize(&json!({})).query.trash_retention_days, 30);
     }
 
     #[test]

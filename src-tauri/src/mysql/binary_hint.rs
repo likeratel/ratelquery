@@ -54,6 +54,12 @@ pub async fn lookup(conn: &mut MySqlConnection, statement: &str) -> BinaryHint {
     fetch_hint(conn, &table).await.unwrap_or_default()
 }
 
+/// Column hint for one known table (best effort, like [`lookup`]).
+pub async fn lookup_table(conn: &mut MySqlConnection, database: &str, table: &str) -> BinaryHint {
+    let table = BaseTable { database: Some(database.to_string()), table: table.to_string() };
+    fetch_hint(conn, &table).await.unwrap_or_default()
+}
+
 /// Metadata with every hinted binary-flagged column settled to text or bytes.
 pub fn apply(names: &[String], metas: &[TypeMeta], hint: &BinaryHint) -> Vec<TypeMeta> {
     names

@@ -13,6 +13,7 @@ use crate::mysql::{MysqlSessions, MysqlStateEvent, STATE_EVENT, StateSink};
 use crate::query_output::QueryOutputStore;
 use crate::settings::{SettingsService, SettingsStore};
 use crate::ssh::KnownHosts;
+use crate::trash::TrashStore;
 use crate::workspace::WorkspaceStore;
 
 /// Managed Tauri state shared by all commands. The services doing file or keyring I/O are
@@ -32,6 +33,8 @@ pub struct AppState {
     pub connection_layout: Arc<ConnectionLayoutStore>,
     /// `query-output.json`: the query output log, kept for the days set in Settings.
     pub query_output: Arc<QueryOutputStore>,
+    /// `trash/`: rows removed by grid deletes, kept for the days set in Settings.
+    pub trash: Arc<TrashStore>,
 }
 
 impl AppState {
@@ -64,6 +67,7 @@ impl AppState {
             workspace: Arc::new(WorkspaceStore::new(config_dir)),
             connection_layout: Arc::new(ConnectionLayoutStore::new(config_dir)),
             query_output: Arc::new(QueryOutputStore::new(config_dir)),
+            trash: Arc::new(TrashStore::new(config_dir)),
         }
     }
 }

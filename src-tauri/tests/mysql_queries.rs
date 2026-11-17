@@ -193,7 +193,11 @@ async fn splits_scripts_and_reports_exec_rows_truncation_and_errors() {
             "(1, 'x', 1), (2, 'y', 2), (3, 'z', 3)",
         )
         .await;
-    let options = QueryOptions { database: Some(db.database().into()), max_rows: Some(2) };
+    let options = QueryOptions {
+        database: Some(db.database().into()),
+        max_rows: Some(2),
+        ..QueryOptions::default()
+    };
     let first_sql = format!("SELECT * FROM `{t}` ORDER BY id");
     let results = run_query(
         &c.session,
@@ -234,7 +238,11 @@ async fn splits_scripts_and_reports_exec_rows_truncation_and_errors() {
 async fn unknown_options_database_is_invalid_input() {
     let Some(db) = test_db() else { return };
     let c = connect(&db).await;
-    let options = QueryOptions { database: Some("no_such_db_for_tests".into()), max_rows: None };
+    let options = QueryOptions {
+        database: Some("no_such_db_for_tests".into()),
+        max_rows: None,
+        ..QueryOptions::default()
+    };
     let err = run_query(&c.session, "SELECT 1", &options).await.unwrap_err();
     assert_eq!(err.kind(), "invalid_input");
     assert!(err.to_string().contains("no_such_db_for_tests"), "{err}");

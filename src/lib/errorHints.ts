@@ -11,6 +11,8 @@ const HINTS: Record<AppErrorKind, string> = {
   ssh: "The SSH tunnel failed. Check the SSH host, user and key or password, then run again.",
   ssh_host_key:
     "The SSH server's host key isn't trusted. Open the connection again to review its fingerprint.",
+  backup_failed:
+    "The deleted rows couldn't be saved to the trash, so nothing was changed. Free some disk space, then apply again.",
   unknown: "Something unexpected happened.",
 }
 
@@ -38,6 +40,7 @@ const ATHENA_HINTS: Record<AppErrorKind, string> = {
   io: "A local file or system operation failed.",
   ssh: "An SSH tunnel failed.",
   ssh_host_key: "An SSH host key wasn't trusted.",
+  backup_failed: "The deleted rows couldn't be saved to the trash, so nothing was changed.",
   unknown: "Something unexpected happened.",
 }
 

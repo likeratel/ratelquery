@@ -5,7 +5,7 @@ use std::future::Future;
 use std::ops::{Deref, DerefMut};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::future::BoxFuture;
 use sqlx::pool::PoolConnection;
@@ -19,6 +19,44 @@ use super::tunnel::{SessionTunnel, TUNNEL_DOWN};
 use crate::error::{AppError, AppResult};
 
 const PING_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long a connection kept for continuing a stopped script waits for the user.
+pub const RESUME_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// A connection kept out of the pool after a script stopped at a DELETE that couldn't be backed
+/// up, so continuing it sees the same session state (variables, `SET SESSION`, `USE`).
+struct Parked {
+    token: String,
+    /// The run the connection was kept for; continuing another text or statement is refused.
+    resume: ResumePoint,
+    conn: MysqlConn,
+    expires: Instant,
+}
+
+/// Where a stopped run continues: a hash of its SQL text and the statement it stopped at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumePoint {
+    pub sql_hash: u64,
+    pub statement_index: usize,
+}
+
+impl ResumePoint {
+    pub fn new(sql: &str, statement_index: usize) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        sql.hash(&mut hasher);
+        Self { sql_hash: hasher.finish(), statement_index }
+    }
+}
+
+/// Why a kept connection could not be taken back.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResumeRefused {
+    /// No connection is kept for the token (expired, released, replaced or closed).
+    Gone,
+    /// The token is for another script text or statement.
+    Mismatch,
+}
 
 /// Counts connections the session handed out; dropping the lease gives the slot back.
 struct Lease(Arc<AtomicU32>);
@@ -77,6 +115,8 @@ pub struct MysqlSession {
     state: Mutex<SessionState>,
     sink: Arc<dyn StateSink>,
     ping_task: Mutex<Option<AbortHandle>>,
+    /// At most one kept connection per session, so it never takes more than one pool slot.
+    parked: Mutex<Option<Parked>>,
 }
 
 impl MysqlSession {
@@ -98,6 +138,7 @@ impl MysqlSession {
             state: Mutex::new(SessionState::Connected),
             sink,
             ping_task: Mutex::new(None),
+            parked: Mutex::new(None),
         }
     }
 
@@ -169,6 +210,70 @@ impl MysqlSession {
         tauri::async_runtime::spawn(async move { old_pool.close().await });
         self.reopened.store(true, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn parked(&self) -> std::sync::MutexGuard<'_, Option<Parked>> {
+        self.parked.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Keeps `conn` for [`RESUME_TIMEOUT`] and returns the token that takes it back. A
+    /// connection kept earlier goes back to the pool. A closed session keeps nothing.
+    pub fn park(&self, conn: MysqlConn, resume: ResumePoint) -> Option<String> {
+        let mut parked = self.parked();
+        // Checked under the lock: `stop` marks the session closed before it empties the slot.
+        if self.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        let previous = parked.replace(Parked {
+            token: token.clone(),
+            resume,
+            conn,
+            expires: Instant::now() + RESUME_TIMEOUT,
+        });
+        drop(parked);
+        drop(previous);
+        Some(token)
+    }
+
+    /// The kept connection for `token`, when it is still kept and was kept for `resume`. An
+    /// expired one is released; one kept for another run stays kept.
+    pub fn take_parked(
+        &self,
+        token: &str,
+        resume: ResumePoint,
+    ) -> Result<MysqlConn, ResumeRefused> {
+        let mut parked = self.parked();
+        if parked.as_ref().is_some_and(|p| p.expires <= Instant::now()) {
+            *parked = None;
+        }
+        match parked.take() {
+            Some(p) if p.token == token && p.resume == resume => Ok(p.conn),
+            Some(p) if p.token == token => {
+                *parked = Some(p);
+                Err(ResumeRefused::Mismatch)
+            }
+            other => {
+                *parked = other;
+                Err(ResumeRefused::Gone)
+            }
+        }
+    }
+
+    /// Gives the connection kept for `token` back to the pool (the user stopped the script).
+    pub fn release_parked(&self, token: &str) {
+        let mut parked = self.parked();
+        if parked.as_ref().is_some_and(|p| p.token == token) {
+            *parked = None;
+        }
+    }
+
+    /// Releases a kept connection whose time is up; run by the health check.
+    fn expire_parked(&self) {
+        let mut parked = self.parked();
+        if parked.as_ref().is_some_and(|p| p.expires <= Instant::now()) {
+            *parked = None;
+        }
     }
 
     pub fn default_database(&self) -> Option<&str> {
@@ -343,6 +448,7 @@ impl MysqlSession {
     /// Background health check; a busy pool leaves the state unchanged. A dropped SSH tunnel is
     /// re-opened first (`reconnecting`, then `connected` or `error`).
     pub async fn ping(&self) {
+        self.expire_parked();
         if self.restore_tunnel().await.is_err() {
             return;
         }
@@ -385,6 +491,9 @@ impl MysqlSession {
     /// stops any re-open from installing a new one.
     fn stop(&self) -> (MySqlPool, Option<crate::ssh::SshTunnel>) {
         self.closed.store(true, Ordering::SeqCst);
+        // A kept connection must go back before the pool can close.
+        let kept = self.parked().take();
+        drop(kept);
         if let Ok(mut task) = self.ping_task.lock()
             && let Some(handle) = task.take()
         {

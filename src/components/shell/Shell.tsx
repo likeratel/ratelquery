@@ -8,12 +8,24 @@ import {
 import { DynamoWorkspace } from "../../features/dynamo"
 import { subscribeTreeCleanup, TableWorkspace } from "../../features/schema"
 import {
+  ApplyConfirmDialog,
+  DeleteBackupDialog,
   handleAppShortcut,
   QueryWorkspace,
   RunConfirmDialog,
   subscribeConnectionCleanup,
 } from "../../features/query"
 import { SettingsDialog } from "../../features/settings"
+import { TrashPanel } from "../../features/trash"
+import { startTrashSync, useTrashStore } from "../../state/trashStore"
+import { matchAppShortcut } from "../../features/query/appShortcuts"
+import { trashShortcutDecision } from "./trashShortcuts"
+
+/** Closes the Trash panel and its open entry. */
+function closeTrashPanel(): void {
+  useUiStore.getState().closeTrash()
+  void useTrashStore.getState().select(null)
+}
 import { useConnectionsStore } from "../../state/connectionsStore"
 import { ensureQueryOutputSync } from "../../state/queryOutputSync"
 import { subscribeSessionEvents } from "../../state/sessionsStore"
@@ -38,6 +50,7 @@ export function Shell() {
   const setPanelWidth = useUiStore((s) => s.setPanelWidth)
   const [resizing, setResizing] = useState(false)
   const activeKind = useTabsStore((s) => s.tabs.find((t) => t.id === s.activeId)?.kind ?? null)
+  const trashOpen = useUiStore((s) => s.trashOpen)
   const openDialog = useConnectionsStore((s) => s.openDialog)
 
   useEffect(() => {
@@ -67,6 +80,9 @@ export function Shell() {
   // `query-output.json` up to date until the window closes. Starting it again does nothing.
   useEffect(() => ensureQueryOutputSync(), [])
 
+  // The Trash count in the sidebar; reloaded on window focus.
+  useEffect(() => startTrashSync(), [])
+
   useEffect(() => {
     // The SQL editor handles these in its own capture phase and stops the event, so this
     // listener only sees shortcuts pressed elsewhere in the window. While a modal dialog is
@@ -75,6 +91,14 @@ export function Shell() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || isImeComposing(event)) return
       if (event.code !== "Escape" && isModalOpen()) return
+      if (useUiStore.getState().trashOpen) {
+        const decision = trashShortcutDecision(matchAppShortcut(event))
+        if (decision !== "pass") {
+          event.preventDefault()
+          if (decision === "close-trash") closeTrashPanel()
+          return
+        }
+      }
       if (handleAppShortcut(event)) event.preventDefault()
     }
     window.addEventListener("keydown", onKeyDown)
@@ -105,7 +129,9 @@ export function Shell() {
         <TabBar />
         <ConnectionBanner />
         <div className="workspace__main">
-          {activeKind === "dynamo" ? (
+          {trashOpen ? (
+            <TrashPanel />
+          ) : activeKind === "dynamo" ? (
             <DynamoWorkspace />
           ) : activeKind === "table" ? (
             <TableWorkspace />
@@ -120,6 +146,8 @@ export function Shell() {
       <ConnectionDialog />
       <SettingsDialog />
       <RunConfirmDialog />
+      <ApplyConfirmDialog />
+      <DeleteBackupDialog />
       <PasswordPromptDialog />
       <HostKeyPromptDialog />
       <Toaster />

@@ -59,6 +59,27 @@ pub struct ExecResult {
     pub elapsed_ms: u64,
     pub reconnected: bool,
     pub statement: String,
+    /// For a DELETE backed up to the trash: how many rows the entry holds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trashed_rows: Option<u64>,
+    /// For a DELETE backed up to the trash: the entry id (absent when it deleted no rows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trash_id: Option<String>,
+}
+
+/// The run stopped before statement `statement_index` (of the whole script) because its rows
+/// could not be backed up; it and later statements did not run. Always the last result.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupStoppedResult {
+    pub statement_index: usize,
+    pub reason: String,
+    pub statement: String,
+    /// Always 0; present so every result has the field.
+    pub elapsed_ms: u64,
+    /// Continues the script on the same connection (`QueryOptions::resume_token`) for
+    /// `RESUME_TIMEOUT`; `None` when the session is closing.
+    pub resume_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -66,6 +87,8 @@ pub struct ExecResult {
 pub enum QueryResult {
     Rows(RowsResult),
     Exec(ExecResult),
+    #[serde(rename = "backup_stopped")]
+    BackupStopped(BackupStoppedResult),
 }
 
 impl QueryResult {
@@ -73,6 +96,7 @@ impl QueryResult {
         match self {
             QueryResult::Rows(r) => r.reconnected,
             QueryResult::Exec(r) => r.reconnected,
+            QueryResult::BackupStopped(_) => false,
         }
     }
 
@@ -81,6 +105,7 @@ impl QueryResult {
         match self {
             QueryResult::Rows(r) => QueryResult::Rows(RowsResult { reconnected, ..r }),
             QueryResult::Exec(r) => QueryResult::Exec(ExecResult { reconnected, ..r }),
+            stopped @ QueryResult::BackupStopped(_) => stopped,
         }
     }
 }
@@ -94,6 +119,25 @@ pub struct QueryOptions {
     pub database: Option<String>,
     #[serde(default)]
     pub max_rows: Option<i64>,
+    /// Run from this statement of the script (0-based, `split_statements` order); earlier ones
+    /// are skipped. Above 0 it needs `resume_token`. Default 0.
+    #[serde(default)]
+    pub start_at: Option<usize>,
+    /// The `resumeToken` of a `backup_stopped` result: the run continues on the connection the
+    /// stopped run used, with its session state.
+    #[serde(default)]
+    pub resume_token: Option<String>,
+    /// How DELETE statements are backed up to the trash (when the caller backs up at all).
+    #[serde(default)]
+    pub delete_backup: Option<DeleteBackupOptions>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteBackupOptions {
+    /// Statement indexes (whole script) the user agreed to run without a backup.
+    #[serde(default)]
+    pub skip: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -160,6 +204,8 @@ mod tests {
             elapsed_ms: 1,
             reconnected: false,
             statement: "DELETE".into(),
+            trashed_rows: None,
+            trash_id: None,
         });
         assert_eq!(
             serde_json::to_value(exec).unwrap(),

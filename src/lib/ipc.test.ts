@@ -14,6 +14,10 @@ describe("normalizeError", () => {
     expect(normalizeError({ kind: "ssh_host_key", message: "x" }).kind).toBe("ssh_host_key")
   })
 
+  it("keeps backup_failed", () => {
+    expect(normalizeError({ kind: "backup_failed", message: "x" }).kind).toBe("backup_failed")
+  })
+
   it("maps unknown kinds to unknown", () => {
     expect(normalizeError({ kind: "weird", message: "x" }).kind).toBe("unknown")
   })

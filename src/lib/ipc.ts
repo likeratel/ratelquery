@@ -9,6 +9,8 @@ export type AppErrorKind =
   | "io"
   | "ssh"
   | "ssh_host_key"
+  /** Deleted rows could not be saved to the trash, so nothing was changed. */
+  | "backup_failed"
   | "unknown"
 
 export interface AppError {
@@ -27,6 +29,7 @@ const KNOWN_KINDS: ReadonlySet<string> = new Set([
   "io",
   "ssh",
   "ssh_host_key",
+  "backup_failed",
 ])
 
 /** Turns whatever a transport rejected with into a structured AppError. */

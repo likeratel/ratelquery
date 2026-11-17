@@ -15,6 +15,8 @@ export type { ThemePreference }
 interface UiState {
   sidebarCollapsed: boolean
   settingsOpen: boolean
+  /** The Trash panel replaces the workspace content while open. */
+  trashOpen: boolean
   /** Resizable panel widths in pixels, restored from the last launch. */
   panelWidths: PanelWidths
   /** Sets a panel width; `persist` false skips the storage write (widths mid-drag). */
@@ -22,11 +24,14 @@ interface UiState {
   toggleSidebar: () => void
   openSettings: () => void
   closeSettings: () => void
+  openTrash: () => void
+  closeTrash: () => void
 }
 
 export const useUiStore = create<UiState>((set, get) => ({
   sidebarCollapsed: false,
   settingsOpen: false,
+  trashOpen: false,
   panelWidths: loadPanelWidths(),
   setPanelWidth: (panel, width, persist = true) => {
     const next = clampWidth(PANEL_SPECS[panel], width)
@@ -37,6 +42,8 @@ export const useUiStore = create<UiState>((set, get) => ({
   },
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+  openTrash: () => set({ trashOpen: true }),
+  closeTrash: () => set({ trashOpen: false }),
   toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
 }))
 

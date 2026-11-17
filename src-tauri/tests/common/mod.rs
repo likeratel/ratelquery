@@ -88,6 +88,7 @@ pub fn rows(result: &QueryResult) -> &RowsResult {
     match result {
         QueryResult::Rows(r) => r,
         QueryResult::Exec(_) => panic!("expected rows, got exec"),
+        QueryResult::BackupStopped(s) => panic!("expected rows, got backup_stopped: {}", s.reason),
     }
 }
 
@@ -154,6 +155,28 @@ impl Cleanup {
             format!("; INSERT INTO `{table}` VALUES {rows}")
         };
         query(session, &format!("CREATE TABLE `{table}` ({columns}){insert}")).await;
+        table
+    }
+}
+
+impl Cleanup {
+    /// A uniquely named one-row table (`id INT PRIMARY KEY`) in another storage engine.
+    pub async fn table_with_engine(
+        &self,
+        session: &MysqlSession,
+        prefix: &str,
+        engine: &str,
+    ) -> String {
+        let table = unique(prefix);
+        self.table(&table);
+        query(
+            session,
+            &format!(
+                "CREATE TABLE `{table}` (id INT PRIMARY KEY) ENGINE={engine}; \
+                 INSERT INTO `{table}` VALUES (1)"
+            ),
+        )
+        .await;
         table
     }
 }

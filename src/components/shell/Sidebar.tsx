@@ -1,9 +1,12 @@
-import { FolderPlus, Plus } from "lucide-react"
+import { FolderPlus, Plus, Trash2 } from "lucide-react"
 import { useEffect } from "react"
 import { ConnectionList, NEW_CONNECTION_SHORTCUT } from "../../features/connections"
 import { formatShortcut } from "../../lib/shortcuts"
 import { useConnectionLayout } from "../../state/connectionLayoutStore"
 import { useConnectionsStore } from "../../state/connectionsStore"
+import { trashLabel } from "../../lib/trashView"
+import { useTrashStore } from "../../state/trashStore"
+import { useUiStore } from "../../state/uiStore"
 
 interface SidebarProps {
   /** Optional extra callback; the dialog itself is opened through the connections store. */
@@ -62,6 +65,25 @@ export function Sidebar({ onAddConnection, inert = false }: SidebarProps) {
       <div className="sidebar__body">
         <ConnectionList />
       </div>
+      <TrashButton />
     </aside>
+  )
+}
+
+/** The Trash item pinned to the bottom of the sidebar. */
+function TrashButton() {
+  const count = useTrashStore((s) => s.summaries.length)
+  return (
+    <div className="sidebar__footer">
+      <button
+        type="button"
+        className="sidebar__trash"
+        onClick={() => useUiStore.getState().openTrash()}
+        title="Rows you deleted, kept for restoring"
+      >
+        <Trash2 size={14} strokeWidth={2} aria-hidden />
+        <span>{trashLabel(count)}</span>
+      </button>
+    </div>
   )
 }

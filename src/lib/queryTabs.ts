@@ -351,6 +351,23 @@ export function finishRun(
   }
 }
 
+/**
+ * Like `finishRun`, for a run that continued an earlier one (from the statement it stopped
+ * at): its results go after the tab's current ones, so result `i` stays statement `i`.
+ */
+export function appendRun(
+  tab: QueryTab,
+  sql: string,
+  results: readonly QueryResult[],
+  ranDatabase: string | null = tab.ranDatabase,
+): QueryTab {
+  const merged = [...tab.results, ...results]
+  return {
+    ...finishRun(tab, sql, merged, ranDatabase),
+    lastElapsedMs: (tab.lastElapsedMs ?? 0) + results.reduce((sum, r) => sum + r.elapsedMs, 0),
+  }
+}
+
 export function failRun(tab: QueryTab, sql: string, error: AppError): QueryTab {
   return {
     ...tab,

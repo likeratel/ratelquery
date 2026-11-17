@@ -13,6 +13,7 @@ pub mod query_output;
 pub mod settings;
 pub mod ssh;
 mod state;
+pub mod trash;
 mod util;
 pub mod workspace;
 
@@ -42,6 +43,18 @@ fn close_sessions_on_exit(app: &AppHandle) {
     });
 }
 
+/// Recovers and purges the trash before any command can write to it. Never fails startup.
+fn start_trash(state: &AppState) {
+    let days = match state.settings.get() {
+        Ok(settings) => settings.query.trash_retention_days,
+        Err(err) => {
+            eprintln!("trash: settings unavailable ({err}); using the default retention");
+            settings::Settings::default().query.trash_retention_days
+        }
+    };
+    trash::startup(&state.trash, days);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -54,7 +67,9 @@ pub fn run() {
             let config_dir = app.path().app_config_dir()?;
             legacy_config::migrate(&config_dir);
             let sink = Arc::new(TauriStateSink::new(app.handle().clone()));
-            app.manage(AppState::new(&config_dir, Arc::new(KeyringSecretStore), sink));
+            let state = AppState::new(&config_dir, Arc::new(KeyringSecretStore), sink);
+            start_trash(&state);
+            app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -71,10 +86,13 @@ pub fn run() {
             commands::mysql::mysql_connect,
             commands::mysql::mysql_disconnect,
             commands::mysql::mysql_query,
+            commands::mysql::mysql_delete_plan,
+            commands::mysql::mysql_release_resume,
             commands::mysql::mysql_databases,
             commands::mysql::mysql_schema,
             commands::mysql::mysql_table_details,
             commands::mysql::mysql_apply_changes,
+            commands::mysql::mysql_preview_changes,
             commands::mysql::mysql_export,
             commands::export::export_rows,
             commands::dynamo::dynamo_list_tables,
@@ -100,6 +118,13 @@ pub fn run() {
             commands::workspace::workspace_save,
             commands::query_output::query_output_load,
             commands::query_output::query_output_save,
+            commands::trash::trash_list,
+            commands::trash::trash_get,
+            commands::trash::trash_delete,
+            commands::trash::trash_empty,
+            commands::trash::trash_purge,
+            commands::trash::trash_restore,
+            commands::trash::trash_restore_preview,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -14,10 +14,17 @@ struct Piece {
     has_code: bool,
 }
 
-fn starts_line_comment(bytes: &[u8], i: usize) -> bool {
+/// Whitespace as the server reads it: space, tab, newline, vertical tab, form feed, return.
+pub fn is_sql_space(b: u8) -> bool {
+    b == b' ' || (0x09..=0x0d).contains(&b)
+}
+
+/// `--` at `i` starts a comment when a space or control character (any byte up to 0x20, or DEL
+/// 0x7F) follows it, or the text ends, as in the server. Shared with the tokenizer.
+pub fn starts_line_comment(bytes: &[u8], i: usize) -> bool {
     bytes.get(i) == Some(&b'-')
         && bytes.get(i + 1) == Some(&b'-')
-        && bytes.get(i + 2).is_none_or(|b| b.is_ascii_whitespace())
+        && bytes.get(i + 2).is_none_or(|b| *b <= 0x20 || *b == 0x7f)
 }
 
 /// Returns the trimmed statements of `sql`; pieces containing only whitespace and comments are
@@ -39,8 +46,11 @@ pub fn split_statements(sql: &str) -> Vec<String> {
                 b'#' => state = State::LineComment,
                 b'-' if starts_line_comment(bytes, i) => state = State::LineComment,
                 b'/' if bytes.get(i + 1) == Some(&b'*') => {
-                    // `/*! ... */` is a MySQL executable comment: the server runs its body.
-                    if bytes.get(i + 2) == Some(&b'!') {
+                    // `/*! ... */` (MariaDB: `/*M! ... */`) is an executable comment: the server
+                    // runs its body.
+                    let mariadb =
+                        bytes.get(i + 2) == Some(&b'M') && bytes.get(i + 3) == Some(&b'!');
+                    if bytes.get(i + 2) == Some(&b'!') || mariadb {
                         piece.has_code = true;
                     }
                     state = State::BlockComment;
@@ -52,7 +62,7 @@ pub fn split_statements(sql: &str) -> Vec<String> {
                     }
                     piece = Piece { start: i + 1, has_code: false };
                 }
-                b if b.is_ascii_whitespace() => {}
+                b if is_sql_space(b) => {}
                 _ => piece.has_code = true,
             },
             State::Quoted(quote) => {
@@ -127,6 +137,21 @@ mod tests {
             split_statements(sql),
             vec!["/*!40101 SET NAMES utf8mb4 */", "/*!40014 SET FOREIGN_KEY_CHECKS=0 */"]
         );
+    }
+
+    #[test]
+    fn dashes_before_control_bytes_start_a_comment_like_the_server() {
+        assert_eq!(
+            split_statements("SELECT 1 --\tx; y\nSELECT 2"),
+            vec!["SELECT 1 --\tx; y\nSELECT 2"]
+        );
+        assert_eq!(
+            split_statements("SELECT 1 --\x0bx; SELECT 2"),
+            vec!["SELECT 1 --\x0bx; SELECT 2"]
+        );
+        assert_eq!(split_statements("SELECT 1 --x; SELECT 2"), vec!["SELECT 1 --x", "SELECT 2"]);
+        assert_eq!(split_statements("SELECT 1 --\x7f; x"), vec!["SELECT 1 --\x7f; x"]);
+        assert_eq!(split_statements("\x0b;\x0bSELECT 1"), vec!["SELECT 1"], "VT is whitespace");
     }
 
     #[test]

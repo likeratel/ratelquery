@@ -17,6 +17,8 @@ export interface QuerySettings {
   maxRows: number
   /** Days the query output log (SQL text and outcomes) is kept on disk; 0 keeps it for the session only. */
   outputRetentionDays: number
+  /** Days deleted rows are kept in the trash, 1 to 365. */
+  trashRetentionDays: number
 }
 
 export interface DynamoSettings {
@@ -52,6 +54,7 @@ export const SETTING_RANGES = {
   defaultLimit: { min: 1, max: 100_000 },
   maxRows: { min: 1, max: 100_000 },
   outputRetentionDays: { min: 0, max: 365 },
+  trashRetentionDays: { min: 1, max: 365 },
   pageSize: { min: 1, max: 1000 },
 } as const satisfies Record<string, Range>
 
@@ -66,6 +69,7 @@ export const DEFAULT_SETTINGS: Settings = {
     confirmDestructive: true,
     maxRows: 1000,
     outputRetentionDays: 30,
+    trashRetentionDays: 30,
   },
   dynamo: { pageSize: 100 },
   secretStore: "keychain",
@@ -86,6 +90,7 @@ export const settingsSchema = z.object({
     confirmDestructive: z.boolean(),
     maxRows: intIn(SETTING_RANGES.maxRows),
     outputRetentionDays: intIn(SETTING_RANGES.outputRetentionDays),
+    trashRetentionDays: intIn(SETTING_RANGES.trashRetentionDays),
   }),
   dynamo: z.object({ pageSize: intIn(SETTING_RANGES.pageSize) }),
   secretStore: z.enum(SECRET_STORES),
@@ -105,6 +110,9 @@ const lenientSchema = z.object({
       maxRows: intIn(SETTING_RANGES.maxRows).catch(D.query.maxRows),
       outputRetentionDays: intIn(SETTING_RANGES.outputRetentionDays).catch(
         D.query.outputRetentionDays,
+      ),
+      trashRetentionDays: intIn(SETTING_RANGES.trashRetentionDays).catch(
+        D.query.trashRetentionDays,
       ),
     })
     .catch(D.query),

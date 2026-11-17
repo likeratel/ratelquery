@@ -2,7 +2,24 @@ import { forgetEditorState } from "../../components/editor/editorStateCache"
 import { forgetTabColumnWidths } from "../../components/grid/useColumnWidths"
 import type { AthenaConnectionConfig, ConnectionId } from "../../lib/connections"
 import { onAppEvent } from "../../lib/events"
+import {
+  applyFailedTitle,
+  appliedMessage,
+  countChanges,
+  needsApplyConfirm,
+  staleApplyMessage,
+  type ApplyStaleReason,
+  type ChangeCounts,
+} from "../../lib/applyPlan"
+import { buildRowChanges, type EditTarget, type GridEdits } from "../../lib/gridEdits"
 import { isAppError } from "../../lib/ipc"
+import { mysqlApi, type DeletePlanEntry, type RowChange, type RowsResult } from "../../lib/mysql"
+import {
+  continueFailedMessage,
+  mayDelete,
+  stoppedMessage,
+  unsupportedDeletes,
+} from "../../lib/sqlTrash"
 import { sqlInsertion } from "../../lib/queryOutput"
 import {
   hasUnsavedWork,
@@ -17,9 +34,13 @@ import { useConnectionsStore } from "../../state/connectionsStore"
 import { useQueryOutputStore } from "../../state/queryOutputStore"
 import { useSessionsStore } from "../../state/sessionsStore"
 import { currentSettings } from "../../state/settingsStore"
+import { refreshTrash } from "../../state/trashStore"
 import {
   selectActiveQueryTab,
+  forgetBackupStop,
+  releaseResume,
   selectActiveTab,
+  takeBackupStop,
   useTabsStore,
   type RunOutcome,
 } from "../../state/tabsStore"
@@ -29,6 +50,8 @@ import { useDynamoCatalog } from "../dynamo/catalogStore"
 import { editTargetFor } from "./editing"
 import { editorFor } from "./editorRegistry"
 import { ensureMysqlSession } from "./mysqlSession"
+import { confirmApply, confirmApplyWithoutBackup } from "./applyConfirm"
+import { confirmStoppedDelete, confirmUnbackedDeletes } from "./deleteBackupConfirm"
 import { confirmDangerousRun, planRun, useRunGuardStore } from "./runGuard"
 import { forgetTabCountUps } from "./useCountUp"
 import { showToast } from "../../components/ui"
@@ -106,6 +129,7 @@ function forgetTabState(id: string): void {
   forgetEditorState(id)
   useQueryOutputStore.getState().forgetTab(id)
   useRunGuardStore.getState().forgetTab(id)
+  forgetBackupStop(id)
   forgetTabColumnWidths(id)
   forgetTabCountUps(id)
 }
@@ -316,14 +340,101 @@ async function runGuarded(tab: QueryTab, sql: string | null): Promise<void> {
     // The tab may have closed while the dialog was open.
     if (!confirmed || !useTabsStore.getState().tabs.some((t) => t.id === tab.id)) return
   }
+  const text = plan.changed ? plan.sql : (sql ?? tab.sql)
+  const skip = tab.engine === "mysql" ? await deletesToSkip(text) : []
+  if (skip === null || !tabExists(tab.id)) return
   const guard = useRunGuardStore.getState()
   const previous = guard.limitedByTab[tab.id] ?? []
   guard.setLimited(tab.id, plan.limited)
-  const text = plan.changed ? plan.sql : (sql ?? undefined)
-  const outcome = await useTabsStore.getState().run(tab.id, text)
+  const outcome = await runWithBackupStops(tab.id, text, skip)
   // A run that never started leaves the previous results, and their badges, on screen.
-  if (outcome !== "ran" && outcome !== "failed") guard.setLimited(tab.id, previous)
+  if (!RAN_OUTCOMES.has(outcome)) guard.setLimited(tab.id, previous)
   reportOutcome(outcome)
+}
+
+const RAN_OUTCOMES: ReadonlySet<RunOutcome> = new Set(["ran", "failed", "backup-stopped"])
+
+const tabExists = (id: string) => useTabsStore.getState().tabs.some((t) => t.id === id)
+
+/**
+ * The statements of `text` whose DELETE may run without a trash backup: none when every DELETE
+ * can be backed up, the unsupported ones when the user agrees, null (run nothing) when they
+ * don't or the check failed.
+ */
+async function deletesToSkip(text: string): Promise<number[] | null> {
+  if (!mayDelete(text)) return []
+  let plan: DeletePlanEntry[]
+  try {
+    plan = await mysqlApi.deletePlan(text)
+  } catch (raw) {
+    showToast({
+      tone: "error",
+      message: "Couldn't check the DELETE statements, so nothing ran",
+      detail: isAppError(raw) ? raw.message : undefined,
+    })
+    return null
+  }
+  const unsupported = unsupportedDeletes(plan)
+  if (unsupported.length === 0) return []
+  const confirmed = await confirmUnbackedDeletes(unsupported)
+  return confirmed ? unsupported.map((entry) => entry.index) : null
+}
+
+/**
+ * Reloads the Trash list when the tab's results include a DELETE that saved rows there, or when
+ * a run with a DELETE failed (an interrupted COMMIT leaves an uncertain entry).
+ */
+function refreshAfterSqlDeletes(tabId: string, outcome: RunOutcome, text: string): void {
+  const tab = useTabsStore.getState().tabs.find((t) => t.id === tabId)
+  if (tab?.kind !== "query") return
+  const saved = tab.results.some((r) => r.kind === "exec" && (r.trashedRows ?? 0) > 0)
+  if (saved || (outcome === "failed" && mayDelete(text))) refreshTrash()
+}
+
+/** A continued run failed; the results before it stay, and the error panel has the details. */
+function reportContinueFailure(tabId: string, statementIndex: number): void {
+  const tab = useTabsStore.getState().tabs.find((t) => t.id === tabId)
+  const detail = tab?.kind === "query" ? tab.error?.message : undefined
+  showToast({ tone: "error", message: continueFailedMessage(statementIndex), detail })
+}
+
+/**
+ * Runs `text`, and whenever a DELETE's backup fails at run time asks whether to go on without
+ * one; only then the run continues from that statement (earlier ones never run again), its
+ * results added to the tab's.
+ */
+async function runWithBackupStops(
+  tabId: string,
+  text: string,
+  initialSkip: readonly number[],
+): Promise<RunOutcome> {
+  let skip = initialSkip
+  const connectionId = useTabsStore.getState().tabs.find((t) => t.id === tabId)?.connectionId
+  let outcome = await useTabsStore.getState().run(tabId, text, { skipBackup: skip })
+  refreshAfterSqlDeletes(tabId, outcome, text)
+  while (outcome === "backup-stopped") {
+    const stop = takeBackupStop(tabId)
+    if (!stop) return outcome
+    const go = await confirmStoppedDelete(stop)
+    if (!go || !tabExists(tabId)) {
+      // The kept connection isn't needed any more.
+      if (connectionId) releaseResume(connectionId, stop)
+      if (tabExists(tabId)) {
+        showToast({ tone: "warning", message: stoppedMessage(stop.statementIndex) })
+      }
+      return outcome
+    }
+    skip = [...skip, stop.statementIndex]
+    outcome = await useTabsStore.getState().run(tabId, text, {
+      skipBackup: skip,
+      startAt: stop.statementIndex,
+      append: true,
+      ...(stop.resumeToken ? { resumeToken: stop.resumeToken } : {}),
+    })
+    if (outcome === "failed") reportContinueFailure(tabId, stop.statementIndex)
+    refreshAfterSqlDeletes(tabId, outcome, text)
+  }
+  return outcome
 }
 
 /**
@@ -349,29 +460,131 @@ export function insertSqlIntoEditor(tabId: string, sql: string): void {
   useTabsStore.getState().setSql(tabId, tab.sql + sqlInsertion(tab.sql, end, end, sql))
 }
 
-/** Mod+S: apply the active result's pending edits. */
-export async function applyActiveEdits(): Promise<void> {
+/** What one apply works on, captured when it started. */
+interface ApplyJob {
+  tabId: string
+  connectionId: ConnectionId
+  index: number
+  target: EditTarget
+  edits: GridEdits
+  result: RowsResult
+  changes: RowChange[]
+  counts: ChangeCounts
+}
+
+/**
+ * Why a dialog answer no longer applies: the tab, or the result the edits belong to, is gone
+ * (`gone`), or its edits or rows changed or an apply is running (`changed`). Null when the tab
+ * still holds exactly what the dialog showed.
+ */
+function staleReason(job: ApplyJob): ApplyStaleReason | null {
+  const tab = useTabsStore.getState().tabs.find((t) => t.id === job.tabId)
+  if (tab?.kind !== "query" || !tab.results[job.index]) return "gone"
+  const same =
+    !tab.applying && tab.edits[job.index] === job.edits && tab.results[job.index] === job.result
+  return same ? null : "changed"
+}
+
+/** True when the job may go ahead; otherwise says why nothing was applied. */
+function stillCurrent(job: ApplyJob): boolean {
+  const reason = staleReason(job)
+  if (reason) showToast({ tone: "info", message: staleApplyMessage(reason) })
+  return reason === null
+}
+
+/** The pending edits of the active result, or null when there is nothing to apply. */
+function activeApplyJob(): ApplyJob | null {
   const tab = selectActiveQueryTab(useTabsStore.getState())
   // A held or repeated Mod+S must not send the same batch twice.
-  if (!tab || tab.applying) return
+  if (!tab || tab.applying) return null
   const index = tab.activeResult
+  const result = tab.results[index]
+  const edits = tab.edits[index]
   const session = useSessionsStore.getState().sessions[tab.connectionId]
-  const resolved = editTargetFor(tab, tab.results[index], session)
-  if (!resolved.editable || !tab.edits[index]) return
+  const resolved = editTargetFor(tab, result, session)
+  if (!resolved.editable || !edits || result?.kind !== "rows") return null
+  const changes = buildRowChanges(edits, resolved.target, result.rows)
+  if (changes.length === 0) return null
+  const { connectionId } = tab
+  const counts = countChanges(changes)
+  return {
+    tabId: tab.id,
+    connectionId,
+    index,
+    target: resolved.target,
+    edits,
+    result,
+    changes,
+    counts,
+  }
+}
+
+const tableLabel = (target: EditTarget) => `${target.database}.${target.table}`
+
+/**
+ * Sends the job's edits. When the trash refuses the backup (`backup_failed`), asks whether to
+ * delete without one and, only on yes, sends the same edits again with `skipBackup`.
+ */
+async function sendApply(job: ApplyJob, skipBackup: boolean): Promise<void> {
   try {
-    const applied = await useTabsStore.getState().applyEdits(tab.id, index, resolved.target)
+    const options = skipBackup ? { skipBackup: true } : {}
+    const applied = await useTabsStore
+      .getState()
+      .applyEdits(job.tabId, job.index, job.target, options)
     if (applied) {
-      const rows = applied.affectedRows === 1 ? "row" : "rows"
+      if (job.counts.deletes > 0 && !skipBackup) refreshTrash()
       showToast({
         tone: "success",
-        message: `Applied changes · ${applied.affectedRows} ${rows} affected`,
+        message: appliedMessage(
+          applied.affectedRows,
+          job.counts.deletes,
+          skipBackup ? "skipped" : "kept",
+        ),
       })
     }
   } catch (raw) {
+    if (!skipBackup && isAppError(raw) && raw.kind === "backup_failed") {
+      const go = await confirmApplyWithoutBackup({
+        table: tableLabel(job.target),
+        message: raw.message,
+        deletes: job.counts.deletes,
+      })
+      if (!go) return
+      if (!stillCurrent(job)) return
+      await sendApply(job, true)
+      return
+    }
+    // A failed delete can leave an uncertain entry (interrupted COMMIT, MyISAM).
+    if (job.counts.deletes > 0 && !skipBackup) refreshTrash()
+    const kind = isAppError(raw) ? raw.kind : "unknown"
     showToast({
       tone: "error",
-      message: "Changes rolled back",
+      message: applyFailedTitle(kind),
       detail: isAppError(raw) ? raw.message : "Couldn't apply changes",
     })
   }
+}
+
+/**
+ * Mod+S and the Apply button: apply the active result's pending edits. Updates and deletes wait
+ * for a confirmation that shows the SQL to run (inserts alone apply right away); the answer only
+ * counts while the edits are unchanged.
+ */
+export async function applyActiveEdits(): Promise<void> {
+  const job = activeApplyJob()
+  if (!job) return
+  if (needsApplyConfirm(job.counts)) {
+    const { target, changes } = job
+    const confirmed = await confirmApply(
+      {
+        table: tableLabel(target),
+        counts: job.counts,
+        retentionDays: currentSettings().query.trashRetentionDays,
+      },
+      () => mysqlApi.previewChanges(job.connectionId, target.database, target.table, changes),
+    )
+    if (!confirmed) return
+    if (!stillCurrent(job)) return
+  }
+  await sendApply(job, false)
 }

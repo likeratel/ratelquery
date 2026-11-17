@@ -18,6 +18,7 @@ const SUMMARY_BY_KIND: Record<AppErrorKind, string> = {
   io: "Couldn't read or write the connection settings file.",
   ssh: "SSH connection failed.",
   ssh_host_key: "The SSH server's host key isn't trusted.",
+  backup_failed: "The deleted rows couldn't be saved to the trash.",
   unknown: "Something went wrong.",
 }
 

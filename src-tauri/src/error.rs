@@ -24,6 +24,10 @@ pub enum AppError {
     /// format.
     #[error("{0}")]
     SshHostKey(String),
+    /// The deleted rows could not be saved to the trash (disk full, permissions, over the size
+    /// limit), so nothing was changed. The message names the cause.
+    #[error("{0}")]
+    BackupFailed(String),
 }
 
 #[derive(Serialize)]
@@ -43,6 +47,7 @@ impl AppError {
             AppError::Io(_) => "io",
             AppError::Ssh(_) => "ssh",
             AppError::SshHostKey(_) => "ssh_host_key",
+            AppError::BackupFailed(_) => "backup_failed",
         }
     }
 }
@@ -79,5 +84,6 @@ mod tests {
         assert_eq!(json["message"], "boom");
         assert_eq!(AppError::Ssh("x".into()).kind(), "ssh");
         assert_eq!(AppError::SshHostKey("x".into()).kind(), "ssh_host_key");
+        assert_eq!(AppError::BackupFailed("x".into()).kind(), "backup_failed");
     }
 }

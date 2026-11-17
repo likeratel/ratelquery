@@ -218,9 +218,33 @@ type QueryResult =
       elapsedMs: number
       reconnected: boolean
       statement: string
+      trashedRows?: number        // DELETE backed up to the trash: rows the entry holds (0: no entry)
+      trashId?: string            // that entry's id, when it holds rows
+    }
+  | {
+      // mysql_query only, always the last item: the DELETE at statementIndex couldn't be
+      // backed up, so it and every later statement did not run (see Trash for DELETE statements)
+      kind: "backup_stopped"
+      statementIndex: number      // 0-based, in the backend's split of the whole script
+      reason: string
+      statement: string
+      elapsedMs: 0
+      resumeToken: string | null  // continue on the same connection, see Trash for DELETE statements
     }
 
-interface QueryOptions { database?: string; maxRows?: number /* default 1000 */ }
+interface QueryOptions {
+  database?: string
+  maxRows?: number                // default 1000
+  startAt?: number                // run from this statement (0-based); default 0; needs resumeToken
+  resumeToken?: string            // from a backup_stopped result
+  deleteBackup?: { skip: number[] } // statement indexes whose DELETE runs without a backup
+}
+interface DeletePlanEntry {
+  index: number                   // 0-based, same split as mysql_query
+  backup: "ok" | "unsupported"
+  reason: string | null           // why not, for "unsupported"
+  statement: string
+}
 ```
 
 Binary-flagged strings: MySQL flags both real binary strings (`BINARY`, `VARBINARY`, `BLOB`
@@ -241,7 +265,8 @@ and sqlx does not expose the collation. For such columns:
 | --- | --- | --- |
 | `mysql_connect` | `connectionId`, `secret?: string` (session-only password, see Secret storage) | `MysqlSessionInfo` |
 | `mysql_disconnect` | `connectionId` | `void` |
-| `mysql_query` | `connectionId`, `sql`, `options: QueryOptions` | `QueryResult[]` – one entry per statement in `sql` (split on `;` outside strings/comments by the backend; `/*! ... */` executable comments count as statements). Only a statement's first result set is returned, even when it is empty (a `CALL` returning several sets); `mysql_export` does the same. Stops at the first failing statement and rejects with `kind: "query"`; the message starts with the MySQL error text. An `options.database` (or default database) that does not exist or is not accessible rejects with `kind: "invalid_input"`. |
+| `mysql_query` | `connectionId`, `sql`, `options: QueryOptions` | `QueryResult[]` – one entry per statement in `sql` (split on `;` outside strings/comments by the backend; `/*! ... */` executable comments count as statements). Only a statement's first result set is returned, even when it is empty (a `CALL` returning several sets); `mysql_export` does the same. Stops at the first failing statement and rejects with `kind: "query"`; the message starts with the MySQL error text. An `options.database` (or default database) that does not exist or is not accessible rejects with `kind: "invalid_input"`. DELETE statements are backed up to the trash and may end the list with a `backup_stopped` item (see Trash for DELETE statements). `startAt` skips the statements before it and needs the `resumeToken` of the stopped run; a `startAt` past the last statement → `invalid_input`. |
+| `mysql_delete_plan` | `sql` | `DeletePlanEntry[]`: one entry per statement that deletes rows, saying whether `mysql_query` can back it up. Runs nothing and needs no session. |
 | `mysql_databases` | `connectionId` | `string[]` (excludes `information_schema`, `performance_schema`, `mysql`, `sys`) |
 | `mysql_schema` | `connectionId`, `database` | `SchemaSnapshot` for that database |
 
@@ -271,11 +296,13 @@ type RowChange =
   | { type: "insert"; values: Record<string, Cell> }
 
 interface ApplyChangesResult { affectedRows: number; elapsedMs: number }
+interface ChangePreview { statements: string[]; warning: string | null } // statements empty when warning is set
 ```
 
 | command | args | returns |
 | --- | --- | --- |
-| `mysql_apply_changes` | `connectionId`, `database`, `table`, `changes: RowChange[]` | `ApplyChangesResult` |
+| `mysql_apply_changes` | `connectionId`, `database`, `table`, `changes: RowChange[]`, `skipBackup?: boolean` (default `false`) | `ApplyChangesResult` |
+| `mysql_preview_changes` | `connectionId`, `database`, `table`, `changes: RowChange[]` | `ChangePreview`: `statements` are what `mysql_apply_changes` would run, in order, with every value written as a MySQL literal. Nothing is executed; only the table definition, `@@SESSION.sql_mode` and the session character sets are read. When `character_set_client` or `character_set_connection` is not literal-safe (see below), `statements` is empty and `warning` explains why; otherwise `warning` is `null`. |
 
 Backend rules: `database`, `table` and every column name must exist in the live schema
 (re-fetched for the call) or the command rejects with `invalid_input`. The frontend sends
@@ -287,6 +314,51 @@ just in letter case; several case-insensitive matches without an exact one rejec
 for the same column reject with `invalid_input`. Identifiers are quoted with
 backticks, values are always bound parameters. An `update` or `delete` whose `WHERE` matches
 anything other than exactly 1 row fails the whole batch with `kind: "query"`.
+
+Trash backup: when the batch has at least one `delete` and `skipBackup` is not `true`, the rows
+are saved to the trash (see Trash) inside the same transaction before anything changes:
+`BEGIN`, read `@@SESSION.sql_mode`, `character_set_client` and `character_set_connection`,
+`SELECT <every column, INVISIBLE ones included> ... WHERE <key> <=> <literal> ... LIMIT 2 FOR UPDATE`
+for each delete (text protocol, decoded like a `mysql_query` result), write the entry as
+`pending`, run every statement, `COMMIT`, mark the entry `committed`. A delete whose key matches
+anything but one row fails here with the same `query` error as the delete itself, before
+anything is saved. More than 10,000 deleted rows, an entry over 50 MiB encoded (checked roughly
+while the rows are read, and exactly before writing), or a trash file
+that cannot be written (disk full, permissions) rolls back and rejects with
+`kind: "backup_failed"`: nothing is changed. A failed statement or a COMMIT that the server
+refused rolls back and removes the entry, except on a table whose engine can't roll back
+(MyISAM and others besides InnoDB and NDB): there a failure after the deletes ran keeps the entry
+as `uncertain` and the `query` message says changes may already be applied instead of
+"rolled back". A connection lost before COMMIT is retried once like
+before; the first attempt's entry is removed first, so there are no duplicates. A connection
+lost during COMMIT keeps the entry as `uncertain`. Updates and inserts are never backed up.
+
+The backup queries write key values as literals, which is only safe when the session reads
+statements in a character set where `'`, `\` and `` ` `` can't be the trailing byte of a
+multi-byte character. The literal-safe sets are `utf8mb4` (the default), `utf8mb3`, `utf8`,
+`latin1`, `ascii` and `binary`. When either session character set is anything else (for example
+after `SET NAMES gbk` in the editor on that pooled connection), no backup query runs: the call
+rolls back and rejects with `backup_failed` naming the character set; applying with
+`skipBackup: true` still works (bound values only).
+
+The backup `SELECT`s run before every statement of the batch, so each `delete` must name a row as
+it was before the batch. The grid ensures this: deletes come first and a deleted row is never
+also updated (`buildRowChanges` in `src/lib/gridEdits.ts`).
+
+Frontend (`applyActiveEdits` in `src/features/query/actions.ts`, behind **Apply** and `Mod+S`):
+a batch with at least one update or delete opens a confirmation (`ApplyConfirmDialog`) with the
+target, the counts, the trash retention when rows are deleted, and `mysql_preview_changes`
+output (a failed preview is shown and Apply stays allowed; a `warning` replaces the statements).
+Inserts alone apply without asking. The answer only counts while the tab still holds the same
+edits and result it was opened for; otherwise nothing is applied and an info toast asks to review
+again. A `backup_failed` rejection opens "Delete without a backup?"; only on yes is the same
+batch sent again with `skipBackup: true`. Other failures show an error toast titled by kind ("Couldn't apply the changes", or "The changes may not have been applied" for `connection`), with the backend message as detail; the title never claims a rollback.
+
+`mysql_preview_changes` builds the statements with the same code as the apply. Values are the
+literals MySQL receives for the bound parameters: `NULL`, integers as digits, decimals and
+temporal and JSON values as quoted strings (they are bound as text), floats in exponent form,
+booleans as `TRUE` / `FALSE`, bytes as `X'..'`. In strings `'` is doubled and, unless `sql_mode`
+has `NO_BACKSLASH_ESCAPES`, `\`, NUL, newline, carriage return and Ctrl-Z are backslash-escaped.
 
 ## Export
 
@@ -496,6 +568,7 @@ interface Settings {
     confirmDestructive: boolean                 // confirm UPDATE/DELETE without WHERE, DROP, TRUNCATE, ALTER, RENAME TABLE; default true
     maxRows: number                             // rows kept in memory per result, default 1000
     outputRetentionDays: number                 // 0..365, default 30; days the Output log (with SQL text) is kept in query-output.json, 0 = session only
+    trashRetentionDays: number                  // 1..365, default 30; days deleted rows stay in the trash (Settings: "Empty trash after (days)")
   }
   dynamo: {
     pageSize: number                            // 1..1000, default 100
@@ -507,7 +580,7 @@ interface Settings {
 | command | args | returns |
 | --- | --- | --- |
 | `settings_get` | – | `Settings` (defaults merged over the file). A `settings.json` that is not a JSON object returns the defaults (logged) and is left as is. |
-| `settings_set` | `settings: Partial<Settings>` (nested groups may be partial too) | saved `Settings`. The input is deep-merged over the stored settings (objects key by key, other values replaced), so a client sends only the fields it changes. A non-object input or an out-of-range merged value → `invalid_input`. Over a corrupt `settings.json` the file is moved to `settings.json.bak` and the input is merged over the defaults. A changed `secretStore` moves the secrets (see Secret storage). |
+| `settings_set` | `settings: Partial<Settings>` (nested groups may be partial too) | saved `Settings`. The input is deep-merged over the stored settings (objects key by key, other values replaced), so a client sends only the fields it changes. A non-object input or an out-of-range merged value → `invalid_input`. Over a corrupt `settings.json` the file is moved to `settings.json.bak` and the input is merged over the defaults. A changed `secretStore` moves the secrets (see Secret storage). A changed `query.trashRetentionDays` purges the trash right away (failures are logged, the save still succeeds). |
 
 ## Workspace
 
@@ -613,6 +686,187 @@ the retention to 0 removes the file, even when the load had failed; the log then
 session only. A deleted connection's
 entries are dropped from the log and from the next save. A failed load leaves saving off for
 that run; a failed save is logged once per failure streak.
+
+## Trash
+
+Rows removed by grid deletes (see MySQL grid edits) are kept on this computer in
+`<app config dir>/trash/`, one file `<id>.json` per apply, for `query.trashRetentionDays` days.
+The folder is owner-only (0700) and the files 0600 on unix; files are replaced atomically. Row
+data is stored as is, so the trash holds a copy of whatever was deleted. Every operation takes
+an advisory lock on `trash/.lock`, so two running app instances never interleave. A trash folder
+that is a symbolic link is refused (`io`, or `backup_failed` for an apply); entry files are read
+only when they are regular files (not links) of at most 50 MiB plus 1 KiB. Errors about a file
+that doesn't parse give only the line and column, never its content.
+
+```ts
+type TrashStatus = "pending" | "committed" | "uncertain"
+type TrashSource = "grid" | "sql"               // "sql" is reserved for DELETE statements (not yet written)
+interface TrashSummary {
+  id: string                                    // lower-case hyphenated UUID v4
+  status: TrashStatus
+  deletedAt: string                             // UTC RFC 3339 with milliseconds
+  connectionId: ConnectionId
+  connectionName: string                        // the name when the rows were deleted
+  database: string
+  table: string
+  source: TrashSource
+  statement: string | null                      // the DELETE statement, for "sql" entries
+  columns: { name: string; typeName: string }[] // as a query result of SELECT * would report them
+  primaryKey: string[]                          // primary key columns in table order
+  rowCount: number
+}
+interface TrashEntry extends Omit<TrashSummary, "rowCount"> {
+  rows: Cell[][]                                // in `columns` order
+}
+```
+
+```ts
+interface RestoreOptions { rowIndexes?: number[] /* distinct, in range */; connectionId?: string }
+interface RestorePreview {
+  statements: string[]           // at most 200
+  total: number
+  warning: string | null         // unsafe character set: statements empty
+  nonTransactionalEngine: string | null
+}
+interface RestoreResult {
+  restoredRows: number
+  remainingRows: number          // 0: the entry was removed
+  warning: string | null         // rows restored but the entry couldn't be updated
+}
+```
+
+Frontend: **Trash** at the bottom of the sidebar (count from `trash_list`, reloaded on window
+focus and after deletes that saved rows, restores, deletes and emptying) opens the Trash panel in
+place of the workspace (`uiStore.trashOpen`; Close or Esc). Restoring asks for the target MySQL
+connection (default the entry's; nothing preselected when that connection no longer exists),
+connects when needed, then shows the target connection (highlighted when it isn't the entry's),
+the `trash_restore_preview` statements and a warning for engines that can't roll back; Restore
+stays disabled while they load and while a restore runs. Failure toasts are titled by kind and
+engine (never "Nothing was restored" for `connection` or a non-transactional table). Delete
+permanently and Empty trash confirm first. While the panel is open, Mod+W closes it, shortcuts
+that act on the active tab do nothing, and opening or picking a tab closes it. The list reloads on
+focus (the open entry only when its summary changed) and after a retention change; once a day a
+focus also calls `trash_purge`.
+
+Both backups read FLOAT columns as `col + 0e0` (the stored value as a double, not the 6-digit
+text), keeping the column name and the `FLOAT` type, so restored values are exactly the old
+ones.
+
+`pending`: written before the delete ran, its transaction not finished. `committed`: the delete
+was committed. `uncertain`: the connection dropped during COMMIT, or the app stopped while the
+entry was pending, so the rows may or may not still be in the table.
+
+| command | args | returns |
+| --- | --- | --- |
+| `trash_list` | – | `TrashSummary[]`, newest first. Files that don't parse (or name another id) are skipped and logged. |
+| `trash_get` | `id` | `TrashEntry`. Unknown id → `not_found`; an id that is not a lower-case hyphenated UUID → `invalid_input`; an unreadable file → `io`. |
+| `trash_delete` | `id` | `void`. Unknown id → `not_found`; malformed id, or a `pending` entry (its delete is still running) → `invalid_input`. A file that doesn't parse is removed. |
+| `trash_empty` | – | `number` removed. Removes every entry except `pending` ones, including files that don't parse. |
+| `trash_restore` | `id`, `options?: RestoreOptions` | `RestoreResult`. Inserts the rows (all, or `rowIndexes`) through `connectionId` (default: the entry's own), one INSERT per row built like a grid insert against the live table, in one transaction. Generated columns are left out, columns added since get their defaults, INVISIBLE columns are included by name. A saved column the table no longer has → `invalid_input` naming it; a pending entry, or an entry already being restored → `invalid_input`; a connection that isn't open → `connection` (the frontend connects first); a temporary table of the same name hiding the table on that connection → `invalid_input`; a failing row (duplicate key, ...) → `query` "row N could not be restored", nothing restored, except on a table whose engine can't roll back (MyISAM, ...), where the message says earlier rows may already be restored and the entry is kept. On success the restored rows leave the entry (the entry goes when none are left, rewritten atomically otherwise; an entry deleted or purged meanwhile is fine). A COMMIT whose outcome is unknown → `connection`, the entry kept. |
+| `trash_restore_preview` | `id`, `options?: RestoreOptions` | `RestorePreview`: the first 200 INSERTs `trash_restore` would run and their `total`, with the same literal and character set rules as `mysql_preview_changes`, and `nonTransactionalEngine` when the table can't roll back. Runs nothing. |
+| `trash_purge` | – | `number` removed. Removes entries whose `deletedAt` is more than `query.trashRetentionDays` days ago, except `pending` ones; entries with an unreadable `deletedAt`, unreadable files and files that can't be removed are kept (logged) and the purge goes on. |
+
+At startup, before any command runs, the app tries to lock `trash/.instance` without waiting
+and keeps it locked while it runs. Only the instance that got it turns entries still `pending`
+into `uncertain` and removes leftover temp files (a second running instance leaves them alone,
+since they may belong to the first one's running delete; logged). Then the trash is purged.
+Every trash command creates the folder if it is missing, reads included. An entry that can't be changed is logged and
+skipped; failures never stop the app. Purging parses every entry file (rows are skipped, not
+decoded), so a very full trash makes startup slower.
+
+`AppErrorKind` gains `"backup_failed"`: the deleted rows could not be saved to the trash, so
+nothing was changed. The message names the cause (row or size limit, disk full, permissions).
+
+## Trash for DELETE statements
+
+`mysql_query` backs up the rows of each DELETE it runs, unless the statement's index is in
+`options.deleteBackup.skip`. Backed up is only the single-table form
+`DELETE [LOW_PRIORITY] [QUICK] FROM [db.]tbl [[AS] alias] [PARTITION (...)] [WHERE ...]
+[ORDER BY ...] [LIMIT n]`, where the part after the table has, at the top level, only those
+three clauses in that order and `LIMIT` is one number. For it the backend, on the script's
+connection:
+
+1. stops when the session character set isn't utf8mb4/utf8mb3/utf8/latin1/ascii/binary, when
+   `sql_mode` has `NO_BACKSLASH_ESCAPES` and the statement has a `\` (the app's split could
+   differ from the server's), when `@@autocommit` is 0, or when a transaction is open (found by
+   re-setting the next transaction's isolation level to the current one, read from
+   `transaction_isolation` or else `tx_isolation`; the server refuses that inside a
+   transaction), since its `BEGIN` would otherwise commit the user's work;
+2. stops when the DELETE's `LIMIT` is over 10,000, when no database is selected, when the table
+   isn't in `information_schema` (a temporary table, or one that doesn't exist: run without a
+   backup, the server gives its own error), when it is a view, when a temporary table of the
+   same name hides it (`SHOW CREATE TABLE`), or when its engine isn't InnoDB or NDB;
+3. stops when the table has no primary key and the statement has a subquery, a `LIMIT`, a
+   variable or a function whose value changes (`NOW()`, `RAND()`, `UUID()`,
+   `CURRENT_TIMESTAMP`, `LAST_INSERT_ID()`, ...), because the rows read and the rows deleted
+   could then differ unseen;
+4. `BEGIN`, then `SELECT <every column, INVISIBLE ones included> FROM [db.]tbl [PARTITION
+   (...)] [[AS] alias] <the rest of the statement as written> [LIMIT 10001] FOR UPDATE` over
+   the text protocol (the `LIMIT` only when the DELETE has none, so a too-large delete stops
+   after 10,001 rows), decoded like a query result; more than 10,000 rows, about 50 MiB, or more
+   than one result set stops here;
+5. writes the entry as `pending` (`source: "sql"`, `statement` the DELETE without leading
+   comments, at most 16 KiB, cut with a marker; `trash_list` shows its first 200 characters),
+   `database` its qualifier or `DATABASE()`, `table` as the server spells it, `primaryKey`); a
+   DELETE that matches no rows writes no entry (`trashedRows: 0`);
+6. with a primary key, first checks that the keys written as literals find exactly the rows
+   read (in batches of 500; a FLOAT key or a character set mismatch fails this and stops), then
+   runs the DELETE as written and checks it removed exactly the rows read: the same number and,
+   with a primary key, none of their keys left. Otherwise it rolls back, removes the entry and
+   stops. A backup query the server can't parse (MySQL error 1064) stops too, so running without
+   a backup shows the DELETE's own error;
+7. `COMMIT` and marks the entry `committed`; a connection lost during COMMIT keeps it as
+   `uncertain` and rejects with `connection`.
+
+The backup query copies the user's text, so no value of it is written as a literal by the app.
+
+Not backed up (`unsupported` in `mysql_delete_plan`, with the reason): DELETEs over several
+tables (comma, `JOIN`, `USING`, `DELETE t FROM ...`), `WITH ... DELETE`, `DELETE IGNORE`,
+`RETURNING`, other top-level clauses (`GROUP BY`, `HAVING`, `UNION`, `INTO`, `FOR`, `LOCK`,
+`OFFSET`, `LIMIT a, b`, ...), unbalanced parentheses, `OUTFILE` / `DUMPFILE` anywhere, a call
+to anything but a known deterministic built-in without side effects (a stored function, `SLEEP`,
+`GET_LOCK`, `BENCHMARK`, ...: the backup query would run it a second time), a DELETE with an executable
+comment (`/*! */` or MariaDB's `/*M! */`, also with the version digits run into a keyword),
+`EXPLAIN ANALYZE DELETE`, any other statement that mentions DELETE outside strings and comments,
+and every DELETE of a script that controls transactions or table locks (`BEGIN`,
+`START TRANSACTION`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`, `XA`, `SET ... autocommit`,
+`SET ... TRANSACTION`, `LOCK` / `UNLOCK TABLES`, also inside an executable comment). Statements starting with `CREATE`, `ALTER`,
+`DROP`, `SHOW`, `GRANT`, `REVOKE`, and `EXPLAIN` / `DESCRIBE` not followed directly by
+`ANALYZE`, are not deletes. As in the server, `--` starts a comment before any byte up to 0x20
+and vertical tab is whitespace. Table definitions are looked up once per run and looked up again
+after any statement that is neither a read nor a DELETE (DDL may change the columns).
+Never backed up at all: rows removed by `ON DELETE CASCADE` or by triggers, inside stored
+procedures (`CALL`), stored functions or `PREPARE` / `EXECUTE`, and `REPLACE`, `TRUNCATE` and
+`DROP`. Known gaps: `LOCK TABLES` left over on a pooled connection from an earlier run is not
+seen (our `BEGIN` releases it), and on a server that doesn't refuse `SET TRANSACTION` inside a
+transaction (error 1568) an open transaction isn't seen either.
+
+When a DELETE can't be backed up and is not in `skip`, it does not run: the results of the
+statements before it are returned, followed by a `backup_stopped` item, and nothing after it
+runs. Its connection is kept out of the pool for 5 minutes (one per session; a newer stop
+replaces it) under `resumeToken`, so `startAt` + `resumeToken` continue on it with the same
+session state (variables, `SET SESSION`, `USE`, `FOREIGN_KEY_CHECKS`). The token is tied to the
+script text and the statement it stopped at: another text or `startAt` rejects with
+`invalid_input` and leaves it kept. A token works once;
+`startAt` above 0 without one, or with one that expired, was released or whose connection was
+lost, rejects with `invalid_input` asking to run the script again from the start. A continued
+run never moves to another connection: a lost connection rejects with `connection`.
+
+| command | args | returns |
+| --- | --- | --- |
+| `mysql_release_resume` | `connectionId`, `token` | `void`. Frees the kept connection now (the user didn't continue, or the tab closed). Unknown tokens and closed sessions are fine. |
+
+Frontend (`runGuarded` in `src/features/query/actions.ts`): after the destructive-statement
+check, a MySQL script whose text contains the word DELETE goes to `mysql_delete_plan` first (if
+that fails, nothing runs). Unsupported DELETEs are listed in one dialog (statement number, its
+first line, which opens to the whole statement, and the reason); "Run without backup" sends
+their indexes as `skip`, Cancel runs nothing. A `backup_stopped` result opens "Delete without a
+backup?"; on yes the same text runs again with `startAt` at that statement, its `resumeToken`
+and that index added to `skip`, and its results are appended to the tab's (earlier statements
+never run twice; a later stop asks again). On no, or when the tab closed meanwhile, the kept
+connection is released (also when a tab closes); on no a warning toast says where it stopped.
+When continuing fails, the earlier results stay, the error shows in the tab and a toast says it
+couldn't continue. A backed-up DELETE's result shows "N rows moved to Trash".
 
 ## Secret storage
 

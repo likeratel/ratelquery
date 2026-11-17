@@ -8,4 +8,5 @@ pub mod query_output;
 pub mod settings;
 pub mod ssh;
 pub mod system;
+pub mod trash;
 pub mod workspace;

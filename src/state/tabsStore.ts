@@ -11,9 +11,17 @@ import {
 } from "../lib/gridEdits"
 import type { DynamoTab } from "../lib/dynamoTabs"
 import { normalizeError } from "../lib/ipc"
-import { mysqlApi, type ApplyChangesResult, type QueryResult, type RowChange } from "../lib/mysql"
+import {
+  mysqlApi,
+  type ApplyChangesOptions,
+  type ApplyChangesResult,
+  type BackupStoppedResult,
+  type QueryResult,
+  type RowChange,
+} from "../lib/mysql"
 import {
   activateTab,
+  appendRun,
   cancelCloseTab,
   closeTab,
   confirmCloseTab,
@@ -45,17 +53,57 @@ import {
   slotGroupTab,
   slotTab,
 } from "../lib/tabGroups"
+import { splitBackupStop } from "../lib/sqlTrash"
 import { mergeRestoredTabs } from "../lib/workspace"
 import { useAthenaStore } from "./athenaStore"
 import { runAthenaStatements } from "./athenaRun"
 import { logRunFailure, logRunResults } from "./queryOutputStore"
 import { knownDatabases, useSessionsStore } from "./sessionsStore"
 import { currentSettings } from "./settingsStore"
+import { useTrashStore } from "./trashStore"
+import { useUiStore } from "./uiStore"
 
 /** Row cap per statement, from Settings › Queries › Max rows (backend default 1000). */
 export const maxRows = (): number => currentSettings().query.maxRows
 
-export type RunOutcome = "ran" | "failed" | "empty" | "busy" | "pending-edits"
+export type RunOutcome = "ran" | "failed" | "empty" | "busy" | "pending-edits" | "backup-stopped"
+
+/** How a MySQL run treats DELETE statements and where it starts (see `mysql_query`). */
+export interface RunOptions {
+  /** Statement indexes (whole script) whose DELETE runs without a trash backup. */
+  skipBackup?: readonly number[]
+  /** Start at this statement of the script; earlier ones are skipped. Needs `resumeToken`. */
+  startAt?: number
+  /** Continue on the connection the stopped run kept (its `resumeToken`). */
+  resumeToken?: string
+  /** Add the results to the tab's current ones instead of replacing them (a continued run). */
+  append?: boolean
+}
+
+/** The backup stop of each tab's last run that ended in `backup-stopped`. */
+const backupStops = new Map<string, { connectionId: ConnectionId; stop: BackupStoppedResult }>()
+
+/** The stop of the tab's last `backup-stopped` run, once; null when there is none. */
+export function takeBackupStop(tabId: string): BackupStoppedResult | null {
+  const entry = backupStops.get(tabId)
+  backupStops.delete(tabId)
+  return entry?.stop ?? null
+}
+
+/** Frees the connection a stopped run kept for continuing; best effort. */
+export function releaseResume(connectionId: ConnectionId, stop: BackupStoppedResult): void {
+  if (!stop.resumeToken) return
+  mysqlApi.releaseResume(connectionId, stop.resumeToken).catch(() => {
+    // Nothing to report: the backend frees a kept connection after 5 minutes anyway.
+  })
+}
+
+/** Drops the tab's pending stop (the tab closed) and frees its kept connection. */
+export function forgetBackupStop(tabId: string): void {
+  const entry = backupStops.get(tabId)
+  backupStops.delete(tabId)
+  if (entry) releaseResume(entry.connectionId, entry.stop)
+}
 
 interface TabsStore extends TabsState {
   /** Opens a query tab; `engine` defaults to MySQL. */
@@ -97,8 +145,11 @@ interface TabsStore extends TabsState {
    * belong to rows read from the current database.
    */
   setDatabase: (id: string, database: string | null) => boolean
-  /** Runs `sql` (the whole editor text when omitted) in the tab. */
-  run: (id: string, sql?: string) => Promise<RunOutcome>
+  /**
+   * Runs `sql` (the whole editor text when omitted) in the tab. A MySQL run whose DELETE could
+   * not be backed up ends with `backup-stopped`; `takeBackupStop` then says where and why.
+   */
+  run: (id: string, sql?: string, options?: RunOptions) => Promise<RunOutcome>
   /**
    * Stops a running Athena tab: the execution running now is cancelled and later statements
    * never start. Rejects with the AppError when Athena refused to stop it.
@@ -116,10 +167,23 @@ interface TabsStore extends TabsState {
    * Returns null without sending anything when there is nothing to apply or an apply is
    * already in flight for the tab.
    */
-  applyEdits: (id: string, index: number, target: EditTarget) => Promise<ApplyChangesResult | null>
+  /** `options.skipBackup` deletes without saving the rows to the trash first. */
+  applyEdits: (
+    id: string,
+    index: number,
+    target: EditTarget,
+    options?: ApplyChangesOptions,
+  ) => Promise<ApplyChangesResult | null>
 }
 
 const newId = () => crypto.randomUUID()
+
+/** Opening or picking a tab shows the tabs again, so the Trash panel and its entry close. */
+function leaveTrash(): void {
+  if (!useUiStore.getState().trashOpen) return
+  useUiStore.getState().closeTrash()
+  void useTrashStore.getState().select(null)
+}
 
 /** Runs whose cancel was requested, as `${tabId}:${runId}`. */
 const cancelledRuns = new Set<string>()
@@ -163,16 +227,20 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     target: EditTarget,
     statement: string,
     changes: RowChange[],
+    applyOptions: ApplyChangesOptions,
   ): Promise<ApplyChangesResult> => {
     const applied = await mysqlApi.applyChanges(
       connectionId,
       target.database,
       target.table,
       changes,
+      applyOptions,
     )
     const options = { maxRows: maxRows(), database: target.database }
     try {
-      const [rerun] = await mysqlApi.query(connectionId, statement, options)
+      const [rerun] = splitBackupStop(
+        await mysqlApi.query(connectionId, statement, options),
+      ).results
       if (rerun) {
         patchTab(id, (t) => replaceResult(t, index, rerun))
         noteReconnects(connectionId, [rerun])
@@ -225,12 +293,14 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     ...INITIAL_TABS,
 
     open: (connectionId, database, engine = "mysql") => {
+      leaveTrash()
       const id = newId()
       set((state) => openTab(state, { id, connectionId, database, engine }))
       return id
     },
 
     openDynamo: (connectionId) => {
+      leaveTrash()
       const id = newId()
       set((state) => openDynamoTab(state, { id, connectionId }))
       return id
@@ -239,6 +309,7 @@ export const useTabsStore = create<TabsStore>((set, get) => {
     updateDynamo: (id, update) => set((state) => updateDynamoTab(state, id, update)),
 
     openTable: (connectionId, database, table) => {
+      leaveTrash()
       const id = newId()
       set((state) => openTableTab(state, { id, connectionId, database, table }))
       return get().activeId ?? id
@@ -260,25 +331,34 @@ export const useTabsStore = create<TabsStore>((set, get) => {
 
     cancelClose: () => set((state) => cancelCloseTab(state)),
 
-    activate: (id) => set((state) => activateTab(state, id)),
+    activate: (id) => {
+      leaveTrash()
+      set((state) => activateTab(state, id))
+    },
 
-    activateConnection: (connectionId) =>
+    activateConnection: (connectionId) => {
+      leaveTrash()
       set((state) => {
         const id = rememberedTab(state, connectionId)
         return id ? activateTab(state, id) : state
-      }),
+      })
+    },
 
-    activateTabSlot: (slot) =>
+    activateTabSlot: (slot) => {
+      leaveTrash()
       set((state) => {
         const id = slotTab(state, slot)
         return id ? activateTab(state, id) : state
-      }),
+      })
+    },
 
-    activateConnectionSlot: (slot) =>
+    activateConnectionSlot: (slot) => {
+      leaveTrash()
       set((state) => {
         const id = slotGroupTab(state, slot)
         return id ? activateTab(state, id) : state
-      }),
+      })
+    },
 
     requestCloseGroup: (connectionId) =>
       set((state) =>
@@ -307,7 +387,7 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       return true
     },
 
-    run: async (id, sql) => {
+    run: async (id, sql, runOptions = {}) => {
       const tab = findTab(id)
       if (!tab) return "empty"
       if (tab.running) return "busy"
@@ -321,15 +401,34 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       // Without a tab database the statement runs in the session's current one. Send it
       // explicitly, so the backend can't run in another database than the one recorded here.
       const session = useSessionsStore.getState().sessions[tab.connectionId]
-      const ranDatabase = tab.database ?? session?.currentDatabase ?? null
+      // A continued run stays in the database the run it continues used.
+      const ranDatabase = runOptions.append
+        ? tab.ranDatabase
+        : (tab.database ?? session?.currentDatabase ?? null)
       const startedAt = Date.now()
+      // A stop nobody continued: free the connection it kept.
+      forgetBackupStop(id)
       try {
-        const options = { maxRows: maxRows(), ...(ranDatabase ? { database: ranDatabase } : {}) }
-        const results = await mysqlApi.query(tab.connectionId, text, options)
-        patchTab(id, (t) => (isCurrent(t) ? finishRun(t, text, results, ranDatabase) : t))
+        const options = {
+          maxRows: maxRows(),
+          ...(ranDatabase ? { database: ranDatabase } : {}),
+          ...(runOptions.skipBackup?.length
+            ? { deleteBackup: { skip: [...runOptions.skipBackup] } }
+            : {}),
+          ...(runOptions.startAt ? { startAt: runOptions.startAt } : {}),
+          ...(runOptions.resumeToken ? { resumeToken: runOptions.resumeToken } : {}),
+        }
+        const response = await mysqlApi.query(tab.connectionId, text, options)
+        const { results, stop } = splitBackupStop(response)
+        const finish = runOptions.append ? appendRun : finishRun
+        patchTab(id, (t) => (isCurrent(t) ? finish(t, text, results, ranDatabase) : t))
         logRunResults(tab.connectionId, id, results)
         noteReconnects(tab.connectionId, results)
         loadEditSchemas(tab.connectionId, results, ranDatabase)
+        if (stop) {
+          backupStops.set(id, { connectionId: tab.connectionId, stop })
+          return "backup-stopped"
+        }
         return "ran"
       } catch (raw) {
         const error = normalizeError(raw)
@@ -362,7 +461,7 @@ export const useTabsStore = create<TabsStore>((set, get) => {
 
     discardEdits: (id, index) => patchTab(id, (tab) => setTabEdits(tab, index, EMPTY_EDITS)),
 
-    applyEdits: async (id, index, target) => {
+    applyEdits: async (id, index, target, options = {}) => {
       const tab = findTab(id)
       const result = tab?.results[index]
       const edits = tab?.edits[index]
@@ -374,7 +473,15 @@ export const useTabsStore = create<TabsStore>((set, get) => {
       if (changes.length === 0) return null
       patchTab(id, (t) => ({ ...t, applying: true }))
       try {
-        return await sendEdits(id, tab.connectionId, index, target, result.statement, changes)
+        return await sendEdits(
+          id,
+          tab.connectionId,
+          index,
+          target,
+          result.statement,
+          changes,
+          options,
+        )
       } finally {
         patchTab(id, (t) => ({ ...t, applying: false }))
       }

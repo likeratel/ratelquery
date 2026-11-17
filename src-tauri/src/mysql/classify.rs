@@ -4,8 +4,10 @@
 //! This is a tokenizer, not a parser. It skips string literals and comments and only looks at
 //! keywords at parenthesis depth 0, erring on the side of "not a read" and "unknown table".
 
+use super::splitter::{is_sql_space, starts_line_comment};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Token {
+pub(super) enum Token {
     /// Unquoted word, upper-cased, and its original text.
     Word(String, String),
     /// Backtick-quoted identifier, unescaped.
@@ -13,6 +15,16 @@ enum Token {
     /// String literal (content is irrelevant here).
     Str,
     Punct(char),
+}
+
+/// A token with its byte range in the text, and whether it sits inside a `/*! ... */`
+/// executable comment (which the server runs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Spanned {
+    pub token: Token,
+    pub start: usize,
+    pub end: usize,
+    pub in_exec: bool,
 }
 
 fn skip_quoted(bytes: &[u8], start: usize, quote: u8) -> usize {
@@ -52,53 +64,103 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b >= 0x80
 }
 
-fn tokenize(sql: &str) -> Vec<Token> {
+/// Length of the executable-comment opener at `i` (`/*!` or MariaDB's `/*M!`, with the version
+/// digits after it), if one starts there.
+fn exec_opener(bytes: &[u8], i: usize) -> Option<usize> {
+    let head = if bytes.get(i + 2) == Some(&b'!') {
+        3
+    } else if bytes.get(i + 2) == Some(&b'M') && bytes.get(i + 3) == Some(&b'!') {
+        4
+    } else {
+        return None;
+    };
+    let digits =
+        bytes[i + head..].iter().take(MAX_VERSION_DIGITS).take_while(|b| b.is_ascii_digit());
+    Some(head + digits.count())
+}
+
+/// MySQL versions in `/*!50700 ... */` have 5 or 6 digits.
+const MAX_VERSION_DIGITS: usize = 6;
+
+/// Every token of `sql` with its span, in text order. The body of an executable comment is
+/// tokenized like the rest of the text, with `in_exec` set, until its `*/` (or the end of the
+/// text when unterminated); an opener inside one does not nest. Each opener adds an `in_exec`
+/// `!` marker. Other comments are skipped.
+/// One pass, no recursion.
+pub(super) fn tokenize_spans(sql: &str) -> Vec<Spanned> {
     let bytes = sql.as_bytes();
-    let mut tokens = Vec::new();
+    let mut out = Vec::new();
+    let mut in_exec = false;
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
+        let mut push = |token, start, end| out.push(Spanned { token, start, end, in_exec });
         match b {
             b'\'' | b'"' => {
+                let start = i;
                 i = skip_quoted(bytes, i, b);
-                tokens.push(Token::Str);
+                push(Token::Str, start, i);
             }
             b'`' => {
                 let end = skip_quoted(bytes, i, b'`');
                 // `end` is past the closing backtick, or the end of an unterminated identifier.
                 let closed = end > i + 1 && bytes.get(end - 1) == Some(&b'`');
                 let inner = &sql[i + 1..if closed { end - 1 } else { end }];
-                tokens.push(Token::Quoted(inner.replace("``", "`")));
+                push(Token::Quoted(inner.replace("``", "`")), i, end);
                 i = end;
             }
             b'#' => i = skip_line(bytes, i),
-            b'-' if bytes.get(i + 1) == Some(&b'-')
-                && bytes.get(i + 2).is_none_or(|c| c.is_ascii_whitespace()) =>
-            {
-                i = skip_line(bytes, i);
+            b'-' if starts_line_comment(bytes, i) => i = skip_line(bytes, i),
+            b'*' if in_exec && bytes.get(i + 1) == Some(&b'/') => {
+                in_exec = false;
+                i += 2;
             }
-            b'/' if bytes.get(i + 1) == Some(&b'*') => i = skip_block(bytes, i),
+            b'/' if bytes.get(i + 1) == Some(&b'*') => match exec_opener(bytes, i) {
+                Some(len) => {
+                    // A marker, so even an empty or unterminated opener is seen.
+                    out.push(Spanned {
+                        token: Token::Punct('!'),
+                        start: i,
+                        end: i + len,
+                        in_exec: true,
+                    });
+                    in_exec = true;
+                    i += len;
+                }
+                None => i = skip_block(bytes, i),
+            },
             b if is_word_byte(b) => {
                 let start = i;
                 while i < bytes.len() && is_word_byte(bytes[i]) {
                     i += 1;
                 }
-                tokens.push(Token::Word(
-                    sql[start..i].to_ascii_uppercase(),
-                    sql[start..i].to_string(),
-                ));
+                push(
+                    Token::Word(sql[start..i].to_ascii_uppercase(), sql[start..i].to_string()),
+                    start,
+                    i,
+                );
             }
-            b if b.is_ascii_whitespace() => i += 1,
+            b if is_sql_space(b) => i += 1,
             other => {
-                tokens.push(Token::Punct(char::from(other)));
+                push(Token::Punct(char::from(other)), i, i + 1);
                 i += 1;
             }
         }
     }
-    tokens
+    out
 }
 
-fn is_word(token: Option<&Token>, word: &str) -> bool {
+/// Byte offset of the first token of `sql` (past leading whitespace and comments), or 0.
+pub(super) fn first_token_start(sql: &str) -> usize {
+    tokenize_spans(sql).first().map_or(0, |s| s.start)
+}
+
+/// The tokens outside executable comments, which is all the read/write checks look at.
+fn tokenize(sql: &str) -> Vec<Token> {
+    tokenize_spans(sql).into_iter().filter(|s| !s.in_exec).map(|s| s.token).collect()
+}
+
+pub(super) fn is_word(token: Option<&Token>, word: &str) -> bool {
     matches!(token, Some(Token::Word(w, _)) if w == word)
 }
 
@@ -125,11 +187,16 @@ fn writes_file(tokens: &[Token]) -> bool {
     })
 }
 
-/// True when re-running `statement` on a new connection cannot apply a change twice:
+/// True when re-running `statement` on a new connection cannot apply a change twice (never
+/// when it holds an executable comment):
 /// `SELECT`, `SHOW`, `EXPLAIN`, `DESCRIBE`/`DESC`, `WITH`, `TABLE` and `VALUES`, unless the text
 /// also contains a data-changing statement (`WITH ... DELETE`, `EXPLAIN ANALYZE UPDATE`) or
 /// writes a file (`SELECT ... INTO OUTFILE`).
 pub fn is_read_statement(statement: &str) -> bool {
+    // The server runs `/*! ... */` bodies, which this check can't see into reliably.
+    if tokenize_spans(statement).iter().any(|s| s.in_exec) {
+        return false;
+    }
     let tokens = tokenize(statement);
     let first = tokens.iter().position(|t| *t != Token::Punct('('));
     let Some(Token::Word(starter, _)) = first.and_then(|i| tokens.get(i)) else { return false };
@@ -299,6 +366,48 @@ mod tests {
             infer_base_table("SELECT * FROM `표"),
             Some(BaseTable { database: None, table: "표".into() })
         );
+    }
+
+    #[test]
+    fn executable_comments_are_flat_and_linear() {
+        let nested = "/*!".repeat(100_000);
+        let start = std::time::Instant::now();
+        let tokens = tokenize_spans(&format!("SELECT 1 {nested} x"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
+        assert_eq!(tokens.len(), 3 + 100_000, "a marker per opener");
+        assert!(tokens.last().unwrap().in_exec && !tokens[1].in_exec);
+        let deep = format!("SELECT {}", "/*! a ".repeat(50_000));
+        assert!(!is_read_statement(&deep));
+        let spans = tokenize_spans("/*!50000DELETE*/ x /*M!100000 y */ z /* plain */ w");
+        let words: Vec<(String, bool)> = spans
+            .iter()
+            .filter_map(|s| match &s.token {
+                Token::Word(w, _) => Some((w.clone(), s.in_exec)),
+                Token::Punct('!') => None,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert!(tokenize_spans("SELECT 1 /*!*/").iter().any(|s| s.in_exec));
+        let expected = [("DELETE", true), ("X", false), ("Y", true), ("Z", false), ("W", false)];
+        assert_eq!(words, expected.map(|(w, e)| (w.to_string(), e)));
+    }
+
+    #[test]
+    fn whitespace_and_dash_comments_match_the_server() {
+        // `--` before any byte up to 0x20 starts a comment; VT is whitespace.
+        assert!(is_read_statement("SELECT 1 --\x01; DELETE FROM t"));
+        assert!(is_read_statement("SELECT 1 --\x0bDELETE FROM t"));
+        assert!(is_read_statement("SELECT 1 --\x7fDELETE FROM t"), "DEL too");
+        assert!(!is_read_statement("SELECT 1 --x DELETE FROM t"), "`--x` is not a comment");
+        let words = tokenize("\x0bSELECT\x0b1");
+        assert_eq!(words.len(), 2);
+    }
+
+    #[test]
+    fn executable_comments_are_not_reads() {
+        assert!(!is_read_statement("SELECT 1 /*! , (DELETE) */"));
+        assert!(!is_read_statement("/*!40000 SELECT 1 */"));
+        assert!(is_read_statement("SELECT 1 /* plain */"));
     }
 
     #[test]

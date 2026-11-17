@@ -57,7 +57,7 @@ async fn applies_changes_atomically_with_single_row_guarantee() {
         },
         RowChange::Delete { key: cells(&[("id", int(3))]) },
     ];
-    let result = apply_changes(&c.session, db.database(), &t, &ok).await.unwrap();
+    let result = apply_changes(&c.session, db.database(), &t, &ok, None).await.unwrap();
     assert_eq!(result.affected_rows, 4);
     let after = query(&c.session, &format!("SELECT price FROM `{t}` WHERE id = 1")).await;
     assert_eq!(rows(&after[0]).rows[0][0], Cell::Decimal("1.50".into()));
@@ -67,7 +67,7 @@ async fn applies_changes_atomically_with_single_row_guarantee() {
         RowChange::Insert { values: cells(&[("name", Cell::Str("rolled back".into()))]) },
         RowChange::Delete { key: cells(&[("id", int(999))]) },
     ];
-    let err = apply_changes(&c.session, db.database(), &t, &missing).await.unwrap_err();
+    let err = apply_changes(&c.session, db.database(), &t, &missing, None).await.unwrap_err();
     assert_eq!(err.kind(), "query");
     assert_eq!(count(&c.session, &t).await, int(3), "insert was rolled back");
 
@@ -76,7 +76,7 @@ async fn applies_changes_atomically_with_single_row_guarantee() {
         set: cells(&[("name", Cell::Str("x".into()))]),
     }];
     assert_eq!(
-        apply_changes(&c.session, db.database(), &t, &many).await.unwrap_err().kind(),
+        apply_changes(&c.session, db.database(), &t, &many, None).await.unwrap_err().kind(),
         "query"
     );
     let names = query(&c.session, &format!("SELECT name FROM `{t}` WHERE id = 1")).await;
@@ -84,15 +84,15 @@ async fn applies_changes_atomically_with_single_row_guarantee() {
 
     let bad_column = vec![RowChange::Delete { key: cells(&[("nope", int(1))]) }];
     assert_eq!(
-        apply_changes(&c.session, db.database(), &t, &bad_column).await.unwrap_err().kind(),
+        apply_changes(&c.session, db.database(), &t, &bad_column, None).await.unwrap_err().kind(),
         "invalid_input"
     );
     assert_eq!(
-        apply_changes(&c.session, db.database(), "no_table", &ok).await.unwrap_err().kind(),
+        apply_changes(&c.session, db.database(), "no_table", &ok, None).await.unwrap_err().kind(),
         "invalid_input"
     );
     assert_eq!(
-        apply_changes(&c.session, "no_db", &t, &ok).await.unwrap_err().kind(),
+        apply_changes(&c.session, "no_db", &t, &ok, None).await.unwrap_err().kind(),
         "invalid_input"
     );
 }

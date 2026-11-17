@@ -53,13 +53,47 @@ export interface ExecResult {
   elapsedMs: number
   reconnected: boolean
   statement: string
+  /** A DELETE backed up to the trash: how many rows the entry holds. */
+  trashedRows?: number
+  /** A DELETE backed up to the trash: the entry id (absent when it deleted no rows). */
+  trashId?: string
 }
 
 export type QueryResult = RowsResult | ExecResult
 
+/**
+ * Last item of a `mysql_query` response when the DELETE at `statementIndex` (whole script)
+ * couldn't be backed up: it and later statements did not run.
+ */
+export interface BackupStoppedResult {
+  kind: "backup_stopped"
+  statementIndex: number
+  reason: string
+  statement: string
+  elapsedMs: number
+  /** Continues the script on the same connection (`QueryOptions.resumeToken`) for 5 minutes. */
+  resumeToken: string | null
+}
+
+export type QueryResponseItem = QueryResult | BackupStoppedResult
+
 export interface QueryOptions {
   database?: string
   maxRows?: number
+  /** Run from this statement of the script (backend split order); needs `resumeToken`. */
+  startAt?: number
+  /** The `resumeToken` of the `backup_stopped` result this run continues. */
+  resumeToken?: string
+  /** Statement indexes (whole script) whose DELETE runs without a trash backup. */
+  deleteBackup?: { skip: number[] }
+}
+
+/** `mysql_delete_plan` entry for a statement that deletes rows. */
+export interface DeletePlanEntry {
+  index: number
+  backup: "ok" | "unsupported"
+  reason: string | null
+  statement: string
 }
 
 export interface SchemaColumn {
@@ -125,6 +159,18 @@ export type RowChange =
   | { type: "delete"; key: Record<string, Cell> }
   | { type: "insert"; values: Record<string, Cell> }
 
+export interface ApplyChangesOptions {
+  /** Don't save the deleted rows to the trash first. Default false. */
+  skipBackup?: boolean
+}
+
+export interface ChangePreview {
+  /** The statements `applyChanges` would run, values written as MySQL literals. */
+  statements: string[]
+  /** Set when the session's character set may make the literals read differently than shown. */
+  warning: string | null
+}
+
 export interface ApplyChangesResult {
   affectedRows: number
   elapsedMs: number
@@ -160,19 +206,43 @@ export const mysqlApi = {
     }),
   disconnect: (connectionId: ConnectionId) => ipc<void>("mysql_disconnect", { connectionId }),
   query: (connectionId: ConnectionId, sql: string, options: QueryOptions = {}) =>
-    ipc<QueryResult[]>("mysql_query", { connectionId, sql, options }),
+    ipc<QueryResponseItem[]>("mysql_query", { connectionId, sql, options }),
+  /** Which statements of `sql` delete rows, and whether each can be backed up. Runs nothing. */
+  deletePlan: (sql: string) => ipc<DeletePlanEntry[]>("mysql_delete_plan", { sql }),
+  /** Frees the connection a stopped run kept for continuing (the user didn't continue). */
+  releaseResume: (connectionId: ConnectionId, token: string) =>
+    ipc<void>("mysql_release_resume", { connectionId, token }),
   databases: (connectionId: ConnectionId) => ipc<string[]>("mysql_databases", { connectionId }),
   schema: (connectionId: ConnectionId, database: string) =>
     ipc<SchemaSnapshot>("mysql_schema", { connectionId, database }),
   /** Rejects with `not_found` for an unknown table. */
   tableDetails: (connectionId: ConnectionId, database: string, table: string) =>
     ipc<TableDetails>("mysql_table_details", { connectionId, database, table }),
+  /**
+   * Rows deleted by `changes` are saved to the trash in the same transaction unless
+   * `skipBackup`; when that fails the call rejects with `backup_failed` and nothing changes.
+   */
   applyChanges: (
     connectionId: ConnectionId,
     database: string,
     table: string,
     changes: RowChange[],
-  ) => ipc<ApplyChangesResult>("mysql_apply_changes", { connectionId, database, table, changes }),
+    options: ApplyChangesOptions = {},
+  ) =>
+    ipc<ApplyChangesResult>("mysql_apply_changes", {
+      connectionId,
+      database,
+      table,
+      changes,
+      ...(options.skipBackup === undefined ? {} : { skipBackup: options.skipBackup }),
+    }),
+  /** The statements `applyChanges` would run, values written as literals. Runs nothing. */
+  previewChanges: (
+    connectionId: ConnectionId,
+    database: string,
+    table: string,
+    changes: RowChange[],
+  ) => ipc<ChangePreview>("mysql_preview_changes", { connectionId, database, table, changes }),
   export: (connectionId: ConnectionId, sql: string, options: ExportOptions) =>
     ipc<ExportResult>("mysql_export", { connectionId, sql, options }),
   exportRows: (columns: ColumnInfo[], rows: Cell[][], options: ExportOptions) =>
