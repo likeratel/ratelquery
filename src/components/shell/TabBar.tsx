@@ -3,6 +3,7 @@ import { type CSSProperties, type KeyboardEvent, type MouseEvent } from "react"
 import { useShallow } from "zustand/react/shallow"
 import { CONNECTION_KIND_ICON, CONNECTION_KIND_LABEL } from "../../features/connections"
 import {
+  APP_SHORTCUTS,
   cancelCloseGroup,
   cancelCloseTab,
   closeConnectionTabs,
@@ -12,6 +13,7 @@ import {
   newTabFromActive,
 } from "../../features/query"
 import type { ConnectionId } from "../../lib/connections"
+import { formatShortcut } from "../../lib/shortcuts"
 import { hasUnsavedWork, type WorkspaceTab } from "../../lib/queryTabs"
 import { activeConnectionId, groupTabIds, tabGroups } from "../../lib/tabGroups"
 import { selectTabSummary } from "../../lib/tabViews"
@@ -114,6 +116,7 @@ function ConnectionTabItem({
         type="button"
         className="tab__close conn-tab__close"
         aria-label={`Close all tabs on ${name}`}
+        title={`Close all tabs on ${name} (${formatShortcut(APP_SHORTCUTS.closeConnection)})`}
         onMouseDown={(event) => event.stopPropagation()}
         onClick={() => closeConnectionTabs(connectionId)}
       >
@@ -165,6 +168,7 @@ function TabItem({ id, active }: { id: string; active: boolean }) {
           type="button"
           className="tab__close"
           aria-label={`Close ${tab.title}`}
+          title={`Close tab (${formatShortcut(APP_SHORTCUTS.closeTab)})`}
           onMouseDown={(event) => event.stopPropagation()}
           onClick={() => closeQueryTab(tab.id)}
         >

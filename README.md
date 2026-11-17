@@ -155,7 +155,8 @@ Athena tabs use the same editor, with tables and columns from the Glue Data Cata
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `⌘N`                | New connection                                                                                                                              |
 | `⌘T`                | New tab on the current connection                                                                                                           |
-| `⌘W`                | Close tab                                                                                                                                   |
+| `⌘W`                | Close the current tab                                                                                                                       |
+| `⇧⌘W`               | Close every tab of the current connection                                                                                                   |
 | `⌘1`…`⌘8` / `⌘9`    | Go to that tab of the current connection / its last tab                                                                                     |
 | `⌥⌘1`…`⌥⌘8` / `⌥⌘9` | Go to that connection (its last used tab) / the last connection                                                                             |
 | `⌘⏎`                | Run the statement at the cursor, or the DynamoDB form                                                                                       |

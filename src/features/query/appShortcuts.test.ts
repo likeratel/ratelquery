@@ -30,6 +30,22 @@ describe("handleAppShortcut", () => {
     expect(useUiStore.getState().settingsOpen).toBe(true)
   })
 
+  it("closes the active tab on Mod+W and the active connection's tabs on Mod+Shift+W", () => {
+    const store = useTabsStore.getState()
+    const a1 = store.open("a", null)
+    const a2 = store.open("a", null)
+    const b1 = store.open("b", null)
+    useTabsStore.getState().activate(a2)
+    expect(matchAppShortcut(modKey("KeyW"))).toBe("closeTab")
+    expect(matchAppShortcut(modKey("KeyW", { shiftKey: true }))).toBe("closeConnection")
+    handleAppShortcut(modKey("KeyW"))
+    expect(useTabsStore.getState().tabs.map((t) => t.id)).toEqual([a1, b1])
+    expect(useTabsStore.getState().activeId).toBe(a1)
+    handleAppShortcut(modKey("KeyW", { shiftKey: true }))
+    expect(useTabsStore.getState().tabs.map((t) => t.id)).toEqual([b1])
+    expect(useTabsStore.getState().activeId).toBe(b1)
+  })
+
   it("matches Mod+1..9 to tabs and Mod+Alt+1..9 to connections by physical digit", () => {
     expect(matchAppShortcut(modKey("Digit1"))).toEqual({ scope: "tab", slot: 1 })
     expect(matchAppShortcut(modKey("Digit9"))).toEqual({ scope: "tab", slot: 9 })

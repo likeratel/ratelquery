@@ -194,6 +194,12 @@ export function closeActiveTab(): void {
   if (active) closeQueryTab(active.id)
 }
 
+/** Closes every tab of the active tab's connection (Mod+Shift+W), asking first like the X. */
+export function closeActiveConnection(): void {
+  const active = selectActiveTab(useTabsStore.getState())
+  if (active) closeConnectionTabs(active.connectionId)
+}
+
 /**
  * Closes every tab of a deleted connection and drops its session, table catalog and query
  * output (the saved file follows on the next output save).

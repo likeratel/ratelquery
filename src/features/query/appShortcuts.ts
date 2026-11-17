@@ -3,11 +3,20 @@ import { SLOT_COUNT } from "../../lib/tabGroups"
 import { selectActiveTab, useTabsStore } from "../../state/tabsStore"
 import { useUiStore } from "../../state/uiStore"
 import { reviewActiveEdit, runActiveDynamo } from "../dynamo/actions"
-import { applyActiveEdits, closeActiveTab, newTabFromActive, runActiveTab } from "./actions"
+import {
+  applyActiveEdits,
+  closeActiveConnection,
+  closeActiveTab,
+  newTabFromActive,
+  runActiveTab,
+} from "./actions"
 
 export const APP_SHORTCUTS = {
   newTab: parseShortcut("Mod+T"),
+  /** The active query tab only, never its connection. */
   closeTab: parseShortcut("Mod+W"),
+  /** Every tab of the active connection, like the X on its connection tab. */
+  closeConnection: parseShortcut("Mod+Shift+W"),
   /** The statement at the cursor, or the DynamoDB form. */
   runStatement: parseShortcut("Mod+Enter"),
   /** The selected editor text, or the whole editor when nothing is selected. */
@@ -78,6 +87,7 @@ export function matchAppShortcut(event: KeyLike): AppShortcut | null {
     "runSelection",
     "runStatement",
     "newTab",
+    "closeConnection",
     "closeTab",
     "apply",
     "toggleSidebar",
@@ -108,6 +118,9 @@ function runAppShortcut(action: AppShortcut, context: ShortcutContext): void {
       return
     case "closeTab":
       closeActiveTab()
+      return
+    case "closeConnection":
+      closeActiveConnection()
       return
     case "apply":
       if (dynamo) reviewActiveEdit()
