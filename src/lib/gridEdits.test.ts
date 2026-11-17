@@ -10,10 +10,12 @@ import {
   pendingCount,
   removeInsert,
   resolveEditTarget,
+  restoresRows,
   schemaDatabase,
   setCellEdit,
   setInsertValue,
   toggleRowDelete,
+  toggleRowsDelete,
   type EditTarget,
 } from "./gridEdits"
 import type { Cell, ColumnInfo, QueryResult, SchemaSnapshot } from "./mysql"
@@ -272,5 +274,36 @@ describe("displayRows", () => {
       changed: [true, false, false],
     })
     expect(rows[0][2]).toEqual({ t: "null" })
+  })
+})
+
+describe("toggleRowsDelete", () => {
+  const withInsert = addInsert(EMPTY_EDITS, "n1")
+  const shown = (edits: typeof EMPTY_EDITS) => displayRows(rows, 3, edits)
+
+  it("deletes every existing target and drops inserted ones", () => {
+    const display = shown(withInsert)
+    const next = toggleRowsDelete(withInsert, display)
+    expect(next.deletes).toEqual([0, 1])
+    expect(next.inserts).toEqual([])
+    expect(withInsert.inserts).toHaveLength(1)
+  })
+
+  it("restores only when every target is already deleted", () => {
+    const deleted = toggleRowsDelete(EMPTY_EDITS, shown(EMPTY_EDITS))
+    expect(restoresRows(shown(deleted))).toBe(true)
+    expect(toggleRowsDelete(deleted, shown(deleted)).deletes).toEqual([])
+  })
+
+  it("deletes the rest of a mixed selection instead of restoring", () => {
+    const one = toggleRowDelete(EMPTY_EDITS, 1)
+    const display = shown(one)
+    expect(restoresRows(display)).toBe(false)
+    expect(toggleRowsDelete(one, display).deletes).toEqual([0, 1])
+  })
+
+  it("leaves edits alone without targets", () => {
+    expect(restoresRows([])).toBe(false)
+    expect(toggleRowsDelete(withInsert, [])).toEqual(withInsert)
   })
 })

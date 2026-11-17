@@ -9,14 +9,13 @@ import {
   addInsert,
   displayRows,
   EMPTY_EDITS,
-  removeInsert,
+  restoresRows,
   setCellEdit,
   setInsertValue,
-  toggleRowDelete,
+  toggleRowsDelete,
   type DisplayRow,
   type EditTargetResult,
   type GridEdits,
-  type RowRef,
 } from "../../lib/gridEdits"
 import type { RowsResult } from "../../lib/mysql"
 import {
@@ -25,6 +24,7 @@ import {
   EMPTY_ROW_SELECTION,
   retainRows,
   selectAll,
+  selectOnly,
   type RowSelection,
 } from "../../lib/rowSelection"
 import { useTabsStore } from "../../state/tabsStore"
@@ -91,18 +91,31 @@ export function RowsView(props: RowsViewProps) {
     [target, result.rows, updateEdits, tabId, index],
   )
 
-  const toggleDelete = (ref: RowRef) => {
+  // Checked rows first, else the focused one, the same rows a copy acts on.
+  const deleteTargets = copyTargetRows(rowSelection, selectedRow ? (selection?.row ?? null) : null)
+    .map((i) => rows[i])
+    .filter((row): row is DisplayRow => row !== undefined)
+  const restoring = restoresRows(deleteTargets)
+
+  const toggleDelete = () => {
+    if (deleteTargets.length === 0) {
+      showToast({ tone: "info", message: "Select rows to delete" })
+      return
+    }
     // Removing an inserted row shifts the inserted rows after it, so index-based selection
-    // would land on other rows.
-    if (ref.kind === "insert") setRowSelection(EMPTY_ROW_SELECTION)
-    updateEdits(tabId, index, (current) =>
-      ref.kind === "existing" ? toggleRowDelete(current, ref.index) : removeInsert(current, ref.id),
-    )
+    // and focus would land on other rows.
+    if (deleteTargets.some((row) => row.ref.kind === "insert")) {
+      setRowSelection(EMPTY_ROW_SELECTION)
+      setSelection(null)
+    }
+    updateEdits(tabId, index, (current) => toggleRowsDelete(current, deleteTargets))
   }
 
   const addRow = () => {
     updateEdits(tabId, index, (current) => addInsert(current, crypto.randomUUID()))
+    // Select the new row too, so Delete acts on it rather than on rows picked before.
     setSelection({ row: rows.length, col: 0 })
+    setRowSelection(selectOnly(rows.length))
   }
 
   const setNull = () => {
@@ -155,14 +168,9 @@ export function RowsView(props: RowsViewProps) {
               <Plus size={12} strokeWidth={2.2} />
               Add row
             </button>
-            <button
-              type="button"
-              className="q-button q-button--ghost"
-              disabled={!selectedRow}
-              onClick={() => selectedRow && toggleDelete(selectedRow.ref)}
-            >
+            <button type="button" className="q-button q-button--ghost" onClick={toggleDelete}>
               <Trash2 size={12} strokeWidth={2.2} />
-              {selectedRow?.deleted ? "Restore row" : "Delete row"}
+              {deleteLabel(restoring, deleteTargets.length)}
             </button>
             <button
               type="button"
@@ -216,4 +224,9 @@ export function RowsView(props: RowsViewProps) {
       <PendingBar tabId={tabId} index={index} edits={props.edits} applying={applying} />
     </div>
   )
+}
+
+function deleteLabel(restoring: boolean, count: number): string {
+  const verb = restoring ? "Restore" : "Delete"
+  return count > 1 ? `${verb} ${count.toLocaleString()} rows` : `${verb} row`
 }

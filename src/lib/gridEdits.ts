@@ -284,3 +284,28 @@ export function displayRows(
   }))
   return [...existing, ...inserted]
 }
+
+/**
+ * Whether the Delete button restores rather than deletes: only when every target is an existing
+ * row already marked deleted. Inserted rows are never marked, so any of them means delete.
+ */
+export function restoresRows(targets: readonly DisplayRow[]): boolean {
+  return targets.length > 0 && targets.every((row) => row.deleted)
+}
+
+/**
+ * Deletes every target row, or restores them all (see `restoresRows`). Inserted rows are
+ * dropped outright, since there is nothing in the table to delete.
+ */
+export function toggleRowsDelete(edits: GridEdits, targets: readonly DisplayRow[]): GridEdits {
+  const existing = targets.flatMap((row) => (row.ref.kind === "existing" ? [row.ref.index] : []))
+  if (restoresRows(targets)) {
+    return { ...edits, deletes: edits.deletes.filter((row) => !existing.includes(row)) }
+  }
+  const insertIds = new Set(
+    targets.flatMap((row) => (row.ref.kind === "insert" ? [row.ref.id] : [])),
+  )
+  const deletes = [...new Set([...edits.deletes, ...existing])].sort((a, b) => a - b)
+  const inserts = edits.inserts.filter((insert) => !insertIds.has(insert.id))
+  return { ...edits, deletes, inserts }
+}
