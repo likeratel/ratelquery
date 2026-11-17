@@ -8,4 +8,9 @@ ignore = [
   # RSA ciphertexts in a timing-observable loop, so the exposure is low; re-check when
   # sqlx or russh move to a fixed version.
   "RUSTSEC-2023-0071",
+  # SQLite WAL page-size bug in the SQLite that libsqlite3-sys bundles. The crate is only in
+  # Cargo.lock because sqlx 0.8 lists sqlx-sqlite there; the app enables MySQL only, so it is
+  # never compiled (`cargo tree -i libsqlite3-sys --target all -e all` prints nothing) and no
+  # SQLite runs. sqlx 0.8 pins libsqlite3-sys 0.30; drop this when sqlx moves past it.
+  "RUSTSEC-2026-0459",
 ]
