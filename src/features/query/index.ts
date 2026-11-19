@@ -13,7 +13,7 @@ export {
 } from "./actions"
 export { ApplyConfirmDialog } from "./ApplyConfirmDialog"
 export { DeleteBackupDialog } from "./DeleteBackupDialog"
-export { APP_SHORTCUTS, handleAppShortcut } from "./appShortcuts"
+export { APP_SHORTCUTS, handleAppShortcut, isZoomShortcut } from "./appShortcuts"
 export { athenaTabDatabase, tabDatabase } from "./editing"
 export { QueryWorkspace } from "./QueryWorkspace"
 export { RunConfirmDialog } from "./RunConfirmDialog"

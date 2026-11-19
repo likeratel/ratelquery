@@ -1,15 +1,17 @@
 /* DynamoDB table browser. Shares buttons, toolbar, menu and run-line styles with query.css. */
 
+/* `--dyn-tables-column` and `--dyn-side-column` (set inline) cap the stored widths at a share of
+   the space each panel has, so at a high zoom the items grid keeps a usable width. */
 .dyn {
   position: relative;
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: var(--dyn-tables-width, 220px) minmax(0, 1fr);
+  grid-template-columns: var(--dyn-tables-column) minmax(0, 1fr);
 }
 
 .dyn-tables-resize {
-  left: calc(var(--dyn-tables-width, 220px) - 3px);
+  left: calc(var(--dyn-tables-column) - 3px);
 }
 
 .dyn-main {
@@ -445,7 +447,7 @@
 /* Detail and editor share one width, set by the resize handle on their left edge. */
 .dyn-side {
   flex: none;
-  width: var(--dyn-side-width, 400px);
+  width: var(--dyn-side-column);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -454,7 +456,7 @@
 }
 
 .dyn-side-resize {
-  right: calc(var(--dyn-side-width, 400px) - 3px);
+  right: calc(var(--dyn-side-column) - 3px);
 }
 
 .dyn-side__head {

@@ -2,9 +2,11 @@ import type { ReactNode } from "react"
 import { Button, Dialog, SegmentedControl, type SegmentOption } from "../../components/ui"
 import type { SecretStore, SettingsPatch, ThemePreference } from "../../lib/settings"
 import { formatShortcut } from "../../lib/shortcuts"
+import { formatZoom, nearestZoomLevel, ZOOM_LEVELS, ZOOM_SHORTCUTS } from "../../lib/zoom"
 import { useSettingsStore } from "../../state/settingsStore"
 import { refreshTrash } from "../../state/trashStore"
 import { useUiStore } from "../../state/uiStore"
+import { setUiZoom } from "../../state/uiZoom"
 import { APP_SHORTCUTS } from "../query"
 import { NumberSetting } from "./NumberSetting"
 import { ToggleSetting } from "./ToggleSetting"
@@ -15,6 +17,13 @@ const THEME_OPTIONS: readonly SegmentOption<ThemePreference>[] = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
 ]
+
+const ZOOM_OPTIONS: readonly SegmentOption<string>[] = ZOOM_LEVELS.map((level) => ({
+  value: String(level),
+  label: formatZoom(level),
+}))
+
+const ZOOM_HINT = `Scales the whole window. ${formatShortcut(ZOOM_SHORTCUTS.in[0])} and ${formatShortcut(ZOOM_SHORTCUTS.out[0])} step through these; ${formatShortcut(ZOOM_SHORTCUTS.reset[0])} goes back to 100%.`
 
 const SECRET_STORE_OPTIONS: readonly SegmentOption<SecretStore>[] = [
   { value: "keychain", label: "Keychain" },
@@ -78,6 +87,18 @@ function SettingsForm() {
             options={THEME_OPTIONS}
             onChange={(theme) => save({ theme })}
           />
+        </div>
+        <div className="ui-field">
+          <span className="ui-field__label">Zoom</span>
+          {/* Snapped so a hand-edited level in between still checks one option and stays
+              reachable by Tab. */}
+          <SegmentedControl
+            label="Zoom"
+            value={String(nearestZoomLevel(settings.uiZoom))}
+            options={ZOOM_OPTIONS}
+            onChange={(level) => void setUiZoom(Number(level))}
+          />
+          <p className="ui-field__hint">{ZOOM_HINT}</p>
         </div>
         <NumberSetting
           field="editorFontSize"

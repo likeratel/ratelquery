@@ -4,7 +4,7 @@ import type { Item, KeySchema } from "../../lib/dynamo"
 import { itemKey } from "../../lib/dynamoDiff"
 import { keyId } from "../../lib/dynamoEdits"
 import { editorIdentity, selectedItem } from "../../lib/dynamoTabs"
-import { PANEL_SPECS } from "../../lib/panelWidths"
+import { PANEL_SPECS, panelColumn } from "../../lib/panelWidths"
 import { selectActiveDynamoTab, useTabsStore } from "../../state/tabsStore"
 import { useUiStore } from "../../state/uiStore"
 import { openItemEditor, selectRow } from "./actions"
@@ -43,8 +43,9 @@ export function DynamoWorkspace() {
   const detailItem = !tab.editor && tab.view === "table" ? item : null
   const sideOpen = Boolean(tab.editor || detailItem)
   const widths = {
-    "--dyn-tables-width": `${tablesWidth}px`,
-    "--dyn-side-width": `${sideWidth}px`,
+    // Each resolves its share against its own container: `.dyn`, and `.dyn-body` for the side.
+    "--dyn-tables-column": panelColumn(PANEL_SPECS.dynamoTables, tablesWidth),
+    "--dyn-side-column": panelColumn(PANEL_SPECS.dynamoSide, sideWidth),
   } as CSSProperties
 
   return (

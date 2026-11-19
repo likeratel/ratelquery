@@ -32,3 +32,7 @@ export const useToastStore = create<ToastState>((set) => ({
 export function showToast(toast: Omit<Toast, "id">): number {
   return useToastStore.getState().push(toast)
 }
+
+export function dismissToast(id: number): void {
+  useToastStore.getState().dismiss(id)
+}

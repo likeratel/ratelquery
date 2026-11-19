@@ -10,12 +10,17 @@ export interface PanelSpec {
   readonly defaultWidth: number
   readonly min: number
   readonly max: number
+  /**
+   * The most of its container the panel is shown at, whatever its stored width, so at a high
+   * zoom the rest of the layout keeps a usable width (see `panelColumn`).
+   */
+  readonly maxPercent: number
 }
 
 export const PANEL_SPECS: Readonly<Record<PanelId, PanelSpec>> = {
-  sidebar: { defaultWidth: 264, min: 180, max: 480 },
-  dynamoTables: { defaultWidth: 220, min: 160, max: 400 },
-  dynamoSide: { defaultWidth: 400, min: 280, max: 800 },
+  sidebar: { defaultWidth: 264, min: 180, max: 480, maxPercent: 35 },
+  dynamoTables: { defaultWidth: 220, min: 160, max: 400, maxPercent: 35 },
+  dynamoSide: { defaultWidth: 400, min: 280, max: 800, maxPercent: 45 },
 }
 
 export type PanelWidths = Readonly<Record<PanelId, number>>
@@ -81,15 +86,39 @@ export function savePanelWidth(
   }
 }
 
+/** CSS width of a panel stored at `width`: capped at its share of the container it sits in. */
+export function panelColumn(spec: PanelSpec, width: number): string {
+  return `min(${width}px, ${spec.maxPercent}%)`
+}
+
+/**
+ * The widest the panel is shown in a container `containerWidth` pixels wide. At a high zoom this
+ * can be less than the panel's minimum, which then only applies to the stored width.
+ */
+export function panelCap(spec: PanelSpec, containerWidth: number): number {
+  return Math.floor((containerWidth * spec.maxPercent) / 100)
+}
+
+/** The width a panel stored at `width` is shown at in a container `containerWidth` wide. */
+export function shownWidth(spec: PanelSpec, width: number, containerWidth: number): number {
+  return Math.min(width, panelCap(spec, containerWidth))
+}
+
 /**
  * Width after dragging a handle by `deltaX` pixels. A handle on the panel's right edge ("end")
  * grows the panel when dragged right; one on its left edge ("start") grows it when dragged left.
+ * With the container's width it starts from the width shown and stops at the cap, so the edge
+ * follows the pointer and nothing wider than what is seen gets stored (the store still raises a
+ * result under the minimum to it).
  */
 export function dragWidth(
   spec: PanelSpec,
   startWidth: number,
   deltaX: number,
   edge: "start" | "end",
+  containerWidth = Infinity,
 ): number {
-  return clampWidth(spec, startWidth + (edge === "end" ? deltaX : -deltaX))
+  const cap = panelCap(spec, containerWidth)
+  const start = Math.min(startWidth, cap)
+  return Math.min(cap, clampWidth(spec, start + (edge === "end" ? deltaX : -deltaX)))
 }

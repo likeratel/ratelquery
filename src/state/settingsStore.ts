@@ -1,4 +1,5 @@
 import { isTauri } from "@tauri-apps/api/core"
+import { getCurrentWebview } from "@tauri-apps/api/webview"
 import { create } from "zustand"
 import { showToast } from "../components/ui/toastStore"
 import { normalizeError } from "../lib/ipc"
@@ -35,14 +36,26 @@ interface PendingPatch {
 }
 
 /**
- * Every request (load or save) takes the next sequence number when it is sent. A response
- * becomes `saved` only when it is newer than the one already there, so a slow `settings_get`
- * can't replace what a later save confirmed.
+ * Every request (load or save) takes the next sequence number when it is made. A response
+ * becomes `saved` only when it is newer than the one already there.
  */
 let requestSeq = 0
 let savedSeq = 0
 let loadToken = 0
 let pending: readonly PendingPatch[] = []
+
+/**
+ * Requests reach the backend one after another: two `settings_set` calls in flight can finish
+ * there out of order and leave the file at the older one. So each answer already holds every
+ * earlier change, and the patches still pending are exactly the later ones.
+ */
+let chain: Promise<unknown> = Promise.resolve()
+
+function enqueue<T>(request: () => Promise<T>): Promise<T> {
+  const run = chain.then(request)
+  chain = run.catch(() => undefined)
+  return run
+}
 
 const withPending = (base: Settings): Settings =>
   pending.reduce((acc, entry) => mergeSettings(acc, entry.patch), base)
@@ -73,7 +86,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       const seq = ++requestSeq
       set({ status: "loading", loadError: null })
       try {
-        const settings = await settingsApi.get()
+        const settings = await enqueue(settingsApi.get)
         accept(seq, settings)
         if (token === loadToken) set({ status: "ready" })
       } catch (raw) {
@@ -102,7 +115,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       pending = [...pending, { seq, patch }]
       set({ settings: next })
       try {
-        const saved = await settingsApi.set(patch)
+        const saved = await enqueue(() => settingsApi.set(patch))
         dropPending(seq)
         accept(seq, saved)
         return true
@@ -127,12 +140,29 @@ export function applyEditorFontSize(px: number): void {
   document.documentElement.style.setProperty("--editor-font-size", `${px}px`)
 }
 
+/**
+ * Scales the whole webview to `percent`. The backend applies the saved value before the first
+ * paint; this follows later changes. Outside the desktop shell there is no webview to zoom.
+ * `--ui-zoom` lets the sidebar toggle keep clear of the macOS traffic lights, which don't zoom.
+ */
+export function applyUiZoom(percent: number): void {
+  if (!isTauri()) return
+  document.documentElement.style.setProperty("--ui-zoom", String(percent / 100))
+  getCurrentWebview()
+    .setZoom(percent / 100)
+    .catch((raw: unknown) => {
+      const error = normalizeError(raw)
+      showToast({ tone: "error", message: "Couldn't change the zoom", detail: error.message })
+    })
+}
+
 /** Test seam: back to defaults and a fresh token state. */
 export function resetSettingsStore(): void {
   requestSeq = 0
   savedSeq = 0
   loadToken = 0
   pending = []
+  chain = Promise.resolve()
   useSettingsStore.setState({
     settings: DEFAULT_SETTINGS,
     saved: DEFAULT_SETTINGS,

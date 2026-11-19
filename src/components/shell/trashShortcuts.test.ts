@@ -19,8 +19,11 @@ describe("trashShortcutDecision", () => {
     expect(trashShortcutDecision({ scope: "connection", slot: 9 })).toBe("ignore")
   })
 
-  it("lets the sidebar, Settings and other keys through", () => {
+  it("lets the sidebar, Settings, zoom and other keys through", () => {
     expect(trashShortcutDecision("toggleSidebar")).toBe("pass")
+    for (const zoom of ["in", "out", "reset"] as const) {
+      expect(trashShortcutDecision({ zoom })).toBe("pass")
+    }
     expect(trashShortcutDecision("settings")).toBe("pass")
     expect(trashShortcutDecision(null)).toBe("pass")
   })

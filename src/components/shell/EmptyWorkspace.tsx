@@ -10,6 +10,8 @@ const HINTS = [
   { keys: "Mod+Alt+1", label: "Connection 1–8, 9 for the last" },
   { keys: "Mod+B", label: "Toggle sidebar" },
   { keys: "Mod+Shift+E", label: "Reveal the active tab in the sidebar" },
+  { keys: "Mod+=", label: "Zoom in" },
+  { keys: "Mod+-", label: "Zoom out" },
   { keys: "Mod+,", label: "Settings" },
 ]
 

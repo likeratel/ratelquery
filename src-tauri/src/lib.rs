@@ -43,6 +43,16 @@ fn close_sessions_on_exit(app: &AppHandle) {
     });
 }
 
+/// Applies the saved interface zoom before the page first paints, so the window doesn't open at
+/// 100% and jump once the frontend has read its settings. The frontend owns it from then on.
+fn apply_saved_zoom(app: &AppHandle, state: &AppState) {
+    let Some(window) = app.get_webview_window("main") else { return };
+    let zoom = state.settings.get().map(|s| s.ui_zoom).unwrap_or(100);
+    if let Err(e) = window.set_zoom(f64::from(zoom) / 100.0) {
+        eprintln!("could not apply the saved zoom of {zoom}%: {e}");
+    }
+}
+
 /// Recovers and purges the trash before any command can write to it. Never fails startup.
 fn start_trash(state: &AppState) {
     let days = match state.settings.get() {
@@ -68,6 +78,8 @@ pub fn run() {
             legacy_config::migrate(&config_dir);
             let sink = Arc::new(TauriStateSink::new(app.handle().clone()));
             let state = AppState::new(&config_dir, Arc::new(KeyringSecretStore), sink);
+            // Zoom first: it only touches the window, and trash recovery can take a while.
+            apply_saved_zoom(app.handle(), &state);
             start_trash(&state);
             app.manage(state);
             Ok(())

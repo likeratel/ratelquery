@@ -10,7 +10,7 @@ use serde_json::Value;
 pub use model::{
     DEFAULT_LIMIT_RANGE, DYNAMO_PAGE_SIZE_RANGE, DynamoSettings, EDITOR_FONT_SIZE_RANGE,
     MAX_ROWS_RANGE, OUTPUT_RETENTION_DAYS_RANGE, QuerySettings, SecretStoreKind, Settings,
-    TRASH_RETENTION_DAYS_RANGE, Theme,
+    TRASH_RETENTION_DAYS_RANGE, Theme, UI_ZOOM_RANGE,
 };
 pub use store::{Loaded, SettingsStore};
 
