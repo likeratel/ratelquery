@@ -85,11 +85,25 @@ example `fix: keep the stored secret when testing an unchanged connection`.
 - [ ] No credentials, real hostnames or production data in code, tests, fixtures or screenshots.
 - [ ] The description says what changed, why, and which checks you actually ran.
 
+## Changelog
+
+User-visible changes go under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md), in the pull
+request that makes them, grouped as Added, Changed, Fixed, Removed or Security. Write for people
+using the app, not for reviewers, and add the PR number when there is one.
+
 ## Releases
 
-Pushing a tag `vX.Y.Z` that matches `version` in `src-tauri/tauri.conf.json` runs
-`.github/workflows/release.yml`, which builds macOS (Apple silicon and Intel), Windows and Linux
-bundles and attaches them to a draft GitHub Release. macOS signing and notarization are used only
+1. Rename `## [Unreleased]` in `CHANGELOG.md` to `## [X.Y.Z] - YYYY-MM-DD`, add a new empty
+   `## [Unreleased]` above it, and update the compare links at the bottom.
+   `node scripts/release-notes.mjs X.Y.Z` prints the release body that section will produce.
+2. Set `version` to `X.Y.Z` in `package.json`, `src-tauri/Cargo.toml` (then `Cargo.lock`) and
+   `src-tauri/tauri.conf.json`, and commit as `chore: release X.Y.Z`.
+3. Push a tag `vX.Y.Z` on that commit.
+
+The tag runs `.github/workflows/release.yml`. It stops unless the tag matches `version` in
+`src-tauri/tauri.conf.json` and `CHANGELOG.md` has notes for that version, then builds macOS
+(Apple silicon and Intel), Windows and Linux bundles and attaches them to a draft GitHub Release
+whose body is that version's changelog section. Publish the draft once the builds are attached. macOS signing and notarization are used only
 when the `APPLE_*` repository secrets are configured; otherwise the bundles are unsigned.
 
 ## License of contributions
