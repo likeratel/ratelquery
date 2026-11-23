@@ -15,11 +15,11 @@ import {
 } from "@codemirror/autocomplete"
 import { keywordCompletionSource, MySQL, PostgreSQL, type SQLDialect } from "@codemirror/lang-sql"
 import type { EditorState, Text } from "@codemirror/state"
-import type { SchemaSnapshot } from "../../../lib/mysql"
 import { MYSQL_SYNTAX, type SqlSyntax } from "../../../lib/sqlContext"
 import { MYSQL_DIALECT, type EditorDialect, type SqlDialect } from "../../../lib/sqlDialect"
 import {
   cursorContext,
+  type ColumnPath,
   type CompletionWord,
   type CursorContext,
   type TableRef,
@@ -28,12 +28,21 @@ import {
   BOOST,
   columnOptions,
   databaseOptions,
-  findTable,
   resolveDatabase,
   tableOptions,
   withExactMatchBoost,
   type SchemaCatalog,
 } from "./catalog"
+import {
+  createLookup,
+  refTable,
+  resolveColumns,
+  scopeRefFor,
+  type Lookup,
+  type ResolvedColumn,
+} from "./resolve"
+import { enumMembers, isSetType } from "../../../lib/sqlEnum"
+import { memberLiteralOptions, memberValueOptions } from "./values"
 
 export interface CompletionEnv {
   /** Tokenizing and quoting rules of the editor's engine; MySQL when absent. */
@@ -54,8 +63,7 @@ export interface SchemaSourceOptions {
   onSchemaLoaded?: (context: CompletionContext, wordFrom: number) => void
 }
 
-type NamedContext = Exclude<CursorContext, { kind: "none" }>
-type SchemaLookup = (database: string) => SchemaSnapshot | null
+type PositionContext = Exclude<CursorContext, { kind: "none" | "member" | "value" }>
 
 let lastAnalysis: {
   doc: Text
@@ -79,32 +87,22 @@ export function contextAt(
   return context
 }
 
-const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
-
-/** The table a qualifier names: an alias first, then an unaliased table of the statement. */
-function scopeRefFor(tables: readonly TableRef[], name: string): TableRef | null {
-  return (
-    tables.find((t) => t.alias !== null && sameName(t.alias, name)) ??
-    tables.find((t) => t.alias === null && t.table !== null && sameName(t.table, name)) ??
-    null
-  )
-}
-
-/** What option builders read: the catalog, a schema lookup and the dialect's quoting. */
-interface Lookup {
-  catalog: SchemaCatalog
-  schemaOf: SchemaLookup
-  dialect: SqlDialect
-}
-
 /** Columns of the table `ref` points at; null when unknown or still loading. */
 function refColumns(ref: TableRef, lookup: Lookup): readonly Completion[] | null {
-  const { catalog, schemaOf, dialect } = lookup
-  if (ref.table === null) return null
-  const database = ref.database ? resolveDatabase(catalog, ref.database) : catalog.currentDatabase
-  const snapshot = database ? schemaOf(database) : null
-  const table = snapshot ? findTable(snapshot, ref.table, dialect) : null
-  return snapshot && table ? columnOptions(snapshot, table, dialect) : null
+  const resolved = refTable(ref, lookup)
+  return resolved ? columnOptions(resolved.snapshot, resolved.table, lookup.dialect) : null
+}
+
+/** The first column `path` can mean whose type has ENUM / SET members. */
+function comparedColumn(
+  path: ColumnPath,
+  tables: readonly TableRef[],
+  lookup: Lookup,
+): ResolvedColumn | null {
+  return (
+    resolveColumns(path, tables, lookup).find((c) => enumMembers(c.column.typeName) !== null) ??
+    null
+  )
 }
 
 function memberOptions(
@@ -158,10 +156,7 @@ function aliasOptions(tables: readonly TableRef[]): Completion[] {
   )
 }
 
-function positionOptions(
-  context: Exclude<NamedContext, { kind: "member" }>,
-  lookup: Lookup,
-): readonly Completion[] | null {
+function positionOptions(context: PositionContext, lookup: Lookup): readonly Completion[] | null {
   const { catalog, schemaOf, dialect } = lookup
   const current = catalog.currentDatabase ? schemaOf(catalog.currentDatabase) : null
   const tables = current ? tableOptions(current, dialect) : []
@@ -174,13 +169,18 @@ function positionOptions(
     case "table":
     case "other":
       return [...tables, ...databases]
-    case "column":
+    case "column": {
+      const compared = context.compared
+        ? comparedColumn(context.compared, context.tables, lookup)
+        : null
       return [
+        ...(compared ? memberLiteralOptions(compared) : []),
         ...scopeColumns(context.tables, lookup),
         ...aliasOptions(context.tables),
         ...tables,
         ...databases,
       ]
+    }
   }
 }
 
@@ -218,24 +218,33 @@ export function schemaCompletionSource(
   env: CompletionEnv,
   { onSchemaLoaded = reopenCompletion }: SchemaSourceOptions = {},
 ): CompletionSource {
-  /** Latest request waiting on each schema load; a load reopens the list once, for it. */
-  const waiting = new Map<Promise<void>, { context: CompletionContext; wordFrom: number }>()
+  /**
+   * Latest request waiting on each schema load; a load reopens the list once, for it, unless its
+   * `worthIt` check (re-run on the loaded schema) says there is nothing to show.
+   */
+  const waiting = new Map<
+    Promise<void>,
+    { context: CompletionContext; wordFrom: number; worthIt?: () => boolean }
+  >()
 
   const awaitSchemas = (
     databases: ReadonlySet<string>,
     context: CompletionContext,
     wordFrom: number,
+    worthIt?: () => boolean,
   ) => {
     for (const database of databases) {
       const request = env.requestSchema(database)
       if (!request) continue
       const known = waiting.has(request)
-      waiting.set(request, { context, wordFrom })
+      waiting.set(request, { context, wordFrom, ...(worthIt ? { worthIt } : {}) })
       if (known) continue
       void request.then(() => {
         const latest = waiting.get(request)
         waiting.delete(request)
-        if (latest) onSchemaLoaded(latest.context, latest.wordFrom)
+        if (latest && (!latest.worthIt || latest.worthIt())) {
+          onSchemaLoaded(latest.context, latest.wordFrom)
+        }
       })
     }
   }
@@ -244,30 +253,95 @@ export function schemaCompletionSource(
   return (context): CompletionResult | null => {
     const cursor = contextAt(context.state, context.pos, dialect.syntax)
     if (cursor.kind === "none" || cursor.kind === "keyword") return null
-    const { word } = cursor
-    if (cursor.kind !== "member" && word.text === "" && !word.quoted && !context.explicit) {
-      return null
-    }
-    const catalog = env.catalog()
     const missing = new Set<string>()
-    const schemaOf: SchemaLookup = (database) => {
-      const snapshot = catalog.schemas[database]
-      if (!snapshot) missing.add(database)
-      return snapshot ?? null
-    }
-    const lookup: Lookup = { catalog, schemaOf, dialect }
-    const options =
-      cursor.kind === "member"
-        ? memberOptions(cursor.parents, cursor.tables, lookup)
-        : positionOptions(cursor, lookup)
-    awaitSchemas(missing, context, word.from)
-    if (!options || options.length === 0) return null
-    return {
-      from: word.from,
-      ...(word.to > context.pos ? { to: word.to } : {}),
-      options: finalize(options, word, dialect),
-    }
+    const lookup = createLookup(env.catalog(), dialect, missing)
+    const result = completionResult(cursor, context, lookup)
+    // Reopening is explicit and lists everything; after `col =` it is only worth it when the
+    // loaded column turns out to have members.
+    const compared = comparedPath(cursor)
+    const worthIt =
+      compared && opensOnEmptyWord(cursor, context)
+        ? () => {
+            const fresh = createLookup(env.catalog(), dialect, new Set())
+            return comparedColumn(compared, cursor.tables, fresh) !== null
+          }
+        : undefined
+    awaitSchemas(missing, context, cursor.word.from, worthIt)
+    return result
   }
+}
+
+/** The column an operand position compares with (`col = |`); null elsewhere and in literals. */
+function comparedPath(cursor: Exclude<CursorContext, { kind: "none" }>): ColumnPath | null {
+  return cursor.kind === "member" || cursor.kind === "value" ? null : (cursor.compared ?? null)
+}
+
+/** A request the editor made by itself on an empty word (not Ctrl+Space, not after `x.`). */
+function opensOnEmptyWord(
+  cursor: Exclude<CursorContext, { kind: "none" }>,
+  context: CompletionContext,
+): boolean {
+  const { word } = cursor
+  return cursor.kind !== "member" && word.text === "" && !word.quoted && !context.explicit
+}
+
+/**
+ * Members for the literal at the cursor. For a SET column only the item around the cursor
+ * (between commas) is replaced. The text after the cursor is replaced only when it can be part of
+ * a member: a quote typed before existing SQL (`= '|abc AND b = 'x'`) reads as one long literal,
+ * and replacing it would delete that SQL.
+ */
+function valueResult(
+  cursor: Extract<CursorContext, { kind: "value" }>,
+  context: CompletionContext,
+  lookup: Lookup,
+): CompletionResult | null {
+  const compared = comparedColumn(cursor.compared, cursor.tables, lookup)
+  if (!compared) return null
+  const { state, pos } = context
+  let { from, to } = cursor.word
+  if (isSetType(compared.column.typeName)) {
+    const comma = state.sliceDoc(from, pos).lastIndexOf(",")
+    if (comma !== -1) from += comma + 1
+    const next = state.sliceDoc(pos, to).indexOf(",")
+    if (next !== -1) to = pos + next
+  }
+  if (to > pos) {
+    const quote = cursor.quote
+    const item = state
+      .sliceDoc(from, to)
+      .replaceAll(quote + quote, quote)
+      .toLowerCase()
+    const members = enumMembers(compared.column.typeName) ?? []
+    if (!members.some((member) => member.toLowerCase().includes(item))) return null
+  }
+  const options = memberValueOptions(compared, cursor.quote, cursor.closed)
+  if (options.length === 0) return null
+  return { from, ...(to > pos ? { to } : {}), options }
+}
+
+function completionResult(
+  cursor: Exclude<CursorContext, { kind: "none" }>,
+  context: CompletionContext,
+  lookup: Lookup,
+): CompletionResult | null {
+  const { word } = cursor
+  // Inside a string literal nothing but the column's members fits.
+  if (cursor.kind === "value") return valueResult(cursor, context, lookup)
+  const range = { from: word.from, ...(word.to > context.pos ? { to: word.to } : {}) }
+  if (opensOnEmptyWord(cursor, context)) {
+    // Opened by itself on an empty word: only after `col =` with a column that has members.
+    const path = comparedPath(cursor)
+    const compared = path ? comparedColumn(path, cursor.tables, lookup) : null
+    const members = compared ? memberLiteralOptions(compared) : []
+    return members.length > 0 ? { ...range, options: members } : null
+  }
+  const options =
+    cursor.kind === "member"
+      ? memberOptions(cursor.parents, cursor.tables, lookup)
+      : positionOptions(cursor, lookup)
+  if (!options || options.length === 0) return null
+  return { ...range, options: finalize(options, word, lookup.dialect) }
 }
 
 const EDITOR_DIALECTS: Record<EditorDialect, SQLDialect> = { mysql: MySQL, postgresql: PostgreSQL }
@@ -277,7 +351,7 @@ export function keywordSource(dialect: SqlDialect = MYSQL_DIALECT): CompletionSo
   const keywords = keywordCompletionSource(EDITOR_DIALECTS[dialect.editor], true)
   return (context) => {
     const cursor = contextAt(context.state, context.pos, dialect.syntax)
-    if (cursor.kind === "none" || cursor.kind === "member") return null
+    if (cursor.kind === "none" || cursor.kind === "member" || cursor.kind === "value") return null
     return keywords(context)
   }
 }

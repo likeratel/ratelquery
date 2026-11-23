@@ -50,7 +50,8 @@ What I did: decided what to build and what to leave out, picked the stack (Tauri
 
 **MySQL**
 
-- Query tabs with a CodeMirror editor, schema completion, run all or run the statement at the cursor
+- Query tabs with a CodeMirror editor, schema completion (including ENUM and SET values after `col =`), run all or run the statement at the cursor
+- Hover a column, table or database name in the editor to see its type, nullability, key, default and comment
 - Virtualised result grid with typed cells: integers, decimals and dates keep their exact text, `NULL` is visible, binary is base64
 - Edit cells, add and delete rows, then apply them in one transaction guarded to exactly one row per change. Works on single-table results that include the primary key, in any letter case and with `db.table` names
 - Export the visible rows or the full result as CSV, JSON or SQL inserts

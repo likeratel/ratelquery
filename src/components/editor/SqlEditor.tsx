@@ -38,6 +38,8 @@ export interface SqlEditorProps {
    * identity stable; a new array reconfigures completion.
    */
   completionSources?: readonly CompletionSource[]
+  /** Hover tooltips (schema details of the name under the pointer). Keep the identity stable. */
+  hoverExtension?: Extension
   /**
    * lang-sql dialect for highlighting and keyword completion. `postgresql` (used for Athena)
    * reads `"..."` as an identifier; `mysql` (the default) as a string.
@@ -61,6 +63,7 @@ const DIALECTS: Record<EditorDialect, SQLDialect> = { mysql: MySQL, postgresql: 
 
 const languageSlot = new Compartment()
 const completionSlot = new Compartment()
+const hoverSlot = new Compartment()
 /**
  * The update listener of the mounted component. It is reconfigured on every mount, so a cached
  * state reaches the component that currently shows it, and nothing outlives a hot reload.
@@ -108,6 +111,7 @@ export function SqlEditor({
   value,
   onChange,
   completionSources,
+  hoverExtension,
   dialect = "mysql",
   placeholderText = "",
   onKeyDownCapture,
@@ -138,6 +142,7 @@ export function SqlEditor({
             ...baseExtensions(placeholderText),
             languageSlot.of(languageFor(dialect)),
             completionSlot.of(completionFor(completionSources)),
+            hoverSlot.of(hoverExtension ?? []),
           ],
         })
     const view = new EditorView({ state, parent: host })
@@ -187,6 +192,10 @@ export function SqlEditor({
       effects: completionSlot.reconfigure(completionFor(completionSources)),
     })
   }, [completionSources])
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: hoverSlot.reconfigure(hoverExtension ?? []) })
+  }, [hoverExtension])
 
   useEffect(() => {
     viewRef.current?.dispatch({ effects: languageSlot.reconfigure(languageFor(dialect)) })

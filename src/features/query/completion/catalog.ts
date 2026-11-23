@@ -16,8 +16,11 @@ export interface SchemaCatalog {
   schemas: Readonly<Record<string, SchemaSnapshot>>
 }
 
-/** Ranking: columns of the statement's tables, then aliases, tables, databases; keywords are -1. */
-export const BOOST = { column: 40, alias: 35, table: 20, database: 10 } as const
+/**
+ * Ranking: members of a compared ENUM / SET column, columns of the statement's tables, then
+ * aliases, tables, databases; keywords are -1.
+ */
+export const BOOST = { value: 45, column: 40, alias: 35, table: 20, database: 10 } as const
 /** Added when the typed word equals the option's name (ignoring case). */
 export const EXACT_MATCH_BOOST = 50
 const MAX_BOOST = 99

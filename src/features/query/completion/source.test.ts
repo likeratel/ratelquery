@@ -353,3 +353,113 @@ describe("performance", () => {
     expect(average).toBeLessThan(10)
   })
 })
+
+describe("enum and set members", () => {
+  const XRAY = snapshot("spam", [
+    table("spam_xray", [
+      ["id", "bigint"],
+      ["smStatus", "enum('SMISHING','NORMAL','it''s')"],
+      ["tags", "set('a','b','')"],
+    ]),
+  ])
+  const env = () => fakeEnv({ app: APP, spam: XRAY }).env
+
+  it("offers members as literals right after `col =`, unprompted", () => {
+    const result = complete(env(), "select count(*) from spam.spam_xray where smStatus = |")
+    expect(result?.options.map((o) => [o.displayLabel, o.apply, o.type, o.detail])).toEqual([
+      ["'SMISHING'", "'SMISHING'", "enum", "smStatus · spam_xray"],
+      ["'NORMAL'", "'NORMAL'", "enum", "smStatus · spam_xray"],
+      ["'it''s'", "'it''s'", "enum", "smStatus · spam_xray"],
+    ])
+  })
+
+  it("ranks members over columns while a word is typed", () => {
+    const options = ranked(complete(env(), "select * from spam.spam_xray x where x.smStatus = S|"))
+    // The label is the bare member, so a single typed letter matches it from the start.
+    expect(options[0]).toMatchObject({ label: "SMISHING", apply: "'SMISHING'" })
+    expect(options.map((o) => o.label)).toContain("smStatus")
+  })
+
+  it("completes inside a literal with the bare member, quoted for it", () => {
+    const closed = complete(env(), "select * from spam.spam_xray where smStatus = 'SM|'")
+    // The closing quote stays: only the typed part is replaced.
+    expect(closed?.from).toBe(47)
+    expect(closed?.to).toBeUndefined()
+    const middle = complete(env(), "select * from spam.spam_xray where smStatus = 'SM|IS'")
+    expect(middle).toMatchObject({ from: 47, to: 51 })
+    expect(closed?.options.map((o) => [o.label, o.apply])).toEqual([
+      ["SMISHING", "SMISHING"],
+      ["NORMAL", "NORMAL"],
+      ["it's", "it''s"],
+    ])
+    const open = complete(env(), "select * from spam.spam_xray where smStatus in ('NORMAL', '|")
+    expect(open?.options.map((o) => o.apply)).toEqual(["SMISHING'", "NORMAL'", "it''s'"])
+    const doubled = complete(env(), 'select * from spam.spam_xray where smStatus = "|"')
+    expect(doubled?.options.map((o) => o.apply)).toContain("it's")
+  })
+
+  it("leaves out the empty set member inside a literal only", () => {
+    const inside = complete(env(), "select * from spam.spam_xray where tags = '|'")
+    expect(inside?.options.map((o) => o.label)).toEqual(["a", "b"])
+    const bare = complete(env(), "select * from spam.spam_xray where tags = |")
+    expect(bare?.options.map((o) => o.apply)).toEqual(["'a'", "'b'", "''"])
+  })
+
+  it("never replaces SQL after a quote typed in front of it", () => {
+    // closeBrackets doesn't pair a quote typed before a word: the rest reads as one literal.
+    expect(
+      complete(env(), "select * from spam.spam_xray where smStatus = '|SMISHING AND id = 'x'"),
+    ).toBeNull()
+    expect(
+      complete(env(), "select * from spam.spam_xray where smStatus = '|;\nselect 'x'"),
+    ).toBeNull()
+    // Text after the cursor that belongs to a member is still replaced.
+    expect(complete(env(), "select * from spam.spam_xray where smStatus = 'SM|ISH'")).toMatchObject(
+      { from: 47, to: 52 },
+    )
+  })
+
+  it("completes one item of a SET value at a time", () => {
+    const after = complete(env(), "select * from spam.spam_xray where tags = 'a,|'")
+    expect(after).toMatchObject({ from: 45 })
+    expect(after?.to).toBeUndefined()
+    const before = complete(env(), "select * from spam.spam_xray where tags = '|b,a'")
+    expect(before).toMatchObject({ from: 43, to: 44 })
+  })
+
+  it("reopens after a load only when the compared column has members", async () => {
+    const run = async (marked: string) => {
+      const { env: lazy, load } = fakeEnv({ app: APP })
+      let reopened = 0
+      complete(lazy, marked, false, () => (reopened += 1))
+      await load("spam", XRAY)
+      return reopened
+    }
+    expect(await run("select * from spam.spam_xray where smStatus = |")).toBe(1)
+    expect(await run("select * from spam.spam_xray where id = |")).toBe(0)
+  })
+
+  it("stays quiet for columns without members and for other strings", () => {
+    expect(complete(env(), "select * from spam.spam_xray where id = |")).toBeNull()
+    expect(complete(env(), "select * from spam.spam_xray where id = '|'")).toBeNull()
+    expect(complete(env(), "select * from spam.spam_xray where smStatus like '|'")).toBeNull()
+  })
+
+  it("keeps keywords out of a compared literal", () => {
+    const keywords = keywordSource()
+    const result = keywords(contextAt("select * from spam.spam_xray where smStatus = 'S|'", true))
+    expect(result).toBeNull()
+  })
+
+  it("loads the compared column's schema and reopens the list", async () => {
+    const { env: lazy, requested, load } = fakeEnv({ app: APP })
+    let reopened = 0
+    const first = complete(lazy, "select * from spam.spam_xray where smStatus = '|'", false, () => {
+      reopened += 1
+    })
+    expect(first).toBeNull()
+    expect(requested).toEqual(["spam"])
+    await load("spam", XRAY)
+    expect(reopened).toBe(1)
+  })
+})
