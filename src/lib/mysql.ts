@@ -103,7 +103,7 @@ export interface SchemaColumn {
   isPrimary: boolean
   isAutoIncrement: boolean
   defaultValue: string | null
-  /** COLUMN_COMMENT; only `mysql_table_details` fills it. */
+  /** `COLUMN_COMMENT` (the Glue column comment on Athena); empty when the column has none. */
   comment?: string
 }
 

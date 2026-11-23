@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { ANSI_SYNTAX } from "./sqlContext"
-import { analyzeStatement, cursorContext, type CursorContext } from "./sqlScope"
+import { analyzeStatement, cursorContext, identifierAt, type CursorContext } from "./sqlScope"
 
 /** Context at the `|` marker. */
 function at(marked: string, whole = false): CursorContext {
@@ -215,5 +215,126 @@ describe("ANSI quotes (Athena)", () => {
   it("reads double quotes as strings in MySQL", () => {
     expect(at('SELECT | FROM "sales"."orders"', true)).toMatchObject({ kind: "column", tables: [] })
     expect(at('SELECT "a|" FROM t').kind).toBe("none")
+  })
+})
+
+describe("compared values", () => {
+  const comparedAt = (marked: string) => {
+    const context = at(marked)
+    return context.kind === "none" || context.kind === "member" ? undefined : context.compared
+  }
+
+  it("marks the right-hand side of a comparison with a column, as in the user's example", () => {
+    expect(comparedAt("select count(*) from spam.spam_xray where smStatus = |")).toEqual([
+      "smStatus",
+    ])
+    expect(comparedAt("select * from t where t.status != SM|")).toEqual(["t", "status"])
+    expect(comparedAt("select * from t where db.t.status <> |")).toEqual(["db", "t", "status"])
+    expect(comparedAt("select * from t where status <=> |")).toEqual(["status"])
+    expect(comparedAt("update t set status = | where id = 1")).toEqual(["status"])
+    expect(comparedAt("select * from t where `my col` = |")).toEqual(["my col"])
+  })
+
+  it("marks items of an IN list", () => {
+    expect(comparedAt("select * from t where status in (|")).toEqual(["status"])
+    expect(comparedAt("select * from t where status not in ('a', 1, |)")).toEqual(["status"])
+  })
+
+  it("leaves other positions alone", () => {
+    expect(comparedAt("select * from t where status > |")).toBeUndefined()
+    expect(comparedAt("select * from t where status = 'a' and |")).toBeUndefined()
+    expect(comparedAt("select * from t where f(status) = |")).toBeUndefined()
+    expect(comparedAt("select * from t where status in (select |")).toBeUndefined()
+    expect(comparedAt("select * from t where count(|")).toBeUndefined()
+  })
+
+  it("reads the body of a compared string literal", () => {
+    expect(at("select * from t where status = 'SM|'")).toMatchObject({
+      kind: "value",
+      compared: ["status"],
+      quote: "'",
+      closed: true,
+      word: { from: 32, to: 34, text: "SM" },
+      tables: [{ database: null, table: "t", alias: null }],
+    })
+    expect(at("select * from t where t.status in ('a', \"it''s|")).toMatchObject({
+      kind: "value",
+      compared: ["t", "status"],
+      quote: '"',
+      closed: false,
+      word: { text: "it''s" },
+    })
+    expect(at("select * from t where status = 'it''|s'")).toMatchObject({
+      word: { text: "it'" },
+    })
+  })
+
+  it("keeps other strings and comments opaque", () => {
+    expect(kindAt("select * from t where status like 'SM|'")).toBe("none")
+    expect(kindAt("select 'SM|'")).toBe("none")
+    expect(kindAt("select * from t where status = 1 -- x = '|")).toBe("none")
+  })
+})
+
+describe("identifierAt", () => {
+  const marked = (text: string) => {
+    const pos = text.indexOf("|")
+    return { sql: text.slice(0, pos) + text.slice(pos + 1), pos }
+  }
+  const idAt = (text: string, side: -1 | 1 = 1) => {
+    const { sql, pos } = marked(text)
+    return identifierAt(sql, pos, side)
+  }
+
+  it("reads a column, its qualifiers and the statement's tables", () => {
+    expect(idAt("select count(*) from spam.spam_xray where smSt|atus = 'SMISHING';")).toEqual({
+      path: ["smStatus"],
+      qualifies: false,
+      position: "column",
+      tables: [{ database: "spam", table: "spam_xray", alias: null }],
+      from: 42,
+      to: 50,
+    })
+    expect(idAt("select x.na|me from users x")).toMatchObject({
+      path: ["x", "name"],
+      qualifies: false,
+    })
+  })
+
+  it("marks qualifiers and table positions", () => {
+    expect(idAt("select * from sp|am.spam_xray")).toMatchObject({
+      path: ["spam"],
+      qualifies: true,
+      position: "table",
+    })
+    expect(idAt("select * from spam.spam_x|ray")).toMatchObject({
+      path: ["spam", "spam_xray"],
+      qualifies: false,
+    })
+    expect(idAt("select * from use|rs")).toMatchObject({ path: ["users"], position: "table" })
+    expect(idAt("use sp|am")).toMatchObject({ path: ["spam"], position: "database" })
+  })
+
+  it("picks the token on the pointer's side at a boundary", () => {
+    expect(idAt("select a|,b from t", -1)?.path).toEqual(["a"])
+    expect(idAt("select a,|b from t", 1)?.path).toEqual(["b"])
+    expect(idAt("select a|,b from t", 1)).toBeNull()
+  })
+
+  it("is null over keywords, literals, comments and between statements", () => {
+    expect(idAt("sel|ect 1")).toBeNull()
+    expect(idAt("select 'ab|c'")).toBeNull()
+    expect(idAt("select 1 -- na|me")).toBeNull()
+    expect(idAt("select 12|3")).toBeNull()
+  })
+
+  it("uses the statement under the pointer only, with document offsets", () => {
+    const found = idAt("select * from a;\nselect na|me from users;")
+    expect(found).toMatchObject({
+      path: ["name"],
+      tables: [{ database: null, table: "users", alias: null }],
+      from: 24,
+      to: 28,
+    })
   })
 })

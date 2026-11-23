@@ -36,10 +36,37 @@ export interface CompletionWord {
  */
 export type CursorPosition = "keyword" | "table" | "column" | "database" | "other"
 
+/**
+ * The column an operand is compared with, as written: `["col"]`, `["t", "col"]` or
+ * `["db", "t", "col"]`. Set for `col = |`, `col <> |`, `col <=> |`, `col != |` and
+ * `col [NOT] IN (..., |`.
+ */
+export type ColumnPath = string[]
+
 export type CursorContext =
   | { kind: "none" }
   | { kind: "member"; parents: string[]; word: CompletionWord; tables: TableRef[] }
-  | { kind: CursorPosition; word: CompletionWord; tables: TableRef[] }
+  | {
+      kind: CursorPosition
+      word: CompletionWord
+      tables: TableRef[]
+      /** When the position is the right-hand side of a comparison with a column. */
+      compared?: ColumnPath
+    }
+  | {
+      /**
+       * Inside a string literal compared with a column (`col = 'SM|'`). `word` covers the
+       * literal's body: from just past the opening quote to just before the closing one (or the
+       * cursor when the literal isn't closed yet); `text` is the body typed before the cursor.
+       */
+      kind: "value"
+      compared: ColumnPath
+      quote: "'" | '"'
+      /** Whether the literal already has its closing quote. */
+      closed: boolean
+      word: CompletionWord
+      tables: TableRef[]
+    }
 
 type Clause = "table" | "column" | "database" | "keyword"
 
@@ -333,6 +360,90 @@ function positionKind(tokens: SqlToken[], index: number, level: Level): CursorPo
   return rightAfterClause || isPunct(prevToken, ",") ? "table" : "keyword"
 }
 
+const COMPARISON = new Set(["=", "!=", "<>", "<=>"])
+
+/** `a.b.c` ending at `end`, outermost first; null unless `tokens[end]` is a name. */
+function nameChainEndingAt(tokens: SqlToken[], end: number): string[] | null {
+  const last = tokens[end]
+  if (!isName(last)) return null
+  const path = [last.value]
+  let i = end
+  while (isPunct(tokens[i - 1], ".")) {
+    const name = tokens[i - 2]
+    if (!name || (name.kind !== "word" && name.kind !== "quoted")) break
+    path.unshift(name.value)
+    i -= 2
+  }
+  return path
+}
+
+/** Operator characters written together right before `index` (`<`, `>` and `=` of `<=>`). */
+function operatorBefore(tokens: SqlToken[], index: number): { text: string; start: number } {
+  let start = index
+  while (start > 0) {
+    const token = tokens[start - 1] as SqlToken
+    if (token.kind !== "operator") break
+    const next = tokens[start]
+    if (start < index && next && token.to !== next.from) break
+    start -= 1
+  }
+  const text = tokens
+    .slice(start, index)
+    .map((t) => t.value)
+    .join("")
+  return { text, start }
+}
+
+const isLiteral = (token: SqlToken | undefined) =>
+  token?.kind === "string" || token?.kind === "number" || lower(token) === "null"
+
+/**
+ * The column the operand at `index` is compared with: `col = |`, `t.col <> |`, or an item of
+ * `col [NOT] IN ('a', |`. Null anywhere else.
+ */
+function comparedColumn(tokens: SqlToken[], index: number): ColumnPath | null {
+  const operator = operatorBefore(tokens, index)
+  if (operator.text !== "") {
+    return COMPARISON.has(operator.text) ? nameChainEndingAt(tokens, operator.start - 1) : null
+  }
+  let i = index - 1
+  if (!isPunct(tokens[i], "(") && !isPunct(tokens[i], ",")) return null
+  while (isPunct(tokens[i], ",") || isLiteral(tokens[i])) i -= 1
+  if (!isPunct(tokens[i], "(") || lower(tokens[i - 1]) !== "in") return null
+  const end = lower(tokens[i - 2]) === "not" ? i - 3 : i - 2
+  return nameChainEndingAt(tokens, end)
+}
+
+function tablesAround(tokens: SqlToken[], index: number): { tables: TableRef[]; level: Level } {
+  const levels = queryLevels(tokens, index)
+  const tables = levels.flatMap((level) => tableRefs(tokens, levelItems(tokens, level)))
+  return { tables, level: levels[0] as Level }
+}
+
+/** Context inside the string literal `literal`: a value of a compared column, or nothing. */
+function valueContext(
+  sql: string,
+  tokens: SqlToken[],
+  literal: SqlToken,
+  cursor: number,
+): CursorContext {
+  const index = tokens.indexOf(literal)
+  const compared = comparedColumn(tokens, index)
+  if (!compared) return NONE
+  const quote = sql[literal.from] === '"' ? '"' : "'"
+  const from = literal.from + 1
+  const to = literal.closed ? literal.to - 1 : cursor
+  const text = sql.slice(from, cursor).replaceAll(quote + quote, quote)
+  return {
+    kind: "value",
+    compared,
+    quote,
+    closed: literal.closed,
+    word: { from, to: Math.max(to, cursor), text, quoted: false },
+    tables: tablesAround(tokens, index).tables,
+  }
+}
+
 /** Context at `cursor` (an offset into `sql`), with `sql` holding a single statement. */
 export function analyzeStatement(
   sql: string,
@@ -340,14 +451,57 @@ export function analyzeStatement(
   syntax: SqlSyntax = MYSQL_SYNTAX,
 ): CursorContext {
   const all = tokenizeSql(sql, syntax)
-  if (all.some((t) => insideOpaque(t, cursor))) return NONE
   const tokens = all.filter((t) => t.kind !== "comment")
+  const opaque = all.find((t) => insideOpaque(t, cursor))
+  if (opaque) return opaque.kind === "string" ? valueContext(sql, tokens, opaque, cursor) : NONE
   const { word, index } = locateWord(sql, tokens, cursor)
-  const levels = queryLevels(tokens, index)
-  const tables = levels.flatMap((level) => tableRefs(tokens, levelItems(tokens, level)))
+  const { tables, level } = tablesAround(tokens, index)
   const parents = qualifierChain(tokens, index)
   if (parents) return { kind: "member", parents, word, tables }
-  return { kind: positionKind(tokens, index, levels[0] as Level), word, tables }
+  const kind = positionKind(tokens, index, level)
+  const compared = kind === "column" && !word.quoted ? comparedColumn(tokens, index) : null
+  return compared ? { kind, word, tables, compared } : { kind, word, tables }
+}
+
+/** A name under the pointer, for hover: what it is qualified with and where it stands. */
+export interface IdentifierAt {
+  /** Qualifiers then the name itself: `["spam", "spam_xray"]` for `spam.spam_xray`. */
+  path: string[]
+  /** Whether a `.` follows, making the name a qualifier itself (`spam` in `spam.t`). */
+  qualifies: boolean
+  /** Kind of name the position expects, as for completion. */
+  position: CursorPosition
+  tables: TableRef[]
+  from: number
+  to: number
+}
+
+/**
+ * The identifier at `pos` in a single statement. `side` is CodeMirror's hover side: negative
+ * when the pointer is on the character before `pos`. Null over keywords, literals, comments,
+ * operators and whitespace.
+ */
+export function identifierInStatement(
+  sql: string,
+  pos: number,
+  side: -1 | 1 = 1,
+  syntax: SqlSyntax = MYSQL_SYNTAX,
+): IdentifierAt | null {
+  const tokens = tokenizeSql(sql, syntax).filter((t) => t.kind !== "comment")
+  const index = tokens.findIndex((t) =>
+    side < 0 ? t.from < pos && pos <= t.to : t.from <= pos && pos < t.to,
+  )
+  const token = tokens[index]
+  if (!token || !isName(token)) return null
+  const { tables, level } = tablesAround(tokens, index)
+  return {
+    path: [...(qualifierChain(tokens, index) ?? []), token.value],
+    qualifies: isPunct(tokens[index + 1], "."),
+    position: positionKind(tokens, index, level),
+    tables,
+    from: token.from,
+    to: token.to,
+  }
 }
 
 const shiftWord = (word: CompletionWord, by: number): CompletionWord => ({
@@ -377,4 +531,24 @@ export function cursorContext(
   const context = analyzeStatement(text, pos - range.from, syntax)
   if (context.kind === "none") return context
   return { ...context, word: shiftWord(context.word, range.from) }
+}
+
+/** The identifier at `pos` in a whole editor document; offsets are document offsets. */
+export function identifierAt(
+  doc: string,
+  pos: number,
+  side: -1 | 1 = 1,
+  syntax: SqlSyntax = MYSQL_SYNTAX,
+): IdentifierAt | null {
+  const range = statementAtCursor(doc, pos, syntax)
+  if (!range) return identifierInStatement(doc, pos, side, syntax)
+  // Between statements: there is no name under the pointer.
+  if (pos < range.from || pos > range.to) return null
+  const found = identifierInStatement(
+    doc.slice(range.from, range.to),
+    pos - range.from,
+    side,
+    syntax,
+  )
+  return found ? { ...found, from: found.from + range.from, to: found.to + range.from } : null
 }

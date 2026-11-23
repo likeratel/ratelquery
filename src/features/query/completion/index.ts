@@ -1,2 +1,2 @@
 export { createSessionCompletionEnv } from "./sessionEnv"
-export { useCompletionSources } from "./useCompletionSources"
+export { useSchemaAssist, type SchemaAssist } from "./useSchemaAssist"

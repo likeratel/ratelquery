@@ -11,7 +11,7 @@ import { useSessionsStore } from "../../state/sessionsStore"
 import { useTabsStore } from "../../state/tabsStore"
 import { cancelActiveRun, runActiveTab } from "./actions"
 import { APP_SHORTCUTS, handleAppShortcut } from "./appShortcuts"
-import { useCompletionSources } from "./completion"
+import { useSchemaAssist } from "./completion"
 import { DatabaseSwitcher } from "./DatabaseSwitcher"
 import { athenaTabDatabase, tabDatabase } from "./editing"
 import { registerEditor } from "./editorRegistry"
@@ -33,7 +33,7 @@ export function EditorPane({ tab }: EditorPaneProps) {
   const mysqlDatabase = useSessionsStore((s) => tabDatabase(tab, s.sessions[connectionId]))
   const athenaDatabase = useAthenaStore((s) => athenaTabDatabase(tab, s.catalogs[connectionId]))
   const database = athena ? athenaDatabase : mysqlDatabase
-  const completionSources = useCompletionSources(connectionId, database, tab.engine)
+  const schemaAssist = useSchemaAssist(connectionId, database, tab.engine)
 
   const onChange = useCallback((sql: string) => setSql(tabId, sql), [setSql, tabId])
   const onViewChange = useCallback(
@@ -61,7 +61,8 @@ export function EditorPane({ tab }: EditorPaneProps) {
           stateKey={tab.id}
           value={tab.sql}
           onChange={onChange}
-          completionSources={completionSources}
+          completionSources={schemaAssist?.completionSources}
+          hoverExtension={schemaAssist?.hover}
           dialect={dialectFor(tab.engine).editor}
           placeholderText={`Write SQL. ${formatShortcut(APP_SHORTCUTS.runStatement)} runs the statement at the cursor, ${formatShortcut(APP_SHORTCUTS.runSelection)} runs the selection or everything.`}
           onKeyDownCapture={onKeyDownCapture}
