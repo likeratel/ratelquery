@@ -32,6 +32,10 @@ GitHub Release (see [Releases](CONTRIBUTING.md#releases)).
 - `USE db` in a query tab now moves the tab's Database picker, and rows read after a `USE` are
   edited in that database (#6).
 
+### Security
+
+- Updated `url` to 2.5.9 for RUSTSEC-2026-0592.
+
 ## [0.4.0] - 2026-11-17
 
 ### Added
