@@ -1,7 +1,7 @@
 {
   "name": "ratelquery",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.5.0",
   "license": "MIT",
   "packageManager": "pnpm@10.30.2",
   "type": "module",
