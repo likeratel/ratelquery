@@ -13,8 +13,10 @@ permissions:
 
 jobs:
   preflight:
-    name: Check tag matches app version
+    name: Check tag matches app version and has release notes
     runs-on: ubuntu-24.04
+    outputs:
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       - uses: actions/checkout@v5
       - name: Compare tag with tauri.conf.json version
@@ -26,6 +28,17 @@ jobs:
             echo "::error::Tag ${GITHUB_REF_NAME} does not match tauri.conf.json version v${version}."
             exit 1
           fi
+      - name: Read release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! notes="$(node scripts/release-notes.mjs "${GITHUB_REF_NAME}")" || [[ -z "$notes" ]]; then
+            echo "::error::Add a \"## [${GITHUB_REF_NAME#v}]\" section to CHANGELOG.md before tagging."
+            exit 1
+          fi
+          delimiter="EOF_$(openssl rand -hex 16)"
+          { echo "notes<<${delimiter}"; printf '%s\n' "$notes"; echo "${delimiter}"; } >> "$GITHUB_OUTPUT"
 
   build:
     name: Build (${{ matrix.name }})
@@ -124,10 +137,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: ${{ github.event.repository.name }} ${{ github.ref_name }}
-          releaseBody: >-
-            Desktop builds for macOS (Apple silicon and Intel), Windows and Linux.
-            See the commit history for changes. Unsigned builds may need to be allowed
-            in the operating system's security settings on first launch.
+          releaseBody: ${{ needs.preflight.outputs.notes }}
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
