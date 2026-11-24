@@ -30,3 +30,7 @@ Integration tests that need databases use `pnpm db:up` first.
 ## Commits
 
 Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`).
+
+## After a release or local install
+
+Delete the app bundles left in the project (`src-tauri/target/**/bundle/macos/*.app`) once a release is published or a build has been installed into Applications. Left in place, Spotlight lists the build output next to the installed app. Keep the DMGs and other release artifacts.
