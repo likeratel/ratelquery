@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url"
 
 const INSTALL = `## Install
 
-Download the file for your platform below. macOS builds are not notarized: right-click the app and choose **Open** on first launch, or run \`xattr -dr com.apple.quarantine /Applications/ratelquery.app\`. See the [README](https://github.com/likeratel/ratelquery#install) for details.`
+Download the file for your platform below. macOS builds are not notarized: right-click the app and choose **Open** on first launch, or run \`xattr -dr com.apple.quarantine /Applications/RatelQuery.app\`. See the [README](https://github.com/likeratel/ratelquery#install) for details.`
 
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 

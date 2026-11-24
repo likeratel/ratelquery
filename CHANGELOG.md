@@ -7,6 +7,16 @@ GitHub Release (see [Releases](CONTRIBUTING.md#releases)).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-24
+
+### Changed
+
+- **The macOS app bundle is now `RatelQuery.app`**, so Spotlight finds it when you type `query`:
+  Spotlight matches the start of a word, and the capital letter gives it one. The macOS disk images
+  are named `RatelQuery_<version>_<arch>.dmg` and the app menu reads RatelQuery. Windows and Linux
+  installers keep their names, and connections and settings are untouched because the app
+  identifier is the same. When you drag the new app into Applications, replace the old one.
+
 ## [0.5.0] - 2026-11-23
 
 ### Added
@@ -101,7 +111,8 @@ GitHub Release (see [Releases](CONTRIBUTING.md#releases)).
 - MySQL results no longer show as read only in reopened tabs, with `ORDER BY a, b DESC`, with
   names in a different letter case or with `db.table` names.
 
-[Unreleased]: https://github.com/likeratel/ratelquery/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/likeratel/ratelquery/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/likeratel/ratelquery/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/likeratel/ratelquery/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/likeratel/ratelquery/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/likeratel/ratelquery/compare/v0.2.1...v0.3.0

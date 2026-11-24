@@ -14,15 +14,15 @@ Download the latest build from [Releases](https://github.com/likeratel/ratelquer
 
 | Platform             | File                                                                         |
 | -------------------- | ---------------------------------------------------------------------------- |
-| macOS, Apple silicon | `ratelquery_<version>_aarch64.dmg`                                           |
-| macOS, Intel         | `ratelquery_<version>_x64.dmg`                                               |
+| macOS, Apple silicon | `RatelQuery_<version>_aarch64.dmg`                                           |
+| macOS, Intel         | `RatelQuery_<version>_x64.dmg`                                               |
 | Windows              | `ratelquery_<version>_x64-setup.exe` or `ratelquery_<version>_x64_en-US.msi` |
 | Linux                | `ratelquery_<version>_amd64.AppImage`, `.deb` or `.rpm`                      |
 
-On macOS, open the `.dmg` and drag **ratelquery** into Applications. Builds are not notarized by Apple, so the first launch is blocked with "ratelquery can't be opened" or "is damaged". Either right-click the app in Applications and choose **Open**, or clear the download flag once:
+On macOS, open the `.dmg` and drag **RatelQuery** into Applications (the bundle is capitalised so that Spotlight finds it when you type `query`). Builds are not notarized by Apple, so the first launch is blocked with "RatelQuery can't be opened" or "is damaged". Either right-click the app in Applications and choose **Open**, or clear the download flag once:
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/ratelquery.app
+xattr -dr com.apple.quarantine /Applications/RatelQuery.app
 ```
 
 On Windows, SmartScreen may warn about an unknown publisher: choose **More info → Run anyway**. On Linux, install the `.deb` or `.rpm`, or make the AppImage executable (`chmod +x`) and run it.
