@@ -34,3 +34,5 @@ Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`).
 ## After a release or local install
 
 Delete the app bundles left in the project (`src-tauri/target/**/bundle/macos/*.app`) once a release is published or a build has been installed into Applications. Left in place, Spotlight lists the build output next to the installed app. Keep the DMGs and other release artifacts.
+
+Install the app in only one place, `/Applications`. Replace the existing bundle when installing a new build and keep no copy elsewhere, such as `~/Applications`. After installing, check that Spotlight lists a single bundle for the app (`mdfind "kMDItemContentType == 'com.apple.application-bundle' && kMDItemDisplayName == 'ratel*'cdw"`).
